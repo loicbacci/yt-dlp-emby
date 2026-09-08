@@ -1,0 +1,35 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local config (keep the example)
+config.toml
+
+# Media and caches
+*.mkv
+*.mp4
+*.webm
+*.part
+*.ytdl
+*.info.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
