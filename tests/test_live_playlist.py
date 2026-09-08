@@ -69,3 +69,4 @@ def test_live_low_res_download_writes_emby_layout(tmp_path: Path) -> None:
     assert "<lockdata>true</lockdata>" in xml
     assert "youtube" in xml
     assert "tmdbid" not in xml
+    assert (series / ".yt-emby-cache.json").is_file()

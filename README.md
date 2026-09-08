@@ -19,6 +19,7 @@ Each refresh diffs the live playlist against a local index: new videos are downl
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
 - **ffmpeg on `PATH`** (not bundled; install it from your OS)
+- **Node.js 22+** on `PATH` (YouTube JS challenges; nvm installs are detected)
 
 ```text
 Debian/Ubuntu:  sudo apt install ffmpeg
@@ -47,8 +48,11 @@ Resolution order (highest wins): **CLI flag → environment variable → config 
 | --- | --- | --- | --- |
 | Library root | `--library` | `YT_EMBY_LIBRARY` | `library` |
 | Old/replaced files | `--old-dir` | `YT_EMBY_OLD_DIR` | `old_dir` |
+| Local download staging | `--staging` | `YT_EMBY_STAGING` | `staging` |
 | Config file | `--config` | `YT_EMBY_CONFIG` | — |
 | ffmpeg binary | `--ffmpeg-location` | `YT_EMBY_FFMPEG` | — |
+| Netscape cookies | `--cookies` | `YT_EMBY_COOKIES` | `cookies` |
+| Force metadata refetch | `--force-refetch` | `YT_EMBY_FORCE_REFETCH` | — |
 
 If `--config` / `YT_EMBY_CONFIG` is unset, `config.toml` in the current working directory is loaded when that file exists.
 
@@ -57,7 +61,10 @@ Copy [`config.toml.example`](config.toml.example):
 ```toml
 library = "/path/to/library"
 old_dir = "/path/to/old"
+# staging = "/path/to/local/tmp"
 ```
+
+Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and sidecars are copied to `library`. That avoids slow SMB/NFS fragment writes, ffmpeg remux over the share, and Emby scanning half-finished files. Point `staging` at a local SSD if `/tmp` is small.
 
 ## Usage
 
@@ -66,12 +73,20 @@ uv run yt-emby download "https://www.youtube.com/playlist?list=PLAYLIST_ID"
 uv run yt-emby download URL --library /path/to/library --old-dir /path/to/old
 uv run yt-emby download URL --season 1 --dry-run
 uv run yt-emby download URL --cookies-from-browser firefox
+uv run yt-emby download URL --cookies cookies.txt
+uv run yt-emby download URL --quiet
+uv run yt-emby download URL --verbose
+uv run yt-emby download URL --force-refetch
 ```
+
+Progress: by default the CLI logs each step and draws its own bars while listing the playlist (`12/121`) and downloading video. yt-dlp's own output is silenced. Pass `--quiet` to hide ours, or `-v` / `--verbose` (or `YT_EMBY_VERBOSE=1`) to print every yt-dlp message instead.
+
+Playlist listing is a fast ID/title/order pass. Full per-video metadata (description, dates, duration) is filled from `{series}/.yt-emby-cache.json` when present, or from the download itself for new episodes. Existing episodes are not re-extracted unless you pass `--force-refetch` (or `YT_EMBY_FORCE_REFETCH=1`). That flag still lists the playlist first; it does not wait to fetch every video before the first download.
 
 Defaults:
 
 - Best video up to 1080p, remuxed to **mkv**
-- English subtitles as sidecar `.srt` when available (not burned in)
+- English **user-uploaded** subtitles as sidecar `.srt` when available (not burned in). YouTube auto-generated captions are not downloaded.
 - Series poster from the channel avatar; fanart from the channel banner when present; season and episode thumbs from playlist/video thumbnails
 
 ## Emby library setup
@@ -98,6 +113,7 @@ Layout:
       {Channel Name} - S01E01 - Episode Title.nfo
       {Channel Name} - S01E01 - Episode Title-thumb.jpg
     .yt-emby.json
+    .yt-emby-cache.json
 ```
 
 ## Tests

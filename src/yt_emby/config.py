@@ -36,14 +36,19 @@ class Settings:
     config_path: Path | None = None
     season: int | None = None
     cookies_from_browser: str | None = None
+    cookiefile: Path | None = None
     dry_run: bool = False
     ffmpeg_location: str | None = None
+    quiet: bool = False
+    verbose: bool = False
+    staging: Path | None = None
+    force_refetch: bool = False
 
 
 def _load_toml(path: Path) -> dict[str, str]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     result: dict[str, str] = {}
-    for key in ("library", "old_dir"):
+    for key in ("library", "old_dir", "staging", "cookies"):
         value = data.get(key)
         if value is not None:
             result[key] = str(value)
@@ -82,7 +87,12 @@ def resolve_settings(
     ffmpeg_location: str | None = None,
     season: int | None = None,
     cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
     dry_run: bool = False,
+    quiet: bool = False,
+    verbose: bool = False,
+    staging: str | None = None,
+    force_refetch: bool = False,
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> Settings:
@@ -112,7 +122,28 @@ def resolve_settings(
             + ". Pass them as flags, environment variables, or a config file."
         )
 
+    resolved_staging = _pick(staging, environ.get("YT_EMBY_STAGING"), file_values.get("staging"))
+    resolved_cookies = _pick(cookiefile, environ.get("YT_EMBY_COOKIES"), file_values.get("cookies"))
+    if not resolved_cookies:
+        default_cookies = cwd / "cookies.txt"
+        if default_cookies.is_file():
+            resolved_cookies = str(default_cookies)
+    cookie_path: Path | None = None
+    if resolved_cookies:
+        cookie_path = Path(resolved_cookies)
+        if not cookie_path.is_file():
+            raise ConfigError(f"Cookies file not found: {cookie_path}")
+
     ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
+
+    if not verbose:
+        env_verbose = environ.get("YT_EMBY_VERBOSE", "")
+        verbose = env_verbose.lower() in {"1", "true", "yes", "on"}
+    if quiet:
+        verbose = False
+    if not force_refetch:
+        env_refetch = environ.get("YT_EMBY_FORCE_REFETCH", "")
+        force_refetch = env_refetch.lower() in {"1", "true", "yes", "on"}
 
     return Settings(
         library=Path(resolved_library),
@@ -121,6 +152,11 @@ def resolve_settings(
         config_path=file_path,
         season=season,
         cookies_from_browser=cookies_from_browser,
+        cookiefile=cookie_path,
         dry_run=dry_run,
         ffmpeg_location=ffmpeg_location,
+        quiet=quiet,
+        verbose=verbose,
+        staging=Path(resolved_staging) if resolved_staging else None,
+        force_refetch=force_refetch,
     )

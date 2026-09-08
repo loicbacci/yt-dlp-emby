@@ -121,7 +121,78 @@ def test_find_ffmpeg_raises_with_install_help(monkeypatch: pytest.MonkeyPatch) -
     assert "brew install ffmpeg" in FFMPEG_INSTALL_HELP
 
 
+def test_verbose_from_env(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={"YT_EMBY_VERBOSE": "1"},
+        cwd=tmp_path,
+    )
+    assert settings.verbose is True
+
+
+def test_quiet_overrides_env_verbose(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        quiet=True,
+        environ={"YT_EMBY_VERBOSE": "1"},
+        cwd=tmp_path,
+    )
+    assert settings.quiet is True
+    assert settings.verbose is False
+
+
+def test_staging_from_env(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={"YT_EMBY_STAGING": "/local/tmp"},
+        cwd=tmp_path,
+    )
+    assert settings.staging == Path("/local/tmp")
+
+
+def test_force_refetch_from_env(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={"YT_EMBY_FORCE_REFETCH": "1"},
+        cwd=tmp_path,
+    )
+    assert settings.force_refetch is True
+
+
+def test_force_refetch_cli_flag(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        force_refetch=True,
+        environ={},
+        cwd=tmp_path,
+    )
+    assert settings.force_refetch is True
+
+
 def test_no_default_library_path() -> None:
     source = Path("src/yt_emby/config.py").read_text()
     assert "/mnt/nas" not in source
     assert "/path/to/library" not in source
+
+
+def test_cookiefile_from_cwd_cookies_txt(tmp_path: Path) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+    )
+    assert settings.cookiefile == cookies

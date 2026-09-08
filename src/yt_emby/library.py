@@ -56,6 +56,10 @@ def season_dir(series: Path, season: int) -> Path:
     return series / season_folder_name(season)
 
 
+def media_exists(season: Path, basename: str) -> bool:
+    return (season / f"{basename}.mkv").is_file()
+
+
 def episode_stem(channel_name: str, season: int, episode: int, title: str) -> str:
     return (
         f"{sanitize_filename(channel_name)} - "

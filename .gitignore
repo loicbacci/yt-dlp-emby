@@ -19,6 +19,8 @@ htmlcov/
 
 # Local config (keep the example)
 config.toml
+cookies.txt
+*cookies.txt
 
 # Media and caches
 *.mkv

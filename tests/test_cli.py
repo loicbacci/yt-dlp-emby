@@ -1,3 +1,5 @@
+import pytest
+
 from yt_emby.cli import build_parser
 
 
@@ -45,3 +47,100 @@ def test_download_accepts_season_and_cookies() -> None:
     )
     assert args.season == 2
     assert args.cookies_from_browser == "firefox"
+
+
+def test_download_accepts_verbose() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "download",
+            "https://example.invalid/watch?v=abc",
+            "--library",
+            "/lib",
+            "--old-dir",
+            "/old",
+            "--verbose",
+        ]
+    )
+    assert args.verbose is True
+    assert args.quiet is False
+
+
+def test_quiet_and_verbose_are_exclusive() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "download",
+                "https://example.invalid/watch?v=abc",
+                "--library",
+                "/lib",
+                "--old-dir",
+                "/old",
+                "--quiet",
+                "--verbose",
+            ]
+        )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "download",
+            "https://example.invalid/watch?v=abc",
+            "--library",
+            "/lib",
+            "--old-dir",
+            "/old",
+            "--quiet",
+        ]
+    )
+    assert args.quiet is True
+
+
+def test_download_accepts_staging() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "download",
+            "https://example.invalid/watch?v=abc",
+            "--library",
+            "/lib",
+            "--old-dir",
+            "/old",
+            "--staging",
+            "/tmp/yt-emby",
+        ]
+    )
+    assert args.staging == "/tmp/yt-emby"
+
+
+def test_download_accepts_force_refetch() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "download",
+            "https://example.invalid/watch?v=abc",
+            "--library",
+            "/lib",
+            "--old-dir",
+            "/old",
+            "--force-refetch",
+        ]
+    )
+    assert args.force_refetch is True
+
+
+def test_download_accepts_cookies_file() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "download",
+            "https://example.invalid/watch?v=abc",
+            "--library",
+            "/lib",
+            "--old-dir",
+            "/old",
+            "--cookies",
+            "cookies.txt",
+        ]
+    )
+    assert args.cookies == "cookies.txt"

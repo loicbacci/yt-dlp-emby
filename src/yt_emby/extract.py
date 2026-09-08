@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+import shutil
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Callable
 
 from yt_dlp import YoutubeDL
+
+from yt_emby.progress import ExtractProgress, YtdlpLogger
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,26 @@ class ChannelArt:
 
 
 ExtractFn = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+
+def find_node() -> str | None:
+    found = shutil.which("node")
+    if found:
+        return found
+    nvm = Path.home() / ".nvm" / "versions" / "node"
+    if not nvm.is_dir():
+        return None
+    for path in sorted(nvm.glob("*/bin/node"), reverse=True):
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+def js_runtime_opts() -> dict[str, Any]:
+    node = find_node()
+    if not node:
+        return {}
+    return {"js_runtimes": {"node": {"path": node}}}
 
 
 def pick_best_thumbnail(thumbnails: list[dict[str, Any]] | None) -> str | None:
@@ -99,6 +124,16 @@ def _filesize(entry: dict[str, Any]) -> int | None:
     return None
 
 
+def _webpage_url(entry: dict[str, Any]) -> str | None:
+    url = entry.get("webpage_url") or entry.get("url")
+    if url and str(url).startswith("http"):
+        return str(url)
+    video_id = entry.get("id")
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return None
+
+
 def parse_playlist(info: dict[str, Any]) -> PlaylistInfo:
     entries = info.get("entries") or []
     episodes: list[EpisodeInfo] = []
@@ -120,7 +155,7 @@ def parse_playlist(info: dict[str, Any]) -> PlaylistInfo:
                 duration=float(entry["duration"]) if entry.get("duration") is not None else None,
                 filesize=_filesize(entry),
                 thumbnail_url=_episode_thumbnail(entry),
-                webpage_url=entry.get("webpage_url"),
+                webpage_url=_webpage_url(entry),
             )
         )
     channel = str(info.get("channel") or info.get("uploader") or "Unknown Channel")
@@ -134,6 +169,26 @@ def parse_playlist(info: dict[str, Any]) -> PlaylistInfo:
         thumbnail_url=pick_best_thumbnail(info.get("thumbnails")),
         episodes=episodes,
         webpage_url=info.get("webpage_url") or info.get("original_url"),
+    )
+
+
+def episode_from_info(info: dict[str, Any], playlist_index: int) -> EpisodeInfo:
+    entry = info
+    if info.get("_type") == "playlist" and info.get("entries"):
+        entry = next((item for item in info["entries"] if item and item.get("id")), info)
+    parsed = parse_playlist({**info, "entries": [entry]})
+    if not parsed.episodes:
+        raise ValueError("No video metadata returned")
+    return replace(parsed.episodes[0], playlist_index=playlist_index)
+
+
+def with_episode(playlist: PlaylistInfo, episode: EpisodeInfo) -> PlaylistInfo:
+    return replace(
+        playlist,
+        episodes=[
+            episode if existing.video_id == episode.video_id else existing
+            for existing in playlist.episodes
+        ],
     )
 
 
@@ -161,11 +216,15 @@ def _ydl_extract(url: str, opts: dict[str, Any]) -> dict[str, Any]:
 def _base_opts(
     *,
     cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
     playlist_items: str | None = None,
+    logger: Any | None = None,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": not verbose,
+        "verbose": verbose,
+        "no_warnings": not verbose,
         "skip_download": True,
         "ignoreerrors": True,
         "extractor_args": {"youtube": {"player_client": ["tv", "android", "web"]}},
@@ -174,6 +233,11 @@ def _base_opts(
         opts["playlist_items"] = playlist_items
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser,)
+    if cookiefile:
+        opts["cookiefile"] = cookiefile
+    if logger is not None:
+        opts["logger"] = logger
+    opts.update(js_runtime_opts())
     return opts
 
 
@@ -182,11 +246,29 @@ def extract_playlist(
     *,
     playlist_items: str | None = None,
     cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
     extract_fn: ExtractFn | None = None,
+    progress: bool = False,
+    verbose: bool = False,
 ) -> PlaylistInfo:
-    opts = _base_opts(cookies_from_browser=cookies_from_browser, playlist_items=playlist_items)
+    display = ExtractProgress(enabled=progress, heartbeat=progress)
+    logger = YtdlpLogger(display) if progress else None
+    opts = _base_opts(
+        cookies_from_browser=cookies_from_browser,
+        cookiefile=cookiefile,
+        playlist_items=playlist_items,
+        logger=logger,
+        verbose=verbose,
+    )
+    opts["extract_flat"] = "in_playlist"
+    if progress:
+        display.status("Connecting to YouTube…")
     fn = extract_fn or _ydl_extract
-    info = fn(url, opts)
+    try:
+        info = fn(url, opts)
+    finally:
+        if progress:
+            display.finish("Playlist listing complete")
     if info.get("_type") == "video" or not info.get("entries"):
         # Single video: wrap as a one-episode playlist.
         if not info.get("entries"):
@@ -199,14 +281,50 @@ def extract_playlist(
     return parse_playlist(info)
 
 
+def extract_video(
+    url: str,
+    playlist_index: int,
+    *,
+    cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
+    extract_fn: ExtractFn | None = None,
+    verbose: bool = False,
+) -> EpisodeInfo:
+    opts = _base_opts(
+        cookies_from_browser=cookies_from_browser,
+        cookiefile=cookiefile,
+        verbose=verbose,
+    )
+    fn = extract_fn or _ydl_extract
+    info = fn(url, opts)
+    return episode_from_info(info, playlist_index)
+
+
 def extract_channel_art(
     channel_id: str,
     *,
     cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
     extract_fn: ExtractFn | None = None,
+    progress: bool = False,
+    verbose: bool = False,
 ) -> ChannelArt:
+    display = ExtractProgress(enabled=progress, heartbeat=progress)
+    logger = YtdlpLogger(display) if progress else None
     url = f"https://www.youtube.com/channel/{channel_id}"
-    opts = _base_opts(cookies_from_browser=cookies_from_browser, playlist_items="0")
+    opts = _base_opts(
+        cookies_from_browser=cookies_from_browser,
+        cookiefile=cookiefile,
+        playlist_items="0",
+        logger=logger,
+        verbose=verbose,
+    )
+    if progress:
+        display.status("Fetching channel artwork…")
     fn = extract_fn or _ydl_extract
-    info = fn(url, opts)
+    try:
+        info = fn(url, opts)
+    finally:
+        if progress:
+            display.finish("Channel artwork complete")
     return parse_channel_art(info)

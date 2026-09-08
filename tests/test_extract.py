@@ -1,4 +1,7 @@
 from yt_emby.extract import (
+    episode_from_info,
+    extract_playlist,
+    extract_video,
     pick_avatar,
     pick_banner,
     pick_best_thumbnail,
@@ -50,6 +53,84 @@ def test_parse_playlist_maps_channel_and_episodes() -> None:
     assert playlist.episodes[0].upload_date == "20240101"
     assert playlist.episodes[0].thumbnail_url == "https://img.example/e1.jpg"
     assert playlist.episodes[1].filesize == 2000
+    assert playlist.episodes[0].webpage_url == "https://www.youtube.com/watch?v=vid1"
+
+
+def test_parse_playlist_webpage_url_from_flat_url() -> None:
+    info = {
+        "id": "PLtest",
+        "title": "A Course",
+        "channel": "Example Channel",
+        "channel_id": "UCabc",
+        "entries": [
+            {"id": "vid1", "title": "Intro", "url": "https://www.youtube.com/watch?v=vid1"},
+        ],
+    }
+    playlist = parse_playlist(info)
+    assert playlist.episodes[0].webpage_url == "https://www.youtube.com/watch?v=vid1"
+
+
+def test_parse_playlist_webpage_url_from_id() -> None:
+    info = {
+        "id": "PLtest",
+        "title": "A Course",
+        "channel": "Example Channel",
+        "channel_id": "UCabc",
+        "entries": [{"id": "vid1", "title": "Intro"}],
+    }
+    playlist = parse_playlist(info)
+    assert playlist.episodes[0].webpage_url == "https://www.youtube.com/watch?v=vid1"
+
+
+def test_extract_playlist_uses_flat_listing() -> None:
+    captured: dict = {}
+
+    def fake_extract(url: str, opts: dict) -> dict:
+        captured.update(opts)
+        return {
+            "id": "PLx",
+            "title": "Course",
+            "channel": "Example",
+            "channel_id": "UC1",
+            "entries": [
+                {"id": "vid1", "title": "Intro", "url": "https://www.youtube.com/watch?v=vid1"},
+            ],
+        }
+
+    playlist = extract_playlist("https://example.invalid/playlist", extract_fn=fake_extract)
+    assert captured.get("extract_flat") == "in_playlist"
+    assert playlist.episodes[0].webpage_url.endswith("vid1")
+
+
+def test_extract_video_does_not_use_flat_listing() -> None:
+    captured: dict = {}
+
+    def fake_extract(url: str, opts: dict) -> dict:
+        captured.update(opts)
+        return {"id": "vid1", "title": "Intro", "description": "Plot"}
+
+    episode = extract_video(
+        "https://www.youtube.com/watch?v=vid1",
+        3,
+        extract_fn=fake_extract,
+    )
+    assert "extract_flat" not in captured
+    assert episode.playlist_index == 3
+
+
+def test_episode_from_info_overrides_playlist_index() -> None:
+    episode = episode_from_info(
+        {
+            "id": "vid1",
+            "title": "Intro",
+            "description": "Plot",
+            "webpage_url": "https://www.youtube.com/watch?v=vid1",
+        },
+        playlist_index=4,
+    )
+    assert episode.video_id == "vid1"
+    assert episode.playlist_index == 4
+    assert episode.description == "Plot"
 
 
 def test_parse_playlist_skips_none_entries_and_numbers_from_order() -> None:

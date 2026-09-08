@@ -8,8 +8,9 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "bgutil-ytdlp-pot-provider>=2.0.0",
     "pillow>=12.3.0",
-    "yt-dlp>=2026.8.19",
+    "yt-dlp[default]>=2026.8.19",
 ]
 
 [project.scripts]
