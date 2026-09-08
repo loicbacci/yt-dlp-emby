@@ -168,6 +168,7 @@ def _base_opts(
         "no_warnings": True,
         "skip_download": True,
         "ignoreerrors": True,
+        "extractor_args": {"youtube": {"player_client": ["tv", "android", "web"]}},
     }
     if playlist_items:
         opts["playlist_items"] = playlist_items
