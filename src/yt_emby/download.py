@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +12,91 @@ from yt_dlp import YoutubeDL
 
 from yt_emby.auth import YoutubeAuthError, auth_error_from_exception
 from yt_emby.config import Settings
+from yt_emby.cookies import sandbox_cookiefile
 from yt_emby.extract import js_runtime_opts
 from yt_emby.progress import DownloadProgress, copy_with_progress
 
 DEFAULT_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/bv+ba/b"
 LOW_RES_FORMAT = "worst[height<=144]/worst"
 TARGET_HEIGHT = 1080
-_SKIP_SUFFIXES = (".part", ".ytdl", ".temp")
+_VIDEO_EXTS = {".mkv", ".mp4", ".webm", ".m4a", ".m4v"}
+_STALE_STAGING_PREFIX = "yt-emby-"
+
+
+def cleanup_stale_staging(
+    staging: Path | None = None,
+    *,
+    temp_dir: Path | None = None,
+) -> int:
+    """Remove leftover run dirs and cookie copies that cannot be resumed.
+
+    Each download uses a unique `yt-emby-*` directory, so leftovers from a
+    killed process cannot be continued and only take disk.
+    """
+    removed = 0
+    roots: list[Path] = [Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())]
+    if staging is not None:
+        roots.append(Path(staging))
+    seen: set[Path] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not root.is_dir():
+            continue
+        seen.add(resolved)
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            if not path.name.startswith(_STALE_STAGING_PREFIX):
+                continue
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.is_file():
+                    path.unlink()
+                else:
+                    continue
+            except OSError:
+                continue
+            removed += 1
+    return removed
+
+
+def _stem_files(src_stem: Path) -> list[Path]:
+    stem = src_stem.name
+    parent = src_stem.parent
+    if not parent.is_dir():
+        return []
+    found: list[Path] = []
+    for path in parent.iterdir():
+        if not path.is_file() or not path.name.startswith(stem):
+            continue
+        rest = path.name[len(stem) :]
+        if rest.startswith(".") or rest.startswith("-"):
+            found.append(path)
+    return found
+
+
+def remove_staged_episode(src_stem: Path) -> None:
+    for path in _stem_files(src_stem):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _is_library_artifact(rest: str) -> bool:
+    """True for the finished .mkv and subtitle sidecars, not yt-dlp temps or stream fragments."""
+    lower = rest.lower()
+    if lower == ".mkv":
+        return True
+    if not lower.startswith(".") or not lower.endswith(".srt"):
+        return False
+    return not any(ext in lower for ext in _VIDEO_EXTS)
 
 
 def video_height(path: Path, ffmpeg: Path) -> int | None:
@@ -78,18 +157,16 @@ def promote_episode(
     dest_stem: Path,
     progress: DownloadProgress | None = None,
 ) -> None:
-    """Copy finished episode files from local staging onto the library path."""
+    """Copy finished episode files from local staging onto the library path, then delete them."""
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
     stem = src_stem.name
-    if not src_stem.parent.is_dir():
-        return
-    for path in src_stem.parent.iterdir():
-        if not path.is_file() or not path.name.startswith(stem):
-            continue
+    staged = _stem_files(src_stem)
+    copied = False
+    for path in staged:
         rest = path.name[len(stem) :]
-        if not (rest.startswith(".") or rest.startswith("-")):
+        if not _is_library_artifact(rest):
             continue
-        if rest.endswith(_SKIP_SUFFIXES):
+        if path.stat().st_size == 0:
             continue
         label = "copy" if rest == ".mkv" else rest.lstrip(".-") or "copy"
         copy_to_library(
@@ -98,8 +175,11 @@ def promote_episode(
             progress,
             label=label,
         )
+        copied = True
     if progress is not None:
         progress.close()
+    if copied:
+        remove_staged_episode(src_stem)
 
 
 def download_video(
@@ -115,6 +195,8 @@ def download_video(
     opts: dict[str, Any] = {
         "format": format_selector or DEFAULT_FORMAT,
         "merge_output_format": "mkv",
+        "final_ext": "mkv",
+        "keepvideo": False,
         "outtmpl": str(dest_stem) + ".%(ext)s",
         "writesubtitles": True,
         "writeautomaticsub": False,
@@ -137,21 +219,23 @@ def download_video(
     }
     if settings.cookies_from_browser:
         opts["cookiesfrombrowser"] = (settings.cookies_from_browser,)
-    if settings.cookiefile:
-        opts["cookiefile"] = str(settings.cookiefile)
     opts.update(js_runtime_opts())
-    try:
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except Exception as exc:
-        progress.close()
-        auth = auth_error_from_exception(url, exc)
-        if auth is not None:
-            raise auth from exc
-        raise
+    with sandbox_cookiefile(
+        str(settings.cookiefile) if settings.cookiefile else None
+    ) as cookiefile:
+        if cookiefile:
+            opts["cookiefile"] = cookiefile
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as exc:
+            progress.close()
+            auth = auth_error_from_exception(url, exc)
+            if auth is not None:
+                raise auth from exc
+            raise
     progress.close()
-    if not info:
-        raise RuntimeError(
-            "no downloadable media (upcoming live/premiere, unavailable, or extractor error)"
-        )
+    mkv = dest_stem.with_suffix(".mkv")
+    if not info or not info.get("id") or not mkv.is_file() or mkv.stat().st_size == 0:
+        raise RuntimeError("download did not produce an mkv (merge or remux failed)")
     return info

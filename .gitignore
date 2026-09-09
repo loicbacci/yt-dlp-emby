@@ -24,6 +24,7 @@ cookies.txt
 *cookies.txt
 
 # Media and caches
+cache/
 *.mkv
 *.mp4
 *.webm

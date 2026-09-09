@@ -224,6 +224,19 @@ def test_dropout_accepts_force_refetch() -> None:
     assert args.force_refetch is True
 
 
+def test_dropout_accepts_debug() -> None:
+    parser = build_parser()
+    debug = parser.parse_args(["dropout", "--debug"])
+    assert debug.debug is True
+    assert debug.verbose is False
+    vv = parser.parse_args(["dropout", "-vv"])
+    assert vv.debug is True
+    assert vv.verbose is False
+    both = parser.parse_args(["dropout", "-v", "--debug"])
+    assert both.verbose is True
+    assert both.debug is True
+
+
 def test_dropout_accepts_series_season_create() -> None:
     parser = build_parser()
     args = parser.parse_args(

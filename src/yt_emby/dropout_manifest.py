@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import yaml
 
 from yt_emby.config import ConfigError
+from yt_emby.cookies import cookies_file_usable
 
 __all__ = [
     "DropoutManifest",
@@ -152,6 +153,8 @@ def load_dropout_manifest(path: Path) -> DropoutManifest:
         cookies = path.parent / cookies
     if cookies is not None and not cookies.is_file():
         raise ConfigError(f"Cookies file not found: {cookies}")
+    if cookies is not None and not cookies_file_usable(cookies):
+        raise ConfigError(f"Cookies file is empty: {cookies}")
     return DropoutManifest(
         library=Path(library),
         old_dir=Path(old_dir),

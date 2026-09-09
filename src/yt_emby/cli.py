@@ -116,6 +116,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore cached Dropout season listings and fetch them again",
     )
+    dropout.add_argument(
+        "-vv",
+        "--debug",
+        action="store_true",
+        dest="debug",
+        help="Show listing cache vs disk timings (does not dump yt-dlp HTTP or hide progress)",
+    )
     return parser
 
 
@@ -132,6 +139,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         quiet=bool(getattr(args, "quiet", False)),
         silent=bool(getattr(args, "silent", False)),
         verbose=bool(getattr(args, "verbose", False)),
+        debug=bool(getattr(args, "debug", False)),
         staging=getattr(args, "staging", None),
         force_refetch=bool(getattr(args, "force_refetch", False)),
     )
@@ -195,6 +203,7 @@ def run_dropout(args: argparse.Namespace) -> int:
             quiet=bool(getattr(args, "quiet", False)),
             silent=bool(getattr(args, "silent", False)),
             verbose=bool(getattr(args, "verbose", False)),
+            debug=bool(getattr(args, "debug", False)),
             staging=getattr(args, "staging", None)
             or (str(manifest.staging) if manifest.staging else None),
             force_refetch=bool(getattr(args, "force_refetch", False)),

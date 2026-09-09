@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Mapping
 
+from yt_emby.cookies import cookies_file_usable
 from yt_emby.extract import find_node
 from yt_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
 from yt_emby.log import info, warn
@@ -23,15 +24,6 @@ def format_bytes(num: int) -> str:
             return f"{value:.1f}{unit}"
         value /= 1024.0
     return f"{value:.1f}TiB"
-
-
-def _cookies_nonempty(path: Path) -> bool:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    lines = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
-    return bool(lines)
 
 
 def _report_disk(path: Path, label: str) -> int:
@@ -92,7 +84,7 @@ def run_doctor(
     elif not cookie_path.is_file():
         warn(f"cookies file not found: {cookie_path}")
         failed += 1
-    elif not _cookies_nonempty(cookie_path):
+    elif not cookies_file_usable(cookie_path):
         warn(f"cookies file is empty: {cookie_path}")
         failed += 1
     else:

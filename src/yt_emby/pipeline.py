@@ -20,6 +20,7 @@ from yt_emby.config import Settings
 from yt_emby.download import (
     TARGET_HEIGHT,
     YoutubeAuthError,
+    cleanup_stale_staging,
     download_video,
     promote_episode,
     video_height,
@@ -339,6 +340,9 @@ def _run_download(
     *,
     playlist_items: str | None = None,
 ) -> int:
+    stale = cleanup_stale_staging(settings.staging)
+    if stale:
+        _log(settings, f"Removed {stale} leftover staging path(s)")
     _log(settings, f"Listing playlist: {url}")
     if settings.cookiefile:
         _log(settings, f"Using cookies file {settings.cookiefile}")
@@ -473,7 +477,9 @@ def _run_download(
             _log(settings, f"Staging downloads on local disk: {settings.staging}")
         else:
             _log(settings, "Staging downloads in the system temp directory")
-        with tempfile.TemporaryDirectory(prefix="yt-emby-", dir=staging_parent) as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix="yt-emby-", dir=staging_parent, ignore_cleanup_errors=True
+        ) as tmp:
             work = Path(tmp)
             for i, action in enumerate(downloads, start=1):
                 assert action.live is not None and action.new_basename is not None

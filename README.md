@@ -56,6 +56,7 @@ Resolution order (highest wins): **CLI flag → environment variable → config 
 | ffmpeg binary | `--ffmpeg-location` | `YT_EMBY_FFMPEG` | — |
 | Netscape cookies | `--cookies` | `YT_EMBY_COOKIES` | `cookies` |
 | Force metadata refetch | `--force-refetch` | `YT_EMBY_FORCE_REFETCH` | — |
+| Dropout listing timings | `-vv` / `--debug` | `YT_EMBY_DEBUG` | — |
 
 If `--config` / `YT_EMBY_CONFIG` is unset, `config.toml` in the current working directory is loaded when that file exists.
 
@@ -67,7 +68,7 @@ old_dir = "/path/to/old"
 # staging = "/path/to/local/tmp"
 ```
 
-Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and sidecars are copied to `library`. That avoids slow SMB/NFS fragment writes, ffmpeg remux over the share, and Emby scanning half-finished files. Point `staging` at a local SSD if `/tmp` is small.
+Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and subtitle `.srt` files are copied to `library` and the staged files are deleted. Merge temps (`.temp.mkv`) and stream fragments (`.mp4` / `.m4a`) stay in staging and are never copied, so Emby does not pick them up. Point `staging` at a local SSD if `/tmp` is small. Leftover `yt-emby-*` folders in temp/staging from a killed run cannot be resumed (each run uses a new directory) and are deleted the next time you launch.
 
 ## Usage
 
@@ -88,6 +89,7 @@ Progress: by default the CLI logs each step, prints a plan summary, and draws it
 - `--quiet` hides bars and step logs; still prints warnings and a `Done  downloaded=N  skipped=N  failed=N` summary.
 - `--silent` prints errors only.
 - `-v` / `--verbose` (or `YT_EMBY_VERBOSE=1`) prints every yt-dlp message instead of our bars.
+- Dropout `-vv` / `--debug` (or `YT_EMBY_DEBUG=1`) splits listing vs disk timings and does **not** hide progress or dump yt-dlp HTTP.
 
 A run with any failed download exits `1`.
 
@@ -132,7 +134,7 @@ series:
 
 If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`).
 
-Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
+Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. yt-dlp is given a temp copy so it cannot truncate that file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
 
 ```bash
 uv run yt-emby dropout
@@ -141,10 +143,11 @@ uv run yt-emby dropout --force
 uv run yt-emby dropout --series "Dimension 20" --season 28
 uv run yt-emby dropout --create
 uv run yt-emby dropout --quiet
+uv run yt-emby dropout --debug
 uv run yt-emby dropout --force-refetch
 ```
 
-Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{library}/.yt-emby-dropout.json` so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_EMBY_FORCE_REFETCH=1`) to list again. Listing prints the series name, per-season skip/download counts, and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
+Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{manifest}/cache/dropout.json` (next to `dropout.yaml`, not on the library share) so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_EMBY_FORCE_REFETCH=1`) to list again. A leftover `{library}/.yt-emby-dropout.json` is moved there on the next run. Listing prints the series name, per-season skip/download counts, a dim `cached`/`fetch` timing (listing plus one folder scan), and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. `-vv` / `--debug` (or `YT_EMBY_DEBUG=1`) adds the listing-cache path and splits those times (`cached 4ms  disk 1.4s`); it does not dump yt-dlp HTTP and does not hide progress bars. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
 
 Missing Emby series folders are refused unless you pass `--create` (dry-run warns instead). `--series` / `--season` limit the manifest. Expired Dropout cookies abort the run instead of failing every episode.
 

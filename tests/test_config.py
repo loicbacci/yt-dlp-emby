@@ -196,6 +196,47 @@ def test_force_refetch_cli_flag(tmp_path: Path) -> None:
     assert settings.force_refetch is True
 
 
+def test_debug_does_not_hide_progress(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        debug=True,
+        environ={},
+        cwd=tmp_path,
+    )
+    assert settings.debug is True
+    assert settings.verbose is False
+    assert settings.show_progress is True
+
+
+def test_debug_from_env(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={"YT_EMBY_DEBUG": "1"},
+        cwd=tmp_path,
+    )
+    assert settings.debug is True
+    assert settings.show_progress is True
+
+
+def test_verbose_still_hides_progress_with_debug(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        verbose=True,
+        debug=True,
+        environ={},
+        cwd=tmp_path,
+    )
+    assert settings.debug is True
+    assert settings.verbose is True
+    assert settings.show_progress is False
+
+
 def test_no_default_library_path() -> None:
     source = Path("src/yt_emby/config.py").read_text()
     assert "/mnt/nas" not in source
@@ -204,7 +245,7 @@ def test_no_default_library_path() -> None:
 
 def test_cookiefile_from_cwd_cookies_txt(tmp_path: Path) -> None:
     cookies = tmp_path / "cookies.txt"
-    cookies.write_text("# Netscape HTTP Cookie File\n")
+    cookies.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n")
     settings = resolve_settings(
         library="/lib",
         old_dir="/old",
@@ -213,3 +254,18 @@ def test_cookiefile_from_cwd_cookies_txt(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     assert settings.cookiefile == cookies
+
+
+def test_empty_cookiefile_raises(tmp_path: Path) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    with pytest.raises(ConfigError, match="empty"):
+        resolve_settings(
+            library="/lib",
+            old_dir="/old",
+            ffmpeg_location="/usr/bin/ffmpeg",
+            cookiefile=str(cookies),
+            environ={},
+            cwd=tmp_path,
+            auto_cookies=False,
+        )

@@ -9,6 +9,7 @@ from typing import Mapping
 
 import tomllib
 
+from yt_emby.cookies import cookies_file_usable
 from yt_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
 
 __all__ = [
@@ -42,6 +43,7 @@ class Settings:
     quiet: bool = False
     silent: bool = False
     verbose: bool = False
+    debug: bool = False
     staging: Path | None = None
     force_refetch: bool = False
 
@@ -109,6 +111,7 @@ def resolve_settings(
     quiet: bool = False,
     silent: bool = False,
     verbose: bool = False,
+    debug: bool = False,
     staging: str | None = None,
     force_refetch: bool = False,
     environ: Mapping[str, str] | None = None,
@@ -155,6 +158,8 @@ def resolve_settings(
         cookie_path = Path(resolved_cookies)
         if not cookie_path.is_file():
             raise ConfigError(f"Cookies file not found: {cookie_path}")
+        if not cookies_file_usable(cookie_path):
+            raise ConfigError(f"Cookies file is empty: {cookie_path}")
 
     ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
 
@@ -163,6 +168,9 @@ def resolve_settings(
         verbose = env_verbose.lower() in {"1", "true", "yes", "on"}
     if quiet or silent:
         verbose = False
+    if not debug:
+        env_debug = environ.get("YT_EMBY_DEBUG", "")
+        debug = env_debug.lower() in {"1", "true", "yes", "on"}
     if not force_refetch:
         env_refetch = environ.get("YT_EMBY_FORCE_REFETCH", "")
         force_refetch = env_refetch.lower() in {"1", "true", "yes", "on"}
@@ -180,6 +188,7 @@ def resolve_settings(
         quiet=quiet,
         silent=silent,
         verbose=verbose,
+        debug=debug,
         staging=Path(resolved_staging) if resolved_staging else None,
         force_refetch=force_refetch,
     )

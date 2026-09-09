@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from yt_emby.cache import (
+    LEGACY_DROPOUT_CACHE_FILENAME,
+    dropout_cache_path,
     dropout_listings_from_cache,
     dropout_listings_to_cache,
     episode_from_cache,
@@ -8,6 +10,7 @@ from yt_emby.cache import (
     hydrate_playlist,
     load_cache,
     load_dropout_season_cache,
+    migrate_dropout_season_cache,
     save_cache,
     save_dropout_season_cache,
 )
@@ -80,8 +83,7 @@ def test_hydrate_keeps_live_listing_title() -> None:
 
 
 def test_dropout_season_cache_roundtrip(tmp_path: Path) -> None:
-    library = tmp_path / "lib"
-    library.mkdir()
+    path = tmp_path / "cache" / "dropout.json"
     listings = [
         DropoutListing(
             url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
@@ -90,9 +92,59 @@ def test_dropout_season_cache_roundtrip(tmp_path: Path) -> None:
         )
     ]
     page = "https://watch.dropout.tv/x/season:28"
-    save_dropout_season_cache(library, {page: dropout_listings_to_cache(listings)})
-    loaded = load_dropout_season_cache(library)
+    save_dropout_season_cache(path, {page: dropout_listings_to_cache(listings)})
+    loaded = load_dropout_season_cache(path)
     restored = dropout_listings_from_cache(loaded[page])
     assert restored == listings
+    assert path.is_file()
     assert dropout_listings_from_cache([]) is None
     assert dropout_listings_from_cache([{"url": "https://x", "title": "", "dropout_episode": 1}]) is None
+
+
+def test_dropout_cache_path_next_to_manifest(tmp_path: Path) -> None:
+    manifest = tmp_path / "shows" / "dropout.yaml"
+    assert dropout_cache_path(manifest) == tmp_path / "shows" / "cache" / "dropout.json"
+    assert dropout_cache_path(None, cwd=tmp_path) == tmp_path / "cache" / "dropout.json"
+
+
+def test_migrate_dropout_cache_from_library(tmp_path: Path) -> None:
+    library = tmp_path / "lib"
+    library.mkdir()
+    dest = tmp_path / "cache" / "dropout.json"
+    legacy = library / LEGACY_DROPOUT_CACHE_FILENAME
+    listings = [
+        DropoutListing(
+            url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
+            title="Welcome to the Wastes",
+            dropout_episode=1,
+        )
+    ]
+    save_dropout_season_cache(legacy, {"https://x/season:28": dropout_listings_to_cache(listings)})
+    moved = migrate_dropout_season_cache(dest, library)
+    assert moved == legacy
+    assert dest.is_file()
+    assert not legacy.exists()
+    loaded = load_dropout_season_cache(dest)
+    assert dropout_listings_from_cache(loaded["https://x/season:28"]) == listings
+
+
+def test_migrate_dropout_cache_keeps_new_and_removes_legacy(tmp_path: Path) -> None:
+    library = tmp_path / "lib"
+    library.mkdir()
+    dest = tmp_path / "cache" / "dropout.json"
+    dest.parent.mkdir()
+    dest.write_text('{"seasons": {"new": []}}\n', encoding="utf-8")
+    legacy = library / LEGACY_DROPOUT_CACHE_FILENAME
+    legacy.write_text('{"seasons": {"old": []}}\n', encoding="utf-8")
+    moved = migrate_dropout_season_cache(dest, library)
+    assert moved == legacy
+    assert dest.read_text(encoding="utf-8") == '{"seasons": {"new": []}}\n'
+    assert not legacy.exists()
+
+
+def test_migrate_dropout_cache_noop_without_legacy(tmp_path: Path) -> None:
+    library = tmp_path / "lib"
+    library.mkdir()
+    dest = tmp_path / "cache" / "dropout.json"
+    assert migrate_dropout_season_cache(dest, library) is None
+    assert not dest.exists()

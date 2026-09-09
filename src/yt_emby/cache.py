@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from yt_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 CACHE_FILENAME = ".yt-emby-cache.json"
-DROPOUT_CACHE_FILENAME = ".yt-emby-dropout.json"
+DROPOUT_CACHE_DIRNAME = "cache"
+DROPOUT_CACHE_FILENAME = "dropout.json"
+LEGACY_DROPOUT_CACHE_FILENAME = ".yt-emby-dropout.json"
 
 
 def load_cache(series: Path) -> dict[str, dict]:
@@ -83,8 +86,37 @@ def hydrate_playlist(
     )
 
 
-def load_dropout_season_cache(library: Path) -> dict[str, list[dict]]:
-    path = library / DROPOUT_CACHE_FILENAME
+def dropout_cache_path(manifest_path: Path | None = None, *, cwd: Path | None = None) -> Path:
+    """Listing cache next to the manifest, not on the library share."""
+    root = manifest_path.parent if manifest_path is not None else (cwd or Path.cwd())
+    return root / DROPOUT_CACHE_DIRNAME / DROPOUT_CACHE_FILENAME
+
+
+def migrate_dropout_season_cache(dest: Path, library: Path) -> Path | None:
+    """Move `{library}/.yt-emby-dropout.json` next to the manifest.
+
+    If `dest` already exists, the leftover library file is removed and `dest` is kept.
+    Returns the legacy path when it was present.
+    """
+    legacy = library / LEGACY_DROPOUT_CACHE_FILENAME
+    if not legacy.is_file():
+        return None
+    if not dest.is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(legacy), dest)
+        except OSError:
+            dest.write_bytes(legacy.read_bytes())
+            legacy.unlink()
+        return legacy
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+    return legacy
+
+
+def load_dropout_season_cache(path: Path) -> dict[str, list[dict]]:
     if not path.is_file():
         return {}
     try:
@@ -101,11 +133,10 @@ def load_dropout_season_cache(library: Path) -> dict[str, list[dict]]:
     return result
 
 
-def save_dropout_season_cache(library: Path, seasons: dict[str, list[dict]]) -> None:
-    if not library.is_dir():
-        return
+def save_dropout_season_cache(path: Path, seasons: dict[str, list[dict]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"seasons": seasons}
-    (library / DROPOUT_CACHE_FILENAME).write_text(
+    path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )

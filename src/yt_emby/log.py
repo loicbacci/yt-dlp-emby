@@ -98,6 +98,15 @@ def format_duration(seconds: float | None) -> str:
     return f"{secs}s"
 
 
+def format_elapsed(seconds: float) -> str:
+    elapsed = max(0.0, seconds)
+    if elapsed < 1:
+        return f"{int(elapsed * 1000)}ms"
+    if elapsed < 10:
+        return f"{elapsed:.1f}s"
+    return f"{int(elapsed)}s"
+
+
 def format_dry_run_row(action: str, code: str, title: str, folder: str) -> str:
     short = title if len(title) <= 40 else f"{title[:37]}..."
     styled = _ACTION_STYLE.get(action, lambda text: text)(action)

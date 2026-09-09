@@ -8,6 +8,7 @@ from yt_emby.library import (
     episode_stem,
     episode_title_from_filename,
     find_episode_mkv,
+    index_episode_mkvs,
     load_index,
     save_index,
     sanitize_filename,
@@ -55,6 +56,52 @@ def test_find_episode_mkv_matches_code_not_title(tmp_path: Path) -> None:
     found = find_episode_mkv(season, 27, 1)
     assert found == old
     assert find_episode_mkv(season, 27, 2) is None
+
+
+def test_index_episode_mkvs_maps_codes(tmp_path: Path) -> None:
+    season = tmp_path / "Season 27"
+    season.mkdir()
+    first = season / "Dimension 20 - S27E01 - Old Title.mkv"
+    second = season / "Dimension 20 - S27E02 - Next.mkv"
+    first.write_bytes(b"x")
+    second.write_bytes(b"x")
+    indexed = index_episode_mkvs(season)
+    assert indexed[(27, 1)] == first
+    assert indexed[(27, 2)] == second
+    specials = tmp_path / "Specials"
+    specials.mkdir()
+    special = specials / "Dimension 20 - S00E70 - Special.mkv"
+    special.write_bytes(b"x")
+    assert index_episode_mkvs(specials)[(0, 70)] == special
+    assert index_episode_mkvs(tmp_path / "missing") == {}
+
+
+def test_index_episode_mkvs_ignores_temp_mkv(tmp_path: Path) -> None:
+    season = tmp_path / "Season 13"
+    season.mkdir()
+    temp = season / "Dimension 20 - S13E08 - Wallops at Swallop's.temp.mkv"
+    real = season / "Dimension 20 - S13E08 - Wallops at Swallop's.mkv"
+    temp.write_bytes(b"partial")
+    real.write_bytes(b"final")
+    indexed = index_episode_mkvs(season)
+    assert indexed[(13, 8)] == real
+
+
+def test_index_episode_mkvs_keeps_titles_with_periods(tmp_path: Path) -> None:
+    season = tmp_path / "Season 3"
+    season.mkdir()
+    episode = season / "Dimension 20 - S03E17 - Times Squaremageddon Pt. 2.mkv"
+    episode.write_bytes(b"x")
+    assert index_episode_mkvs(season)[(3, 17)] == episode
+
+
+def test_index_episode_mkvs_matches_sxxexx_anywhere(tmp_path: Path) -> None:
+    season = tmp_path / "Season 3"
+    season.mkdir()
+    episode = season / "S03E17 Times Squaremageddon Pt. 2.mkv"
+    episode.write_bytes(b"x")
+    assert index_episode_mkvs(season)[(3, 17)] == episode
+    assert find_episode_mkv(season, 3, 17) == episode
 
 
 def test_assign_season_sticky_then_next() -> None:

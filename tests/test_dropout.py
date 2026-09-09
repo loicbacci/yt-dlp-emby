@@ -46,6 +46,7 @@ def _settings(
     quiet: bool = True,
     silent: bool = False,
     verbose: bool = False,
+    debug: bool = False,
     force_refetch: bool = False,
 ):
     ffmpeg = tmp_path / "ffmpeg"
@@ -59,6 +60,7 @@ def _settings(
         quiet=quiet,
         silent=silent,
         verbose=verbose,
+        debug=debug,
         force_refetch=force_refetch,
         environ={},
         cwd=tmp_path,
@@ -76,6 +78,29 @@ def test_load_manifest_series_url_and_remap(tmp_path: Path) -> None:
     remap = series.seasons[1].remap[0]
     assert remap.to_season == 0
     assert remap.to_episode == 70
+
+
+def test_dropout_manifest_rejects_empty_cookies(tmp_path: Path) -> None:
+    cookies = tmp_path / "dropout-cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+cookies: dropout-cookies.txt
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 28
+        to_season: 27
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="empty"):
+        load_dropout_manifest(path)
 
 
 def test_emby_season_dir_specials(tmp_path: Path) -> None:
@@ -204,6 +229,30 @@ def test_dropout_dry_run_does_not_download(tmp_path: Path) -> None:
     )
     assert calls == []
     assert not (tmp_path / "lib").exists()
+    assert (tmp_path / "cache" / "dropout.json").is_file()
+
+
+def test_dropout_cleans_stale_tmp_on_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leftover = tmp_path / "yt-emby-dropout-killed"
+    leftover.mkdir()
+    (leftover / "partial.temp.mkv").write_bytes(b"x")
+    monkeypatch.setattr("yt_emby.download.tempfile.gettempdir", lambda: str(tmp_path))
+
+    def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
+        return []
+
+    assert (
+        run_dropout(
+            load_dropout_manifest(_write_manifest(tmp_path)),
+            _settings(tmp_path, dry_run=True),
+            extract_fn=fake_extract,
+            download_fn=lambda *_a, **_k: {},
+        )
+        == 0
+    )
+    assert not leftover.exists()
 
 
 def test_extract_dropout_season_omits_youtube_clients() -> None:
@@ -317,6 +366,31 @@ def test_format_season_plan_and_dry_run_row() -> None:
     assert "remap" in line
     assert "4 unmapped" in line
     assert "1 title differs" in line
+    timed = strip_ansi(
+        format_season_plan(
+            mapped,
+            skip=0,
+            download=21,
+            unmapped=0,
+            listing_source="cached",
+            listing_seconds=0.004,
+            disk_seconds=1.4,
+        )
+    )
+    assert timed.endswith("cached  1.4s")
+    debug = strip_ansi(
+        format_season_plan(
+            mapped,
+            skip=0,
+            download=21,
+            unmapped=0,
+            listing_source="cached",
+            listing_seconds=0.004,
+            disk_seconds=1.4,
+            debug=True,
+        )
+    )
+    assert "cached 4ms  disk 1.4s" in debug
     row = format_dry_run_row("download", "S27E01", "Welcome to the Wastes", "Season 27/")
     assert strip_ansi(row).startswith("download")
     assert "S27E01" in row
@@ -361,6 +435,8 @@ def test_dropout_dry_run_prints_table(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "S00E70" in out
     assert "Season 27/" in out
     assert "Specials/" in out
+    assert "fetch" in out
+    assert "listing cache" not in out
     assert "Listing 1/2" not in out
     assert "Listing 2/2" not in out
     assert "Done  dry-run  download=2  skip=0" in out
@@ -662,7 +738,6 @@ def test_dropout_caches_season_listings(tmp_path: Path) -> None:
     from yt_emby.cache import DROPOUT_CACHE_FILENAME, load_dropout_season_cache
 
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
-    (tmp_path / "lib").mkdir()
     calls: list[str] = []
 
     def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
@@ -684,9 +759,10 @@ def test_dropout_caches_season_listings(tmp_path: Path) -> None:
     assert first == 0
     assert second == 0
     assert len(calls) == 2
-    cache_path = tmp_path / "lib" / DROPOUT_CACHE_FILENAME
+    cache_path = tmp_path / "cache" / DROPOUT_CACHE_FILENAME
     assert cache_path.is_file()
-    cached = load_dropout_season_cache(tmp_path / "lib")
+    assert not (tmp_path / "lib" / DROPOUT_CACHE_FILENAME).exists()
+    cached = load_dropout_season_cache(cache_path)
     assert any("season:28" in key for key in cached)
     assert cached[next(key for key in cached if "season:28" in key)][0]["title"] == (
         "Welcome to the Wastes"
@@ -700,6 +776,47 @@ def test_dropout_caches_season_listings(tmp_path: Path) -> None:
         download_fn=lambda *_a, **_k: {"id": "nope"},
     )
     assert len(calls) == 2
+
+
+def test_dropout_migrates_library_listing_cache(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from yt_emby.cache import (
+        LEGACY_DROPOUT_CACHE_FILENAME,
+        dropout_listings_to_cache,
+        save_dropout_season_cache,
+    )
+
+    manifest = load_dropout_manifest(_write_manifest(tmp_path))
+    library = tmp_path / "lib"
+    library.mkdir()
+    series = manifest.series[0]
+    seasons = {
+        season_page_url(series, season): dropout_listings_to_cache(
+            _welcome_extract(season_page_url(series, season))
+        )
+        for season in series.seasons
+    }
+    save_dropout_season_cache(library / LEGACY_DROPOUT_CACHE_FILENAME, seasons)
+    calls: list[str] = []
+
+    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
+        calls.append(url)
+        return _welcome_extract(url)
+
+    run_dropout(
+        manifest,
+        _settings(tmp_path, dry_run=True, quiet=False),
+        extract_fn=fake_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert calls == []
+    assert f"moved listing cache from {library / LEGACY_DROPOUT_CACHE_FILENAME}" in out
+    assert (tmp_path / "cache" / "dropout.json").is_file()
+    assert not (library / LEGACY_DROPOUT_CACHE_FILENAME).exists()
+    assert "cached" in out
+    assert "fetch" not in out
 
 
 def test_dropout_interrupt_returns_130(tmp_path: Path) -> None:
@@ -727,3 +844,103 @@ def test_dropout_interrupt_returns_130(tmp_path: Path) -> None:
         )
         == 130
     )
+
+
+def test_dropout_season_line_shows_cached_after_fetch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = load_dropout_manifest(_write_manifest(tmp_path))
+    run_dropout(
+        manifest,
+        _settings(tmp_path, dry_run=True, quiet=False),
+        extract_fn=_welcome_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    first = strip_ansi(capsys.readouterr().out)
+    assert "fetch" in first
+    assert "cached" not in first
+    assert "disk" not in first
+
+    run_dropout(
+        manifest,
+        _settings(tmp_path, dry_run=True, quiet=False),
+        extract_fn=_welcome_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    second = strip_ansi(capsys.readouterr().out)
+    assert "cached" in second
+    assert "fetch" not in second
+    assert "disk" not in second
+
+
+def test_dropout_debug_splits_cache_and_disk(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = load_dropout_manifest(_write_manifest(tmp_path))
+    run_dropout(
+        manifest,
+        _settings(tmp_path, dry_run=True, quiet=False, debug=True),
+        extract_fn=_welcome_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert f"listing cache  {tmp_path / 'cache' / 'dropout.json'}" in out
+    assert "seasons" in out
+    assert "fetch" in out
+    assert "disk" in out
+
+
+def test_dropout_indexes_each_season_folder_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 28
+        to_season: 27
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    manifest = load_dropout_manifest(path)
+    _seed_episode(tmp_path, "Season 27", "S27E01", "Welcome to the Wastes")
+    _seed_episode(tmp_path, "Season 27", "S27E02", "The Next")
+    from yt_emby import dropout as dropout_mod
+
+    calls: list[Path] = []
+    real = dropout_mod.index_episode_mkvs
+
+    def spy(season: Path) -> dict[tuple[int, int], Path]:
+        calls.append(season)
+        return real(season)
+
+    monkeypatch.setattr(dropout_mod, "index_episode_mkvs", spy)
+
+    def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
+                title="Welcome to the Wastes",
+                dropout_episode=1,
+            ),
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/next",
+                title="The Next",
+                dropout_episode=2,
+            ),
+        ]
+
+    run_dropout(
+        manifest,
+        _settings(tmp_path, dry_run=True),
+        extract_fn=fake_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    assert len(calls) == 1
+    assert calls[0].name == "Season 27"

@@ -9,13 +9,15 @@ from pathlib import Path
 
 from yt_emby.auth import DropoutAuthError, auth_error_from_exception
 from yt_emby.cache import (
+    dropout_cache_path,
     dropout_listings_from_cache,
     dropout_listings_to_cache,
     load_dropout_season_cache,
+    migrate_dropout_season_cache,
     save_dropout_season_cache,
 )
 from yt_emby.config import ConfigError, Settings
-from yt_emby.download import download_video, promote_episode
+from yt_emby.download import cleanup_stale_staging, download_video, promote_episode
 from yt_emby.dropout_manifest import (
     DropoutManifest,
     DropoutSeason,
@@ -27,11 +29,11 @@ from yt_emby.library import (
     emby_code,
     episode_stem,
     episode_title_from_filename,
-    find_episode_mkv,
+    index_episode_mkvs,
     season_folder_name,
     titles_match,
 )
-from yt_emby.log import RunStats, error, format_dry_run_row, info, warn
+from yt_emby.log import RunStats, error, format_dry_run_row, format_elapsed, info, warn
 from yt_emby.progress import DownloadProgress
 from yt_emby.style import bold, dim, green, red, yellow
 from yt_emby.sync import move_episode_files
@@ -68,6 +70,10 @@ def format_season_plan(
     download: int,
     unmapped: int,
     retitled: int = 0,
+    listing_source: str | None = None,
+    listing_seconds: float | None = None,
+    disk_seconds: float | None = None,
+    debug: bool = False,
 ) -> str:
     key = f"season {season.dropout}" if season.dropout is not None else "season"
     dest = season_dest_label(season)
@@ -80,6 +86,16 @@ def format_season_plan(
         line += f"  {red(f'{unmapped} unmapped')}"
     if retitled:
         line += f"  {yellow(f'{retitled} title differs')}"
+    if listing_source is not None and listing_seconds is not None:
+        disk = disk_seconds or 0.0
+        if debug:
+            suffix = (
+                f"{listing_source} {format_elapsed(listing_seconds)}  "
+                f"disk {format_elapsed(disk)}"
+            )
+        else:
+            suffix = f"{listing_source}  {format_elapsed(listing_seconds + disk)}"
+        line += f"  {dim(suffix)}"
     return line
 
 
@@ -191,6 +207,9 @@ def _run_dropout(
     extract_fn,
     download_fn,
 ) -> int:
+    stale = cleanup_stale_staging(settings.staging)
+    if stale:
+        _log(settings, f"Removed {stale} leftover staging path(s)")
     ensure_series_dirs(manifest, settings, create=create)
     if settings.cookiefile:
         _log(settings, f"Using cookies file {settings.cookiefile}")
@@ -202,18 +221,36 @@ def _run_dropout(
         for series in manifest.series
         for season in series.seasons
     ]
-    cached_seasons = load_dropout_season_cache(settings.library)
+    cache_path = dropout_cache_path(manifest.path)
+    cache_started = time.monotonic()
+    moved_from = migrate_dropout_season_cache(cache_path, settings.library)
+    cached_seasons = load_dropout_season_cache(cache_path)
+    cache_load = time.monotonic() - cache_started
+    if moved_from:
+        _note(settings, dim(f"moved listing cache from {moved_from}"))
+    if settings.debug:
+        _note(
+            settings,
+            dim(
+                f"listing cache  {cache_path}  {len(cached_seasons)} seasons  "
+                f"{format_elapsed(cache_load)}"
+            ),
+        )
+    mkv_indexes: dict[Path, dict[tuple[int, int], Path]] = {}
     last_series: str | None = None
     try:
         for series, season in seasons:
             series_path = settings.library / series.path
             page = season_page_url(series, season)
+            listing_started = time.monotonic()
             listings = (
                 None
                 if settings.force_refetch
                 else dropout_listings_from_cache(cached_seasons.get(page))
             )
+            listing_source = "cached"
             if listings is None:
+                listing_source = "fetch"
                 try:
                     listings = extract(
                         page,
@@ -231,11 +268,13 @@ def _run_dropout(
                         raise auth from exc
                     raise
                 cached_seasons[page] = dropout_listings_to_cache(listings)
-                save_dropout_season_cache(settings.library, cached_seasons)
+                save_dropout_season_cache(cache_path, cached_seasons)
+            listing_seconds = time.monotonic() - listing_started
             skip = 0
             queued = 0
             unmapped = 0
             retitled = 0
+            disk_seconds = 0.0
             work_rows: list[tuple[str, str, str, str, str | None]] = []
             for listing in listings:
                 target = resolve_emby_target(listing, season)
@@ -254,7 +293,11 @@ def _run_dropout(
                 to_season, to_episode = target
                 dest_dir = emby_season_dir(series_path, to_season)
                 stem = planned_stem(series, listing, to_season, to_episode)
-                existing = find_episode_mkv(dest_dir, to_season, to_episode)
+                if dest_dir not in mkv_indexes:
+                    disk_started = time.monotonic()
+                    mkv_indexes[dest_dir] = index_episode_mkvs(dest_dir)
+                    disk_seconds += time.monotonic() - disk_started
+                existing = mkv_indexes[dest_dir].get((to_season, to_episode))
                 title_note = None
                 if existing is not None and not titles_match(
                     episode_title_from_filename(existing.name), listing.title
@@ -295,6 +338,10 @@ def _run_dropout(
                     download=queued,
                     unmapped=unmapped,
                     retitled=retitled,
+                    listing_source=listing_source,
+                    listing_seconds=listing_seconds,
+                    disk_seconds=disk_seconds,
+                    debug=settings.debug,
                 ),
             )
             for action, code, title, folder, title_note in work_rows:
@@ -337,7 +384,9 @@ def _run_dropout(
         _log(settings, "Staging downloads in the system temp directory")
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    with tempfile.TemporaryDirectory(prefix="yt-emby-dropout-", dir=staging_parent) as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix="yt-emby-dropout-", dir=staging_parent, ignore_cleanup_errors=True
+    ) as tmp:
         work_dir = Path(tmp)
         for i, (series, listing, to_season, to_episode, dest_dir, stem, existing) in enumerate(
             download_jobs, start=1

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +15,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import extract_attributes, get_elements_html_by_class
 
 from yt_emby.auth import auth_error_from_exception
+from yt_emby.cookies import sandbox_cookiefile
 from yt_emby.progress import ExtractProgress, YtdlpLogger
 
 
@@ -209,8 +211,18 @@ def parse_channel_art(info: dict[str, Any]) -> ChannelArt:
     )
 
 
+@contextmanager
+def _youtube_dl(opts: dict[str, Any]):
+    with sandbox_cookiefile(opts.get("cookiefile")) as cookiefile:
+        run_opts = dict(opts)
+        if cookiefile:
+            run_opts["cookiefile"] = cookiefile
+        with YoutubeDL(run_opts) as ydl:
+            yield ydl
+
+
 def _ydl_extract(url: str, opts: dict[str, Any]) -> dict[str, Any]:
-    with YoutubeDL(opts) as ydl:
+    with _youtube_dl(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info:
         raise ValueError(f"No metadata returned for {url}")
@@ -448,7 +460,7 @@ def _lookup_browse_title(episode_url: str, page_titles: dict[str, str]) -> str:
 
 
 def _ydl_webpage(url: str, opts: dict[str, Any]) -> str:
-    with YoutubeDL(opts) as ydl:
+    with _youtube_dl(opts) as ydl:
         return ydl.urlopen(url).read().decode("utf-8", "replace")
 
 

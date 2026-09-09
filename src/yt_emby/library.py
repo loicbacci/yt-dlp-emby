@@ -9,6 +9,8 @@ from pathlib import Path
 
 INDEX_FILENAME = ".yt-emby.json"
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_EPISODE_CODE = re.compile(r"S(\d{2})E(\d+)", re.I)
+_TEMP_MKV = (".temp.mkv", ".tmp.mkv")
 
 
 @dataclass
@@ -72,15 +74,26 @@ def emby_code(season: int, episode: int) -> str:
     return f"S{season:02d}E{episode:02d}"
 
 
+def index_episode_mkvs(season: Path) -> dict[tuple[int, int], Path]:
+    """Map (season, episode) -> .mkv with one glob of the folder."""
+    found: dict[tuple[int, int], Path] = {}
+    if not season.is_dir():
+        return found
+    for path in sorted(season.glob("*.mkv")):
+        name = path.name.lower()
+        if path.suffix.lower() != ".mkv" or name.endswith(_TEMP_MKV):
+            continue
+        match = _EPISODE_CODE.search(path.name)
+        if not match:
+            continue
+        key = (int(match.group(1)), int(match.group(2)))
+        found.setdefault(key, path)
+    return found
+
+
 def find_episode_mkv(season: Path, season_number: int, episode: int) -> Path | None:
     """Return the .mkv for this SxxExx, even if the title in the filename differs."""
-    if not season.is_dir():
-        return None
-    needle = f" - {emby_code(season_number, episode)} - "
-    matches = [path for path in season.glob("*.mkv") if needle in path.name]
-    if not matches:
-        return None
-    return sorted(matches)[0]
+    return index_episode_mkvs(season).get((season_number, episode))
 
 
 def episode_title_from_filename(name: str) -> str:

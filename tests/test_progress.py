@@ -2,7 +2,7 @@ from io import StringIO
 
 import pytest
 
-from yt_emby.log import format_duration, format_plan_counts, format_run_summary
+from yt_emby.log import format_duration, format_elapsed, format_plan_counts, format_run_summary
 from yt_emby.progress import (
     DownloadProgress,
     format_bytes,
@@ -216,6 +216,10 @@ def test_run_summary_and_plan_counts() -> None:
     assert format_duration(12) == "12s"
     assert format_duration(84) == "1m24s"
     assert format_duration(3725) == "1h02m"
+    assert format_elapsed(0.004) == "4ms"
+    assert format_elapsed(0.012) == "12ms"
+    assert format_elapsed(1.4) == "1.4s"
+    assert format_elapsed(12) == "12s"
     assert "interrupted" in strip_ansi(
         format_run_summary(
             downloaded=2, skipped=5, failed=0, remaining=9, interrupted=True, elapsed=181
