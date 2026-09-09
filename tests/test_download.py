@@ -1,4 +1,5 @@
 from pathlib import Path
+from io import StringIO
 
 import pytest
 
@@ -8,7 +9,7 @@ from yt_emby.download import promote_episode
 
 def test_promote_episode_copies_finished_files_not_partials(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
-    dest_dir = tmp_path / "library" / "Season 01"
+    dest_dir = tmp_path / "library" / "Season 1"
     staging.mkdir()
     dest_dir.mkdir(parents=True)
     stem = "Show - S01E01 - Title"
@@ -33,7 +34,7 @@ def test_promote_episode_succeeds_when_copystat_is_denied(
 
     monkeypatch.setattr("yt_emby.download.shutil.copystat", deny_copystat)
     staging = tmp_path / "staging"
-    dest_dir = tmp_path / "library" / "Season 01"
+    dest_dir = tmp_path / "library" / "Season 1"
     staging.mkdir()
     dest_dir.mkdir(parents=True)
     stem = "Show - S01E01 - Title"
@@ -42,6 +43,19 @@ def test_promote_episode_succeeds_when_copystat_is_denied(
     promote_episode(staging / stem, dest_dir / stem)
 
     assert (dest_dir / f"{stem}.mkv").read_bytes() == b"video"
+
+
+def test_copy_with_progress_writes_chunks(tmp_path: Path) -> None:
+    from yt_emby.progress import DownloadProgress, copy_with_progress
+
+    src = tmp_path / "src.bin"
+    dest = tmp_path / "dest.bin"
+    src.write_bytes(b"x" * 32)
+    stream = StringIO()
+    progress = DownloadProgress(enabled=True, stream=stream, live=True)
+    copy_with_progress(src, dest, progress, min_size=1)
+    assert dest.read_bytes() == src.read_bytes()
+    assert "copy" in stream.getvalue()
 
 
 def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,6 +92,40 @@ def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest
     assert FakeYDL.opts_seen["subtitleslangs"] == ["en"]
     assert "extractor_args" not in FakeYDL.opts_seen
     assert "cookiefile" not in FakeYDL.opts_seen
+
+
+def test_download_video_all_subtitle_langs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from yt_emby.download import download_video
+
+    class FakeYDL:
+        opts_seen: dict = {}
+
+        def __init__(self, opts: dict) -> None:
+            type(self).opts_seen = opts
+
+        def __enter__(self) -> "FakeYDL":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            return {"id": "vid1"}
+
+    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
+    settings = Settings(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        ffmpeg=tmp_path / "ffmpeg",
+        quiet=True,
+    )
+    download_video(
+        "https://watch.dropout.tv/videos/ep",
+        tmp_path / "ep",
+        settings,
+        subtitleslangs=["all"],
+    )
+    assert FakeYDL.opts_seen["subtitleslangs"] == ["all"]
 
 
 def test_download_video_passes_cookiefile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 import tempfile
+import time
 from pathlib import Path
 
 from yt_emby.cache import (
@@ -33,20 +35,23 @@ from yt_emby.extract import (
     with_episode,
 )
 from yt_emby.images import download_image
-from yt_emby.log import info, warn
+from yt_emby.log import RunStats, error, format_dry_run_row, format_plan_counts, info, warn
 from yt_emby.library import (
     EpisodeRecord,
     LibraryIndex,
     PlaylistRecord,
     assign_season,
+    emby_code,
     episode_stem,
     load_index,
     media_exists,
     save_index,
     season_dir,
+    season_folder_name,
     series_dir,
 )
 from yt_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
+from yt_emby.progress import DownloadProgress
 from yt_emby.sync import (
     ActionKind,
     SyncAction,
@@ -226,20 +231,53 @@ def _upgrade_low_res_actions(
             action.old_basename = basename
 
 
-def _print_plan(actions: list[SyncAction], *, quiet: bool) -> None:
-    if quiet:
-        return
+def _print_plan(actions: list[SyncAction], settings: Settings) -> None:
     if not actions:
-        info("nothing to do")
+        _note(settings, "nothing to do")
         return
-    for action in actions:
-        target = action.new_basename or action.old_basename or action.video_id
-        info(f"{action.kind.value}: {target}")
+    if settings.show_steps:
+        for action in actions:
+            code = emby_code(action.season, action.episode or 0)
+            if action.live is not None:
+                title = action.live.title
+            elif action.stored is not None:
+                title = action.stored.title
+            else:
+                title = action.video_id
+            info(
+                format_dry_run_row(
+                    action.kind.value,
+                    code,
+                    title,
+                    f"{season_folder_name(action.season)}/",
+                )
+            )
+    counts = Counter(action.kind.value for action in actions)
+    _note(settings, format_plan_counts(counts))
 
 
 def _log(settings: Settings, message: str) -> None:
-    if not settings.quiet:
+    if settings.show_steps:
         info(message)
+
+
+def _note(settings: Settings, message: str) -> None:
+    if settings.show_summary:
+        info(message)
+
+
+def _warn(settings: Settings, message: str) -> None:
+    if settings.show_warnings:
+        warn(message)
+
+
+def _finish(settings: Settings, stats: RunStats) -> int:
+    if settings.show_summary:
+        stats.recap()
+        info(stats.summary())
+    if stats.interrupted:
+        return 130
+    return 1 if stats.failed else 0
 
 
 def _keep_listing(listing: EpisodeInfo, fetched: EpisodeInfo) -> EpisodeInfo:
@@ -266,6 +304,7 @@ def _resolve_episode(
         cookies_from_browser=settings.cookies_from_browser,
         cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
         verbose=settings.verbose,
+        emit_warnings=settings.show_warnings,
     )
     return _keep_listing(episode, resolved)
 
@@ -277,17 +316,47 @@ def run_download(
     *,
     playlist_items: str | None = None,
 ) -> int:
+    stats = RunStats(dry_run=settings.dry_run)
+    try:
+        return _run_download(
+            url,
+            settings,
+            stats,
+            format_selector=format_selector,
+            playlist_items=playlist_items,
+        )
+    except KeyboardInterrupt:
+        stats.interrupted = True
+        error("interrupted")
+        return _finish(settings, stats)
+
+
+def _run_download(
+    url: str,
+    settings: Settings,
+    stats: RunStats,
+    format_selector: str | None = None,
+    *,
+    playlist_items: str | None = None,
+) -> int:
     _log(settings, f"Listing playlist: {url}")
     if settings.cookiefile:
         _log(settings, f"Using cookies file {settings.cookiefile}")
-    playlist = extract_playlist(
-        url,
-        playlist_items=playlist_items,
-        cookies_from_browser=settings.cookies_from_browser,
-        cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
-        progress=not settings.quiet and not settings.verbose,
-        verbose=settings.verbose,
-    )
+    try:
+        playlist = extract_playlist(
+            url,
+            playlist_items=playlist_items,
+            cookies_from_browser=settings.cookies_from_browser,
+            cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
+            progress=settings.show_progress,
+            verbose=settings.verbose,
+            emit_warnings=settings.show_warnings,
+        )
+    except YoutubeAuthError as exc:
+        error(str(exc))
+        stats.failed += 1
+        stats.failures.append(("listing", str(exc)))
+        return _finish(settings, stats)
     _log(
         settings,
         f"Found {len(playlist.episodes)} video(s) in "
@@ -301,11 +370,12 @@ def run_download(
                 playlist.channel_id,
                 cookies_from_browser=settings.cookies_from_browser,
                 cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
-                progress=not settings.quiet and not settings.verbose,
+                progress=settings.show_progress,
                 verbose=settings.verbose,
+                emit_warnings=settings.show_warnings,
             )
         except Exception as exc:  # noqa: BLE001 — channel art is optional
-            warn(f"could not fetch channel artwork: {exc}")
+            _warn(settings, f"could not fetch channel artwork: {exc}")
 
     series = series_dir(settings.library, playlist.channel)
     cache = load_cache(series)
@@ -322,10 +392,22 @@ def run_download(
 
     _log(settings, f"series={series}")
     _log(settings, f"season={season_number} ({playlist.title})")
-    _print_plan(actions, quiet=settings.quiet)
+    _print_plan(actions, settings)
 
+    planned_downloads = [
+        action
+        for action in actions
+        if action.kind in {ActionKind.ADD, ActionKind.REPLACE}
+    ]
+    planned_skips = [
+        action
+        for action in actions
+        if action.kind in {ActionKind.REFRESH, ActionKind.RENAME}
+    ]
     if settings.dry_run:
-        return 0
+        stats.downloaded = len(planned_downloads)
+        stats.skipped = len(planned_skips)
+        return _finish(settings, stats)
 
     series.mkdir(parents=True, exist_ok=True)
     season_path.mkdir(parents=True, exist_ok=True)
@@ -385,6 +467,7 @@ def run_download(
     ]
     staging_parent = str(settings.staging) if settings.staging else None
     if downloads:
+        _log(settings, f"Downloading {len(downloads)} of {len(playlist.episodes)} episodes")
         if settings.staging:
             settings.staging.mkdir(parents=True, exist_ok=True)
             _log(settings, f"Staging downloads on local disk: {settings.staging}")
@@ -411,6 +494,7 @@ def run_download(
                         )
                     else:
                         _log(settings, f"[{i}/{len(downloads)}] Skipping existing {action.new_basename}")
+                        stats.skipped += 1
                         episode = (
                             episode_from_cache(action.live, cache[action.live.video_id])
                             if action.live.video_id in cache
@@ -420,22 +504,38 @@ def run_download(
                             series, season_path, playlist, index, season_number, episode, cache
                         )
                         continue
-                _log(settings, f"[{i}/{len(downloads)}] Downloading {action.new_basename}")
+                eta = stats.eta(len(downloads) - i)
+                extra = f"  ETA {eta}" if eta else ""
+                _log(
+                    settings,
+                    f"[{i}/{len(downloads)}] Downloading {action.new_basename}{extra}",
+                )
+                started = time.monotonic()
                 try:
                     info_dict = download_video(
                         video_url, local_stem, settings, format_selector=format_selector
                     )
                 except YoutubeAuthError as exc:
-                    warn(str(exc))
-                    return 1
+                    error(str(exc))
+                    stats.failed += 1
+                    stats.failures.append((action.new_basename, str(exc)))
+                    stats.remaining = len(downloads) - i
+                    return _finish(settings, stats)
                 except Exception as exc:
-                    warn(f"download failed for {action.new_basename}: {exc}")
+                    error(f"download failed for {action.new_basename}: {exc}")
+                    stats.failed += 1
+                    stats.failures.append((action.new_basename, str(exc)))
                     continue
                 if not info_dict.get("id"):
-                    warn(f"download returned no metadata for {action.new_basename}")
+                    error(f"download returned no metadata for {action.new_basename}")
+                    stats.failed += 1
+                    stats.failures.append((action.new_basename, "download returned no metadata"))
                     continue
                 _log(settings, f"[{i}/{len(downloads)}] Copying to library")
-                promote_episode(local_stem, dest)
+                copy_progress = DownloadProgress(enabled=settings.show_progress)
+                promote_episode(local_stem, dest, copy_progress)
+                stats.mark_download(time.monotonic() - started)
+                stats.downloaded += 1
                 episode = _keep_listing(
                     action.live,
                     episode_from_info(info_dict, action.live.playlist_index),
@@ -458,5 +558,5 @@ def run_download(
 
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     save_index(series, index)
-    _log(settings, "Done")
-    return 0
+    stats.skipped += len(sidecars)
+    return _finish(settings, stats)

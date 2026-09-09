@@ -1,13 +1,17 @@
 from pathlib import Path
 
 from yt_emby.cache import (
+    dropout_listings_from_cache,
+    dropout_listings_to_cache,
     episode_from_cache,
     episode_to_cache,
     hydrate_playlist,
     load_cache,
+    load_dropout_season_cache,
     save_cache,
+    save_dropout_season_cache,
 )
-from yt_emby.extract import EpisodeInfo, PlaylistInfo
+from yt_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 
 def _listing(**kwargs: object) -> EpisodeInfo:
@@ -73,3 +77,22 @@ def test_hydrate_keeps_live_listing_title() -> None:
     hydrated = hydrate_playlist(playlist, cache, force_refetch=False)
     assert hydrated.episodes[0].title == "Intro"
     assert hydrated.episodes[0].description == "From cache"
+
+
+def test_dropout_season_cache_roundtrip(tmp_path: Path) -> None:
+    library = tmp_path / "lib"
+    library.mkdir()
+    listings = [
+        DropoutListing(
+            url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
+            title="Welcome to the Wastes",
+            dropout_episode=1,
+        )
+    ]
+    page = "https://watch.dropout.tv/x/season:28"
+    save_dropout_season_cache(library, {page: dropout_listings_to_cache(listings)})
+    loaded = load_dropout_season_cache(library)
+    restored = dropout_listings_from_cache(loaded[page])
+    assert restored == listings
+    assert dropout_listings_from_cache([]) is None
+    assert dropout_listings_from_cache([{"url": "https://x", "title": "", "dropout_episode": 1}]) is None

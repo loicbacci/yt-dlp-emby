@@ -1,14 +1,20 @@
 from io import StringIO
 
+import pytest
+
+from yt_emby.log import format_duration, format_plan_counts, format_run_summary
 from yt_emby.progress import (
     DownloadProgress,
     format_bytes,
+    format_copy_line,
     format_extract_line,
     format_progress_line,
     parse_playlist_item,
     render_bar,
+    stream_label,
     strip_ansi,
 )
+from yt_emby.style import visible_len
 
 
 def test_render_bar_is_fixed_width() -> None:
@@ -16,6 +22,11 @@ def test_render_bar_is_fixed_width() -> None:
     assert len(bar) == 10
     assert bar.startswith("#")
     assert "-" in bar
+    fancy = render_bar(50, width=10, fancy=True, color=True)
+    assert visible_len(fancy) == 10
+    assert "█" in fancy
+    assert "░" in fancy
+    assert "\033[" in fancy
 
 
 def test_format_bytes() -> None:
@@ -51,9 +62,40 @@ def test_progress_line_without_total() -> None:
     assert "KiB" in line
 
 
+def test_progress_line_includes_stream_label() -> None:
+    line = format_progress_line(
+        {
+            "downloaded_bytes": 50,
+            "total_bytes": 100,
+            "speed": 1024,
+            "eta": 1,
+        },
+        label="video",
+    )
+    assert line.startswith("video  ")
+    assert "50.0%" in line
+
+
+def test_stream_label_video_audio_subs() -> None:
+    assert (
+        stream_label({"info_dict": {"vcodec": "avc1", "acodec": "none"}}) == "video"
+    )
+    assert (
+        stream_label({"info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"}}) == "audio"
+    )
+    assert stream_label({"filename": "ep.en.srt", "info_dict": {"language": "en"}}) == "en.srt"
+    assert stream_label({"filename": "ep.mkv"}) == "download"
+
+
+def test_format_copy_line() -> None:
+    line = format_copy_line(50 * 1024 * 1024, 100 * 1024 * 1024, width=10)
+    assert line.startswith("copy  ")
+    assert "50.0%" in line
+
+
 def test_progress_hook_writes_carriage_return() -> None:
     stream = StringIO()
-    bar = DownloadProgress(enabled=True, stream=stream)
+    bar = DownloadProgress(enabled=True, stream=stream, live=True)
     bar.hook(
         {
             "status": "downloading",
@@ -61,14 +103,40 @@ def test_progress_hook_writes_carriage_return() -> None:
             "total_bytes": 100,
             "speed": 1024,
             "eta": 1,
+            "info_dict": {"vcodec": "avc1", "acodec": "none"},
         }
     )
     output = stream.getvalue()
     assert output.startswith("\r")
+    assert "video" in output
     assert "50.0%" in output
-    bar.hook({"status": "finished"})
+    bar.hook(
+        {
+            "status": "finished",
+            "info_dict": {"vcodec": "avc1", "acodec": "none"},
+        }
+    )
+    assert "video  complete" in stream.getvalue()
+    bar.close()
+    assert stream.getvalue().endswith("\n")
+
+
+def test_progress_non_tty_writes_newlines() -> None:
+    stream = StringIO()
+    bar = DownloadProgress(enabled=True, stream=stream, live=False)
+    bar.hook(
+        {
+            "status": "downloading",
+            "downloaded_bytes": 50,
+            "total_bytes": 100,
+            "speed": 1024,
+            "eta": 1,
+            "info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"},
+        }
+    )
     output = stream.getvalue()
-    assert "Download complete" in output
+    assert "\r" not in output
+    assert "audio" in output
     assert output.endswith("\n")
 
 
@@ -84,16 +152,18 @@ def test_extract_line() -> None:
     line = format_extract_line(12, 121, width=10)
     assert "12/121" in line
     assert "Listing playlist" in line
+    season = format_extract_line(3, 8, width=10, listing="season")
+    assert "Listing season" in season
 
 
 def test_ytdlp_logger_updates_extract_progress() -> None:
     from yt_emby.progress import ExtractProgress, YtdlpLogger
 
     stream = StringIO()
-    display = ExtractProgress(enabled=True, stream=stream)
+    display = ExtractProgress(enabled=True, stream=stream, live=True)
     logger = YtdlpLogger(display)
     logger.debug("Extracting URL: https://www.youtube.com/playlist?list=x")
-    assert "Connecting" in stream.getvalue()
+    assert "Connecting to YouTube" in stream.getvalue()
     assert "(0s)" in stream.getvalue()
     logger.debug("[youtube] abc: Downloading webpage")
     assert "playlist page" in stream.getvalue()
@@ -103,3 +173,51 @@ def test_ytdlp_logger_updates_extract_progress() -> None:
     assert stream.getvalue().count("4/20") >= 1
     logger.debug("[debug] ignored")
 
+
+def test_ytdlp_logger_emits_warnings(capsys: pytest.CaptureFixture[str]) -> None:
+    from yt_emby.progress import ExtractProgress, YtdlpLogger
+
+    logger = YtdlpLogger(ExtractProgress(enabled=False), emit_warnings=True, emit_errors=True)
+    logger.warning("HTTP Error 403: Forbidden")
+    logger.error("Unable to download webpage")
+    err = capsys.readouterr().err
+    assert "warning: HTTP Error 403: Forbidden" in strip_ansi(err)
+    assert "error: Unable to download webpage" in strip_ansi(err)
+    assert logger.warnings == ["HTTP Error 403: Forbidden"]
+    assert logger.errors == ["Unable to download webpage"]
+
+
+def test_ytdlp_logger_dropout_site() -> None:
+    from yt_emby.progress import ExtractProgress, YtdlpLogger
+
+    stream = StringIO()
+    display = ExtractProgress(
+        enabled=True, stream=stream, live=True, listing="season", site="Dropout"
+    )
+    logger = YtdlpLogger(display)
+    logger.debug("Extracting URL: https://watch.dropout.tv/x/season:1")
+    assert "Connecting to Dropout" in stream.getvalue()
+    assert "YouTube" not in stream.getvalue()
+    logger.debug("[dropout] Downloading webpage")
+    assert "season page" in stream.getvalue()
+    logger.debug("[download] Downloading item 2 of 9")
+    assert "Listing season" in stream.getvalue()
+
+
+def test_run_summary_and_plan_counts() -> None:
+    assert strip_ansi(format_run_summary(downloaded=3, skipped=12, failed=1)) == (
+        "Done  downloaded=3  skipped=12  failed=1"
+    )
+    assert strip_ansi(format_run_summary(downloaded=3, skipped=12, dry_run=True)) == (
+        "Done  dry-run  download=3  skip=12"
+    )
+    assert strip_ansi(format_plan_counts({"add": 12, "refresh": 3})) == "12 add  3 refresh"
+    assert format_plan_counts({}) == "nothing to do"
+    assert format_duration(12) == "12s"
+    assert format_duration(84) == "1m24s"
+    assert format_duration(3725) == "1h02m"
+    assert "interrupted" in strip_ansi(
+        format_run_summary(
+            downloaded=2, skipped=5, failed=0, remaining=9, interrupted=True, elapsed=181
+        )
+    )

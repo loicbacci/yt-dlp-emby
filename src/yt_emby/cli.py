@@ -5,50 +5,116 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pathlib import Path
+
 from yt_emby.config import ConfigError, Settings, resolve_settings
-from yt_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
+from yt_emby.ffmpeg import FFmpegNotFoundError
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="yt-emby",
-        description="Download YouTube playlists with yt-dlp and write Emby NFO metadata.",
+def _add_verbosity(parser: argparse.ArgumentParser) -> None:
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Hide progress bars and step logs; still print warnings and the run summary",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    doctor = sub.add_parser("doctor", help="Check that ffmpeg is available")
-    doctor.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
-
-    download = sub.add_parser("download", help="Download a playlist or video and write NFO files")
-    download.add_argument("url", help="YouTube playlist or video URL")
-    download.add_argument("--library", help="Emby library root directory")
-    download.add_argument("--old-dir", help="Directory for replaced or removed files")
-    download.add_argument("--config", help="Path to a TOML config file")
-    download.add_argument("--season", type=int, help="Force season number for this playlist")
-    download.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
-    verbosity = download.add_mutually_exclusive_group()
-    verbosity.add_argument("--quiet", action="store_true", help="Hide progress bars and extra logs")
+    verbosity.add_argument(
+        "--silent",
+        action="store_true",
+        help="Hide everything except errors",
+    )
     verbosity.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Print all yt-dlp messages (extractor, HTTP, warnings)",
     )
-    download.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
-    download.add_argument(
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="yt-emby",
+        description="Download YouTube or Dropout.tv videos with yt-dlp for Emby.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    doctor = sub.add_parser("doctor", help="Check ffmpeg, Node, cookies, staging, and disk space")
+    doctor.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
+    doctor.add_argument("--cookies", help="Netscape cookies.txt to verify")
+    doctor.add_argument("--staging", help="Local staging directory to verify (writable + free space)")
+    doctor.add_argument("--library", help="Library directory to verify (exists + free space)")
+
+    youtube = sub.add_parser("youtube", help="Download a YouTube playlist or video and write NFO files")
+    youtube.add_argument("url", help="YouTube playlist or video URL")
+    youtube.add_argument("--library", help="Emby library root directory")
+    youtube.add_argument("--old-dir", help="Directory for replaced or removed files")
+    youtube.add_argument("--config", help="Path to a TOML config file")
+    youtube.add_argument("--season", type=int, help="Force season number for this playlist")
+    youtube.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
+    _add_verbosity(youtube)
+    youtube.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
+    youtube.add_argument(
         "--cookies",
         help="Netscape cookies.txt for YouTube (default: cookies.txt in the current directory if that file exists)",
     )
-    download.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
-    download.add_argument(
+    youtube.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
+    youtube.add_argument(
         "--staging",
         help="Local directory for in-progress downloads (recommended on SMB/NFS). Defaults to the system temp dir.",
     )
-    download.add_argument("--format", help="yt-dlp format selector override")
-    download.add_argument(
+    youtube.add_argument("--format", help="yt-dlp format selector override")
+    youtube.add_argument(
         "--force-refetch",
         action="store_true",
         help="Ignore cached video metadata and fetch it again (playlist listing still runs first)",
+    )
+
+    dropout = sub.add_parser("dropout", help="Download Dropout.tv seasons into an existing Emby/TVDB library")
+    dropout.add_argument(
+        "--manifest",
+        help="Path to dropout.yaml (default: dropout.yaml in the current directory if that file exists)",
+    )
+    dropout.add_argument("--library", help="Emby library root directory (overrides manifest)")
+    dropout.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
+    dropout.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
+    dropout.add_argument(
+        "--force",
+        action="store_true",
+        help="Redownload even when the destination .mkv already exists",
+    )
+    dropout.add_argument(
+        "--series",
+        action="append",
+        dest="series_filter",
+        metavar="NAME",
+        help="Only this series name or folder (repeatable)",
+    )
+    dropout.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        dest="season_filter",
+        metavar="N",
+        help="Only this Dropout season number (repeatable)",
+    )
+    dropout.add_argument(
+        "--create",
+        action="store_true",
+        help="Create missing Emby series folders instead of refusing",
+    )
+    _add_verbosity(dropout)
+    dropout.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
+    dropout.add_argument("--cookies", help="Netscape cookies.txt for Dropout (overrides manifest)")
+    dropout.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
+    dropout.add_argument(
+        "--staging",
+        help="Local directory for in-progress downloads. Defaults to the system temp dir.",
+    )
+    dropout.add_argument("--format", help="yt-dlp format selector override")
+    dropout.add_argument(
+        "--force-refetch",
+        action="store_true",
+        help="Ignore cached Dropout season listings and fetch them again",
     )
     return parser
 
@@ -64,20 +130,22 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         cookiefile=getattr(args, "cookies", None),
         dry_run=bool(getattr(args, "dry_run", False)),
         quiet=bool(getattr(args, "quiet", False)),
+        silent=bool(getattr(args, "silent", False)),
         verbose=bool(getattr(args, "verbose", False)),
         staging=getattr(args, "staging", None),
         force_refetch=bool(getattr(args, "force_refetch", False)),
     )
 
 
-def run_doctor(ffmpeg_location: str | None = None) -> int:
-    try:
-        path = find_ffmpeg(ffmpeg_location, environ=__import__("os").environ)
-    except FFmpegNotFoundError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-    print(f"ffmpeg: {path}")
-    return 0
+def run_doctor(args: argparse.Namespace) -> int:
+    from yt_emby.doctor import run_doctor as doctor_run
+
+    return doctor_run(
+        ffmpeg_location=getattr(args, "ffmpeg_location", None),
+        cookies=getattr(args, "cookies", None),
+        staging=getattr(args, "staging", None),
+        library=getattr(args, "library", None),
+    )
 
 
 def run_download(args: argparse.Namespace) -> int:
@@ -92,16 +160,75 @@ def run_download(args: argparse.Namespace) -> int:
     return pipeline_download(args.url, settings, format_selector=getattr(args, "format", None))
 
 
+def _dropout_manifest_path(args: argparse.Namespace) -> Path:
+    if args.manifest:
+        return Path(args.manifest)
+    default = Path.cwd() / "dropout.yaml"
+    if default.is_file():
+        return default
+    raise ConfigError(
+        "Missing Dropout manifest. Pass --manifest or put dropout.yaml in the current directory."
+    )
+
+
+def run_dropout(args: argparse.Namespace) -> int:
+    from yt_emby.dropout import run_dropout as pipeline_dropout
+    from yt_emby.dropout_manifest import load_dropout_manifest
+
+    try:
+        manifest = load_dropout_manifest(_dropout_manifest_path(args))
+        from yt_emby.dropout_manifest import filter_dropout_manifest
+
+        manifest = filter_dropout_manifest(
+            manifest,
+            series_names=getattr(args, "series_filter", None),
+            dropout_seasons=getattr(args, "season_filter", None),
+        )
+        settings = resolve_settings(
+            library=getattr(args, "library", None) or str(manifest.library),
+            old_dir=getattr(args, "old_dir", None) or str(manifest.old_dir),
+            ffmpeg_location=getattr(args, "ffmpeg_location", None),
+            cookies_from_browser=getattr(args, "cookies_from_browser", None),
+            cookiefile=getattr(args, "cookies", None)
+            or (str(manifest.cookies) if manifest.cookies else None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            quiet=bool(getattr(args, "quiet", False)),
+            silent=bool(getattr(args, "silent", False)),
+            verbose=bool(getattr(args, "verbose", False)),
+            staging=getattr(args, "staging", None)
+            or (str(manifest.staging) if manifest.staging else None),
+            force_refetch=bool(getattr(args, "force_refetch", False)),
+            use_default_config=False,
+            auto_cookies=False,
+        )
+        return pipeline_dropout(
+            manifest,
+            settings,
+            force=bool(getattr(args, "force", False)),
+            create=bool(getattr(args, "create", False)),
+            format_selector=getattr(args, "format", None),
+        )
+    except (ConfigError, FFmpegNotFoundError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "doctor":
-        code = run_doctor(args.ffmpeg_location)
-    elif args.command == "download":
-        code = run_download(args)
-    else:
-        parser.error(f"unknown command {args.command}")
-        return
+    try:
+        if args.command == "doctor":
+            code = run_doctor(args)
+        elif args.command == "youtube":
+            code = run_download(args)
+        elif args.command == "dropout":
+            code = run_dropout(args)
+        else:
+            parser.error(f"unknown command {args.command}")
+            return
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr, flush=True)
+        raise SystemExit(130) from None
     raise SystemExit(code)
 
 

@@ -2,7 +2,7 @@
 
 **This project was vibe-coded using Cursor.**
 
-Download YouTube playlists with [yt-dlp](https://github.com/yt-dlp/yt-dlp) and write Emby-compatible NFO files and artwork so the result can be added as a TV library without TMDB or TVDB.
+Download YouTube playlists or Dropout.tv seasons with [yt-dlp](https://github.com/yt-dlp/yt-dlp). YouTube gets Emby NFO and artwork (no TMDB/TVDB). Dropout writes into an existing TVDB/TMDB library with no NFO.
 
 ## Mapping
 
@@ -36,7 +36,10 @@ FFmpeg is an external program invoked by yt-dlp to merge and remux. It is **not*
 ```bash
 uv sync
 uv run yt-emby doctor
+uv run yt-emby doctor --cookies cookies.txt --staging /var/tmp/yt-emby --library /mnt/nas-video/Youtube
 ```
+
+`doctor` checks ffmpeg, Node (for YouTube JS), cookies, that staging is writable, and free space on staging/library/temp.
 
 ## Configuration
 
@@ -69,17 +72,24 @@ Downloads always happen on **local disk** first (system temp, or `staging` if yo
 ## Usage
 
 ```bash
-uv run yt-emby download "https://www.youtube.com/playlist?list=PLAYLIST_ID"
-uv run yt-emby download URL --library /path/to/library --old-dir /path/to/old
-uv run yt-emby download URL --season 1 --dry-run
-uv run yt-emby download URL --cookies-from-browser firefox
-uv run yt-emby download URL --cookies cookies.txt
-uv run yt-emby download URL --quiet
-uv run yt-emby download URL --verbose
-uv run yt-emby download URL --force-refetch
+uv run yt-emby youtube "https://www.youtube.com/playlist?list=PLAYLIST_ID"
+uv run yt-emby youtube URL --library /path/to/library --old-dir /path/to/old
+uv run yt-emby youtube URL --season 1 --dry-run
+uv run yt-emby youtube URL --cookies-from-browser firefox
+uv run yt-emby youtube URL --cookies cookies.txt
+uv run yt-emby youtube URL --quiet
+uv run yt-emby youtube URL --silent
+uv run yt-emby youtube URL --verbose
+uv run yt-emby youtube URL --force-refetch
 ```
 
-Progress: by default the CLI logs each step and draws its own bars while listing the playlist (`12/121`) and downloading video. yt-dlp's own output is silenced. Pass `--quiet` to hide ours, or `-v` / `--verbose` (or `YT_EMBY_VERBOSE=1`) to print every yt-dlp message instead.
+Progress: by default the CLI logs each step, prints a plan summary, and draws its own bars while listing and downloading. Bars are TTY-only (piped output gets occasional one-line updates). Download bars are labeled by stream (`video`, `audio`, `en.srt`, `remux`); large library copies show a `copy` bar. yt-dlp's own output is silenced.
+
+- `--quiet` hides bars and step logs; still prints warnings and a `Done  downloaded=N  skipped=N  failed=N` summary.
+- `--silent` prints errors only.
+- `-v` / `--verbose` (or `YT_EMBY_VERBOSE=1`) prints every yt-dlp message instead of our bars.
+
+A run with any failed download exits `1`.
 
 Playlist listing is a fast ID/title/order pass. Full per-video metadata (description, dates, duration) is filled from `{series}/.yt-emby-cache.json` when present, or from the download itself for new episodes. Existing episodes are not re-extracted unless you pass `--force-refetch` (or `YT_EMBY_FORCE_REFETCH=1`). That flag still lists the playlist first; it does not wait to fetch every video before the first download.
 
@@ -97,7 +107,48 @@ Defaults:
 
 NFO files include `<lockdata>true</lockdata>` and YouTube IDs only. Do not add TMDB/TVDB IDs in folder names.
 
-Layout:
+## Dropout
+
+Dropout shows already have TVDB/TMDB entries, so this command does **not** write NFO or artwork. Copy [`dropout.yaml.example`](dropout.yaml.example) to `dropout.yaml` (gitignored). List each Dropout season you want; yt-dlp lists the episodes. A series URL is only a base slug — yt-dlp treats it as season 1 if you omit `/season:N`.
+
+```yaml
+library: /mnt/nas-video/Dropout
+old_dir: /mnt/nas-video/_old
+cookies: dropout-cookies.txt
+
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 28
+        to_season: 27
+      - dropout: 29
+        remap:
+          - dropout_episode: 1
+            to_season: 0
+            to_episode: 70
+```
+
+If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`).
+
+Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
+
+```bash
+uv run yt-emby dropout
+uv run yt-emby dropout --manifest dropout.yaml --dry-run
+uv run yt-emby dropout --force
+uv run yt-emby dropout --series "Dimension 20" --season 28
+uv run yt-emby dropout --create
+uv run yt-emby dropout --quiet
+uv run yt-emby dropout --force-refetch
+```
+
+Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{library}/.yt-emby-dropout.json` so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_EMBY_FORCE_REFETCH=1`) to list again. Listing prints the series name, per-season skip/download counts, and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
+
+Missing Emby series folders are refused unless you pass `--create` (dry-run warns instead). `--series` / `--season` limit the manifest. Expired Dropout cookies abort the run instead of failing every episode.
+
+## YouTube library layout
 
 ```text
 {library}/
@@ -106,7 +157,7 @@ Layout:
     poster.jpg
     fanart.jpg
     season01-poster.jpg
-    Season 01/
+    Season 1/
       season.nfo
       poster.jpg
       {Channel Name} - S01E01 - Episode Title.mkv
@@ -131,4 +182,5 @@ Third-party:
 
 - yt-dlp — Unlicense
 - Pillow — HPND
+- PyYAML — MIT
 - FFmpeg — **not distributed**; install separately (LGPL/GPL)

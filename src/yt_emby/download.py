@@ -9,23 +9,15 @@ from typing import Any
 
 from yt_dlp import YoutubeDL
 
+from yt_emby.auth import YoutubeAuthError, auth_error_from_exception
 from yt_emby.config import Settings
 from yt_emby.extract import js_runtime_opts
-from yt_emby.progress import DownloadProgress
+from yt_emby.progress import DownloadProgress, copy_with_progress
 
 DEFAULT_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/bv+ba/b"
 LOW_RES_FORMAT = "worst[height<=144]/worst"
 TARGET_HEIGHT = 1080
 _SKIP_SUFFIXES = (".part", ".ytdl", ".temp")
-
-YOUTUBE_COOKIES_HELP = (
-    "YouTube blocked the download (sign in to confirm you are not a bot). "
-    "Put a Netscape cookies.txt next to the command, or pass --cookies / --cookies-from-browser firefox."
-)
-
-
-class YoutubeAuthError(RuntimeError):
-    """YouTube required cookies / login to continue."""
 
 
 def video_height(path: Path, ffmpeg: Path) -> int | None:
@@ -66,16 +58,26 @@ def video_height(path: Path, ffmpeg: Path) -> int | None:
         return None
 
 
-def copy_to_library(src: Path, dest: Path) -> None:
+def copy_to_library(
+    src: Path,
+    dest: Path,
+    progress: DownloadProgress | None = None,
+    *,
+    label: str = "copy",
+) -> None:
     """Copy file bytes. Ignore CIFS failures when preserving timestamps/mode."""
-    shutil.copyfile(src, dest)
+    copy_with_progress(src, dest, progress, label=label)
     try:
         shutil.copystat(src, dest)
     except OSError:
         return
 
 
-def promote_episode(src_stem: Path, dest_stem: Path) -> None:
+def promote_episode(
+    src_stem: Path,
+    dest_stem: Path,
+    progress: DownloadProgress | None = None,
+) -> None:
     """Copy finished episode files from local staging onto the library path."""
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
     stem = src_stem.name
@@ -89,7 +91,15 @@ def promote_episode(src_stem: Path, dest_stem: Path) -> None:
             continue
         if rest.endswith(_SKIP_SUFFIXES):
             continue
-        copy_to_library(path, dest_stem.parent / f"{dest_stem.name}{rest}")
+        label = "copy" if rest == ".mkv" else rest.lstrip(".-") or "copy"
+        copy_to_library(
+            path,
+            dest_stem.parent / f"{dest_stem.name}{rest}",
+            progress,
+            label=label,
+        )
+    if progress is not None:
+        progress.close()
 
 
 def download_video(
@@ -98,17 +108,17 @@ def download_video(
     settings: Settings,
     *,
     format_selector: str | None = None,
+    subtitleslangs: list[str] | None = None,
 ) -> dict[str, Any]:
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
-    use_our_bar = not settings.quiet and not settings.verbose
-    progress = DownloadProgress(enabled=use_our_bar)
+    progress = DownloadProgress(enabled=settings.show_progress)
     opts: dict[str, Any] = {
         "format": format_selector or DEFAULT_FORMAT,
         "merge_output_format": "mkv",
         "outtmpl": str(dest_stem) + ".%(ext)s",
         "writesubtitles": True,
         "writeautomaticsub": False,
-        "subtitleslangs": ["en"],
+        "subtitleslangs": subtitleslangs if subtitleslangs is not None else ["en"],
         "ffmpeg_location": str(settings.ffmpeg),
         "noprogress": not settings.verbose,
         "quiet": not settings.verbose,
@@ -118,8 +128,8 @@ def download_video(
         "ignoreerrors": True,
         "sleep_interval": 1,
         "sleep_interval_subtitles": 1,
-        "progress_hooks": [progress.hook] if use_our_bar else [],
-        "postprocessor_hooks": [progress.postprocessor_hook] if use_our_bar else [],
+        "progress_hooks": [progress.hook] if settings.show_progress else [],
+        "postprocessor_hooks": [progress.postprocessor_hook] if settings.show_progress else [],
         "postprocessors": [
             {"key": "FFmpegVideoRemuxer", "preferedformat": "mkv"},
             {"key": "FFmpegSubtitlesConvertor", "format": "srt"},
@@ -134,9 +144,12 @@ def download_video(
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as exc:
-        if "not a bot" in str(exc).lower():
-            raise YoutubeAuthError(YOUTUBE_COOKIES_HELP) from exc
+        progress.close()
+        auth = auth_error_from_exception(url, exc)
+        if auth is not None:
+            raise auth from exc
         raise
+    progress.close()
     if not info:
         raise RuntimeError(
             "no downloadable media (upcoming live/premiere, unavailable, or extractor error)"

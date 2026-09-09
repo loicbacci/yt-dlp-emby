@@ -97,7 +97,7 @@ def test_pipeline_starts_download_after_listing(tmp_path: Path, monkeypatch: pyt
     cache = load_cache(series)
     assert cache["vid1"]["description"] == "Full plot"
     assert (series / CACHE_FILENAME).is_file()
-    nfo = next(p for p in (series / "Season 01").glob("*.nfo") if p.name != "season.nfo")
+    nfo = next(p for p in (series / "Season 1").glob("*.nfo") if p.name != "season.nfo")
     assert "Full plot" in nfo.read_text(encoding="utf-8")
 
 
@@ -140,7 +140,7 @@ def test_pipeline_skips_download_when_mkv_exists(
     from yt_emby.library import episode_stem, load_index
 
     series = tmp_path / "lib" / "Example Channel"
-    season = series / "Season 01"
+    season = series / "Season 1"
     season.mkdir(parents=True)
     stem = episode_stem("Example Channel", 1, 1, "Intro")
     (season / f"{stem}.mkv").write_bytes(b"already")
@@ -159,7 +159,7 @@ def test_pipeline_redownloads_when_existing_is_below_1080(
     from yt_emby.library import episode_stem
 
     series = tmp_path / "lib" / "Example Channel"
-    season = series / "Season 01"
+    season = series / "Season 1"
     season.mkdir(parents=True)
     stem = episode_stem("Example Channel", 1, 1, "Intro")
     (season / f"{stem}.mkv").write_bytes(b"lowres")
@@ -191,7 +191,7 @@ def test_pipeline_redownloads_when_mkv_missing_after_index(
     _patch_extractors(monkeypatch, calls)
     assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
     stem = episode_stem("Example Channel", 1, 1, "Intro")
-    mkv = tmp_path / "lib" / "Example Channel" / "Season 01" / f"{stem}.mkv"
+    mkv = tmp_path / "lib" / "Example Channel" / "Season 1" / f"{stem}.mkv"
     assert mkv.is_file()
     mkv.unlink()
     calls.clear()
@@ -252,8 +252,8 @@ def test_pipeline_skips_unavailable_video_and_continues(
         lambda url, index, **_k: playlist.episodes[index - 1],
     )
     code = run_download("https://example.invalid/playlist", _settings(tmp_path))
-    assert code == 0
-    season = tmp_path / "lib" / "Example Channel" / "Season 01"
+    assert code == 1
+    season = tmp_path / "lib" / "Example Channel" / "Season 1"
     mkvs = list(season.glob("*.mkv"))
     assert len(mkvs) == 1
     assert "Ready" in mkvs[0].name

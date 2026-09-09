@@ -100,7 +100,7 @@ def test_plan_ignores_one_second_duration_jitter() -> None:
 def test_move_removed_files(tmp_path: Path) -> None:
     from yt_emby.sync import move_episode_files
 
-    season = tmp_path / "series" / "Season 01"
+    season = tmp_path / "series" / "Season 1"
     season.mkdir(parents=True)
     stem = "Example Channel - S01E01 - T"
     (season / f"{stem}.mkv").write_bytes(b"vid")
@@ -118,7 +118,7 @@ def test_move_removed_files(tmp_path: Path) -> None:
 def test_rename_episode_files(tmp_path: Path) -> None:
     from yt_emby.sync import rename_episode_files
 
-    season = tmp_path / "Season 01"
+    season = tmp_path / "Season 1"
     season.mkdir()
     old = "Example Channel - S01E02 - T"
     new = "Example Channel - S01E01 - T"

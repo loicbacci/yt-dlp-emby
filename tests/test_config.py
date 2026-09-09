@@ -143,6 +143,23 @@ def test_quiet_overrides_env_verbose(tmp_path: Path) -> None:
     )
     assert settings.quiet is True
     assert settings.verbose is False
+    assert settings.show_progress is False
+    assert settings.show_summary is True
+
+
+def test_silent_disables_verbose(tmp_path: Path) -> None:
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        silent=True,
+        environ={"YT_EMBY_VERBOSE": "1"},
+        cwd=tmp_path,
+    )
+    assert settings.silent is True
+    assert settings.verbose is False
+    assert settings.show_progress is False
+    assert settings.show_summary is False
 
 
 def test_staging_from_env(tmp_path: Path) -> None:

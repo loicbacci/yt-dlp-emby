@@ -19,6 +19,7 @@ htmlcov/
 
 # Local config (keep the example)
 config.toml
+dropout.yaml
 cookies.txt
 *cookies.txt
 
@@ -34,4 +35,5 @@ cookies.txt
 .DS_Store
 .idea/
 .vscode/
+.cursor/
 *.swp

@@ -58,7 +58,7 @@ def test_live_low_res_download_writes_emby_layout(tmp_path: Path) -> None:
     assert (series / "tvshow.nfo").is_file()
     assert (series / "poster.jpg").is_file()
     assert (series / ".yt-emby.json").is_file()
-    season = series / "Season 01"
+    season = series / "Season 1"
     assert (season / "season.nfo").is_file()
     videos = list(season.glob("*.mkv"))
     assert videos, "expected a remuxed mkv"

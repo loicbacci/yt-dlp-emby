@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from yt_emby.extract import EpisodeInfo, PlaylistInfo
+from yt_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 CACHE_FILENAME = ".yt-emby-cache.json"
+DROPOUT_CACHE_FILENAME = ".yt-emby-dropout.json"
 
 
 def load_cache(series: Path) -> dict[str, dict]:
@@ -80,3 +81,62 @@ def hydrate_playlist(
         episodes=episodes,
         webpage_url=playlist.webpage_url,
     )
+
+
+def load_dropout_season_cache(library: Path) -> dict[str, list[dict]]:
+    path = library / DROPOUT_CACHE_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    seasons = data.get("seasons") if isinstance(data, dict) else None
+    if not isinstance(seasons, dict):
+        return {}
+    result: dict[str, list[dict]] = {}
+    for key, value in seasons.items():
+        if isinstance(value, list):
+            result[str(key)] = [item for item in value if isinstance(item, dict)]
+    return result
+
+
+def save_dropout_season_cache(library: Path, seasons: dict[str, list[dict]]) -> None:
+    if not library.is_dir():
+        return
+    payload = {"seasons": seasons}
+    (library / DROPOUT_CACHE_FILENAME).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def dropout_listings_to_cache(listings: list[DropoutListing]) -> list[dict]:
+    return [
+        {
+            "url": item.url,
+            "title": item.title,
+            "dropout_episode": item.dropout_episode,
+        }
+        for item in listings
+    ]
+
+
+def dropout_listings_from_cache(raw: list[dict] | None) -> list[DropoutListing] | None:
+    if not raw:
+        return None
+    listed: list[DropoutListing] = []
+    for item in raw:
+        url = item.get("url")
+        title = item.get("title")
+        episode = item.get("dropout_episode")
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+        if not isinstance(title, str) or not title.strip():
+            continue
+        if isinstance(episode, bool) or not isinstance(episode, int):
+            continue
+        listed.append(
+            DropoutListing(url=url, title=title.strip(), dropout_episode=episode)
+        )
+    return listed or None

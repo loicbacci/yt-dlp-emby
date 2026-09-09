@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import extract_attributes, get_elements_html_by_class
 
+from yt_emby.auth import auth_error_from_exception
 from yt_emby.progress import ExtractProgress, YtdlpLogger
 
 
@@ -220,15 +224,17 @@ def _base_opts(
     playlist_items: str | None = None,
     logger: Any | None = None,
     verbose: bool = False,
+    youtube: bool = True,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": not verbose,
         "verbose": verbose,
-        "no_warnings": not verbose,
+        "no_warnings": False,
         "skip_download": True,
         "ignoreerrors": True,
-        "extractor_args": {"youtube": {"player_client": ["tv", "android", "web"]}},
     }
+    if youtube:
+        opts["extractor_args"] = {"youtube": {"player_client": ["tv", "android", "web"]}}
     if playlist_items:
         opts["playlist_items"] = playlist_items
     if cookies_from_browser:
@@ -241,6 +247,36 @@ def _base_opts(
     return opts
 
 
+def _run_extract(url: str, opts: dict[str, Any], fn: ExtractFn) -> dict[str, Any]:
+    try:
+        return fn(url, opts)
+    except Exception as exc:
+        auth = auth_error_from_exception(url, exc)
+        if auth is not None:
+            raise auth from exc
+        raise
+
+
+def _extract_logger(
+    *,
+    progress: bool,
+    listing: str,
+    site: str,
+    verbose: bool,
+    emit_warnings: bool,
+) -> tuple[ExtractProgress, YtdlpLogger]:
+    display = ExtractProgress(
+        enabled=progress, heartbeat=progress, listing=listing, site=site
+    )
+    logger = YtdlpLogger(
+        display,
+        site=site,
+        emit_warnings=emit_warnings and not verbose,
+        emit_errors=not verbose,
+    )
+    return display, logger
+
+
 def extract_playlist(
     url: str,
     *,
@@ -250,9 +286,15 @@ def extract_playlist(
     extract_fn: ExtractFn | None = None,
     progress: bool = False,
     verbose: bool = False,
+    emit_warnings: bool = True,
 ) -> PlaylistInfo:
-    display = ExtractProgress(enabled=progress, heartbeat=progress)
-    logger = YtdlpLogger(display) if progress else None
+    display, logger = _extract_logger(
+        progress=progress,
+        listing="playlist",
+        site="YouTube",
+        verbose=verbose,
+        emit_warnings=emit_warnings,
+    )
     opts = _base_opts(
         cookies_from_browser=cookies_from_browser,
         cookiefile=cookiefile,
@@ -265,7 +307,7 @@ def extract_playlist(
         display.status("Connecting to YouTube…")
     fn = extract_fn or _ydl_extract
     try:
-        info = fn(url, opts)
+        info = _run_extract(url, opts, fn)
     finally:
         if progress:
             display.finish("Playlist listing complete")
@@ -289,14 +331,23 @@ def extract_video(
     cookiefile: str | None = None,
     extract_fn: ExtractFn | None = None,
     verbose: bool = False,
+    emit_warnings: bool = True,
 ) -> EpisodeInfo:
+    _display, logger = _extract_logger(
+        progress=False,
+        listing="playlist",
+        site="YouTube",
+        verbose=verbose,
+        emit_warnings=emit_warnings,
+    )
     opts = _base_opts(
         cookies_from_browser=cookies_from_browser,
         cookiefile=cookiefile,
         verbose=verbose,
+        logger=logger,
     )
     fn = extract_fn or _ydl_extract
-    info = fn(url, opts)
+    info = _run_extract(url, opts, fn)
     return episode_from_info(info, playlist_index)
 
 
@@ -308,9 +359,15 @@ def extract_channel_art(
     extract_fn: ExtractFn | None = None,
     progress: bool = False,
     verbose: bool = False,
+    emit_warnings: bool = True,
 ) -> ChannelArt:
-    display = ExtractProgress(enabled=progress, heartbeat=progress)
-    logger = YtdlpLogger(display) if progress else None
+    display, logger = _extract_logger(
+        progress=progress,
+        listing="channel",
+        site="YouTube",
+        verbose=verbose,
+        emit_warnings=emit_warnings,
+    )
     url = f"https://www.youtube.com/channel/{channel_id}"
     opts = _base_opts(
         cookies_from_browser=cookies_from_browser,
@@ -323,8 +380,159 @@ def extract_channel_art(
         display.status("Fetching channel artwork…")
     fn = extract_fn or _ydl_extract
     try:
-        info = fn(url, opts)
+        info = _run_extract(url, opts, fn)
     finally:
         if progress:
             display.finish("Channel artwork complete")
     return parse_channel_art(info)
+
+
+@dataclass(frozen=True)
+class DropoutListing:
+    url: str
+    title: str
+    dropout_episode: int
+
+
+def _entry_url(entry: dict[str, Any]) -> str | None:
+    url = entry.get("url") or entry.get("webpage_url")
+    if url and str(url).startswith("http"):
+        return str(url)
+    return _webpage_url(entry)
+
+
+def _title_from_url(url: str) -> str:
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    return slug.replace("-", " ").strip() or slug
+
+
+def _url_slug(url: str) -> str:
+    return url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
+
+
+def parse_dropout_browse_titles(webpage: str) -> dict[str, str]:
+    """Map episode URLs to on-site titles from a Dropout season grid page."""
+    titles: dict[str, str] = {}
+    for html in get_elements_html_by_class("browse-item-link", webpage) or []:
+        attrs = extract_attributes(html)
+        href = attrs.get("href")
+        if not href:
+            continue
+        title = ""
+        props = attrs.get("data-track-event-properties")
+        if props:
+            try:
+                payload = json.loads(props)
+            except json.JSONDecodeError:
+                payload = {}
+            label = payload.get("label")
+            if isinstance(label, str):
+                title = label.strip()
+        if not title:
+            alt = re.search(r'<img\b[^>]*\balt="([^"]*)"', html, flags=re.I)
+            if alt:
+                title = alt.group(1).strip()
+        if title:
+            titles[href] = title
+    return titles
+
+
+def _lookup_browse_title(episode_url: str, page_titles: dict[str, str]) -> str:
+    if episode_url in page_titles:
+        return page_titles[episode_url]
+    slug = _url_slug(episode_url)
+    for href, title in page_titles.items():
+        if _url_slug(href) == slug:
+            return title
+    return ""
+
+
+def _ydl_webpage(url: str, opts: dict[str, Any]) -> str:
+    with YoutubeDL(opts) as ydl:
+        return ydl.urlopen(url).read().decode("utf-8", "replace")
+
+
+def _load_dropout_season_titles(season_url: str, opts: dict[str, Any]) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    page_size = 24
+    for page in range(1, 51):
+        page_url = f"{season_url}?page={page}"
+        try:
+            webpage = _ydl_webpage(page_url, opts)
+        except Exception:
+            break
+        batch = parse_dropout_browse_titles(webpage)
+        if not batch:
+            break
+        titles.update(batch)
+        if len(batch) < page_size:
+            break
+    return titles
+
+
+def extract_dropout_season(
+    url: str,
+    *,
+    cookies_from_browser: str | None = None,
+    cookiefile: str | None = None,
+    extract_fn: ExtractFn | None = None,
+    progress: bool = False,
+    verbose: bool = False,
+    emit_warnings: bool = True,
+) -> list[DropoutListing]:
+    display, logger = _extract_logger(
+        progress=progress,
+        listing="season",
+        site="Dropout",
+        verbose=verbose,
+        emit_warnings=emit_warnings,
+    )
+    opts = _base_opts(
+        cookies_from_browser=cookies_from_browser,
+        cookiefile=cookiefile,
+        logger=logger,
+        verbose=verbose,
+        youtube=False,
+    )
+    opts["extract_flat"] = "in_playlist"
+    if progress:
+        display.status("Connecting to Dropout…")
+    fn = extract_fn or _ydl_extract
+    page_titles: dict[str, str] = {}
+    try:
+        info = _run_extract(url, opts, fn)
+        entries = info.get("entries") or []
+        if info.get("_type") == "video" or not entries:
+            entries = [info]
+        missing_titles = any(
+            not str(entry.get("title") or entry.get("episode") or "").strip()
+            for entry in entries
+            if entry
+        )
+        if missing_titles and extract_fn is None:
+            if progress:
+                display.status("Reading episode titles…")
+            page_titles = _load_dropout_season_titles(url, opts)
+    finally:
+        if progress:
+            display.finish("Season listing complete")
+    listed: list[DropoutListing] = []
+    index = 0
+    for entry in entries:
+        if not entry:
+            continue
+        episode_url = _entry_url(entry)
+        if not episode_url:
+            continue
+        index += 1
+        episode_number = entry.get("episode_number")
+        dropout_episode = int(episode_number) if episode_number is not None else index
+        title = (
+            str(entry.get("title") or entry.get("episode") or "").strip()
+            or _lookup_browse_title(episode_url, page_titles)
+            or _title_from_url(episode_url)
+        )
+        listed.append(
+            DropoutListing(url=episode_url, title=title, dropout_episode=dropout_episode)
+        )
+    return listed

@@ -49,7 +49,7 @@ def series_dir(library: Path, channel_name: str) -> Path:
 
 
 def season_folder_name(season: int) -> str:
-    return f"Season {season:02d}"
+    return f"Season {season}"
 
 
 def season_dir(series: Path, season: int) -> Path:
@@ -66,6 +66,37 @@ def episode_stem(channel_name: str, season: int, episode: int, title: str) -> st
         f"S{season:02d}E{episode:02d} - "
         f"{sanitize_filename(title)}"
     )
+
+
+def emby_code(season: int, episode: int) -> str:
+    return f"S{season:02d}E{episode:02d}"
+
+
+def find_episode_mkv(season: Path, season_number: int, episode: int) -> Path | None:
+    """Return the .mkv for this SxxExx, even if the title in the filename differs."""
+    if not season.is_dir():
+        return None
+    needle = f" - {emby_code(season_number, episode)} - "
+    matches = [path for path in season.glob("*.mkv") if needle in path.name]
+    if not matches:
+        return None
+    return sorted(matches)[0]
+
+
+def episode_title_from_filename(name: str) -> str:
+    stem = name[:-4] if name.lower().endswith(".mkv") else name
+    parts = stem.split(" - ", 2)
+    return parts[2] if len(parts) >= 3 else stem
+
+
+def titles_match(left: str, right: str) -> bool:
+    """True when titles differ only by case, punctuation, or spacing."""
+
+    def norm(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+    a, b = norm(left), norm(right)
+    return bool(a) and a == b
 
 
 def assign_season(index: LibraryIndex, playlist_id: str, forced: int | None) -> int:

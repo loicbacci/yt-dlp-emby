@@ -1,7 +1,7 @@
 [project]
 name = "yt-emby"
 version = "0.1.0"
-description = "Download YouTube playlists with yt-dlp and write Emby NFO metadata."
+description = "Download YouTube and Dropout.tv videos with yt-dlp for Emby."
 readme = "README.md"
 authors = [
     { name = "Loïc Baccigalupi", email = "loic@bacci.ch" }
@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "bgutil-ytdlp-pot-provider>=2.0.0",
     "pillow>=12.3.0",
+    "pyyaml>=6.0.3",
     "yt-dlp[default]>=2026.8.19",
 ]
 
