@@ -1,8 +1,8 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from yt_emby.extract import EpisodeInfo
-from yt_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
+from yt_dlp_emby.extract import EpisodeInfo
+from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
 
 
 def _text(root: ET.Element, tag: str) -> str:

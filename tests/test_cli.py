@@ -1,6 +1,6 @@
 import pytest
 
-from yt_emby.cli import build_parser
+from yt_dlp_emby.cli import build_parser
 
 
 def test_download_requires_url() -> None:
@@ -31,14 +31,14 @@ def test_doctor_subcommand() -> None:
             "--cookies",
             "cookies.txt",
             "--staging",
-            "/tmp/yt-emby",
+            "/tmp/yt-dlp-emby",
             "--library",
             "/lib",
         ]
     )
     assert args.command == "doctor"
     assert args.cookies == "cookies.txt"
-    assert args.staging == "/tmp/yt-emby"
+    assert args.staging == "/tmp/yt-dlp-emby"
     assert args.library == "/lib"
 
 
@@ -147,10 +147,10 @@ def test_download_accepts_staging() -> None:
             "--old-dir",
             "/old",
             "--staging",
-            "/tmp/yt-emby",
+            "/tmp/yt-dlp-emby",
         ]
     )
-    assert args.staging == "/tmp/yt-emby"
+    assert args.staging == "/tmp/yt-dlp-emby"
 
 
 def test_download_accepts_force_refetch() -> None:

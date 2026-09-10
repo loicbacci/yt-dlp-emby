@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from yt_emby.style import color_enabled, green, strip_ansi, visible_len
+from yt_dlp_emby.style import color_enabled, green, strip_ansi, visible_len
 
 _ITEM = re.compile(r"Downloading item (\d+) of (\d+)")
 _ITEM_UNKNOWN = re.compile(r"Downloading item (\d+) of ")
@@ -207,7 +207,7 @@ class ProgressDisplay:
         self._thread: threading.Thread | None = None
         if enabled and heartbeat and self.live:
             self._thread = threading.Thread(
-                target=self._run_heartbeat, name="yt-emby-progress", daemon=True
+                target=self._run_heartbeat, name="yt-dlp-emby-progress", daemon=True
             )
             self._thread.start()
 
@@ -265,7 +265,7 @@ class ProgressDisplay:
         if self.enabled and self.live and self._thread is None:
             self._stop = threading.Event()
             self._thread = threading.Thread(
-                target=self._run_heartbeat, name="yt-emby-progress", daemon=True
+                target=self._run_heartbeat, name="yt-dlp-emby-progress", daemon=True
             )
             self._thread.start()
 
@@ -429,7 +429,7 @@ class YtdlpLogger:
             self.progress.status(f"Talking to {self.site}…")
 
     def warning(self, message: str) -> None:
-        from yt_emby.log import warn
+        from yt_dlp_emby.log import warn
 
         text = strip_ansi(str(message)).strip()
         if not text:
@@ -439,7 +439,7 @@ class YtdlpLogger:
             warn(text)
 
     def error(self, message: str) -> None:
-        from yt_emby.log import error
+        from yt_dlp_emby.log import error
 
         text = strip_ansi(str(message)).strip()
         if not text:

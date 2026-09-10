@@ -2,8 +2,8 @@ from io import StringIO
 
 import pytest
 
-from yt_emby.log import format_duration, format_elapsed, format_plan_counts, format_run_summary
-from yt_emby.progress import (
+from yt_dlp_emby.log import format_duration, format_elapsed, format_plan_counts, format_run_summary
+from yt_dlp_emby.progress import (
     DownloadProgress,
     format_bytes,
     format_copy_line,
@@ -14,7 +14,7 @@ from yt_emby.progress import (
     stream_label,
     strip_ansi,
 )
-from yt_emby.style import visible_len
+from yt_dlp_emby.style import visible_len
 
 
 def test_render_bar_is_fixed_width() -> None:
@@ -157,7 +157,7 @@ def test_extract_line() -> None:
 
 
 def test_ytdlp_logger_updates_extract_progress() -> None:
-    from yt_emby.progress import ExtractProgress, YtdlpLogger
+    from yt_dlp_emby.progress import ExtractProgress, YtdlpLogger
 
     stream = StringIO()
     display = ExtractProgress(enabled=True, stream=stream, live=True)
@@ -175,7 +175,7 @@ def test_ytdlp_logger_updates_extract_progress() -> None:
 
 
 def test_ytdlp_logger_emits_warnings(capsys: pytest.CaptureFixture[str]) -> None:
-    from yt_emby.progress import ExtractProgress, YtdlpLogger
+    from yt_dlp_emby.progress import ExtractProgress, YtdlpLogger
 
     logger = YtdlpLogger(ExtractProgress(enabled=False), emit_warnings=True, emit_errors=True)
     logger.warning("HTTP Error 403: Forbidden")
@@ -188,7 +188,7 @@ def test_ytdlp_logger_emits_warnings(capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_ytdlp_logger_dropout_site() -> None:
-    from yt_emby.progress import ExtractProgress, YtdlpLogger
+    from yt_dlp_emby.progress import ExtractProgress, YtdlpLogger
 
     stream = StringIO()
     display = ExtractProgress(

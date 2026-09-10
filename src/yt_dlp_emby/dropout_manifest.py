@@ -8,8 +8,8 @@ from typing import Any, Sequence
 
 import yaml
 
-from yt_emby.config import ConfigError
-from yt_emby.cookies import cookies_file_usable
+from yt_dlp_emby.config import ConfigError
+from yt_dlp_emby.cookies import cookies_file_usable
 
 __all__ = [
     "DropoutManifest",

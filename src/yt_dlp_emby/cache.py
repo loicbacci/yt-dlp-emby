@@ -6,7 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
-from yt_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
+from yt_dlp_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 CACHE_FILENAME = ".yt-emby-cache.json"
 DROPOUT_CACHE_DIRNAME = "cache"

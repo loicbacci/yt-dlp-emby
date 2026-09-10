@@ -1,3 +1,3 @@
 import pytest
 
-pytest.register_assert_rewrite("yt_emby")
+pytest.register_assert_rewrite("yt_dlp_emby")

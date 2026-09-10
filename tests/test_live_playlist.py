@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from yt_emby.config import resolve_settings
-from yt_emby.download import LOW_RES_FORMAT
-from yt_emby.extract import extract_channel_art, extract_playlist
-from yt_emby.pipeline import run_download as pipeline_run
+from yt_dlp_emby.config import resolve_settings
+from yt_dlp_emby.download import LOW_RES_FORMAT
+from yt_dlp_emby.extract import extract_channel_art, extract_playlist
+from yt_dlp_emby.pipeline import run_download as pipeline_run
 
 LIVE_PLAYLIST = "https://www.youtube.com/playlist?list=PLG49S3nxzAnl4QDVqK-hOnoqcSKEIDDuv"
 

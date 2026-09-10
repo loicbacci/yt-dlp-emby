@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from yt_emby.bench import parse_size, run_bench
-from yt_emby.config import resolve_settings
+from yt_dlp_emby.bench import parse_size, run_bench
+from yt_dlp_emby.config import resolve_settings
 
 
 def test_parse_size() -> None:

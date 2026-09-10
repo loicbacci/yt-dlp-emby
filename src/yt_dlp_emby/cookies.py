@@ -37,7 +37,7 @@ def sandbox_cookiefile(path: str | Path | None) -> Iterator[str | None]:
     except OSError:
         yield None
         return
-    fd, tmp = tempfile.mkstemp(prefix="yt-emby-cookies-", suffix=".txt")
+    fd, tmp = tempfile.mkstemp(prefix="yt-dlp-emby-cookies-", suffix=".txt")
     os.close(fd)
     tmp_path = Path(tmp)
     try:

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from yt_emby.extract import EpisodeInfo, PlaylistInfo
-from yt_emby.library import EpisodeRecord, PlaylistRecord, episode_stem
+from yt_dlp_emby.extract import EpisodeInfo, PlaylistInfo
+from yt_dlp_emby.library import EpisodeRecord, PlaylistRecord, episode_stem
 
 
 class ActionKind(Enum):
@@ -161,7 +161,7 @@ def apply_renames(season_dir: Path, pairs: list[tuple[str, str]]) -> None:
     for old_stem, new_stem in pairs:
         if not old_stem or not new_stem or old_stem == new_stem:
             continue
-        tmp = f".__yt_emby_tmp__{new_stem}"
+        tmp = f".__yt_dlp_emby_tmp__{new_stem}"
         rename_episode_files(season_dir, old_stem, tmp)
         pending.append((tmp, new_stem))
     for tmp, new_stem in pending:

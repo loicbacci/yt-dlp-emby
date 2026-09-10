@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from yt_emby.extract import EpisodeInfo, PlaylistInfo
-from yt_emby.library import EpisodeRecord, PlaylistRecord
-from yt_emby.sync import ActionKind, plan_sync
+from yt_dlp_emby.extract import EpisodeInfo, PlaylistInfo
+from yt_dlp_emby.library import EpisodeRecord, PlaylistRecord
+from yt_dlp_emby.sync import ActionKind, plan_sync
 
 
 def _playlist(*episodes: EpisodeInfo) -> PlaylistInfo:
@@ -98,7 +98,7 @@ def test_plan_ignores_one_second_duration_jitter() -> None:
 
 
 def test_move_removed_files(tmp_path: Path) -> None:
-    from yt_emby.sync import move_episode_files
+    from yt_dlp_emby.sync import move_episode_files
 
     season = tmp_path / "series" / "Season 1"
     season.mkdir(parents=True)
@@ -116,7 +116,7 @@ def test_move_removed_files(tmp_path: Path) -> None:
 
 
 def test_rename_episode_files(tmp_path: Path) -> None:
-    from yt_emby.sync import rename_episode_files
+    from yt_dlp_emby.sync import rename_episode_files
 
     season = tmp_path / "Season 1"
     season.mkdir()

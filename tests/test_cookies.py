@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from yt_emby.cookies import cookies_file_usable, sandbox_cookiefile
+from yt_dlp_emby.cookies import cookies_file_usable, sandbox_cookiefile
 
 
 def _netscape(body: str = ".watch.dropout.tv\tTRUE\t/\tTRUE\t0\t_session\tabc\n") -> str:

@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from yt_emby.style import (
+from yt_dlp_emby.style import (
     ANSI_RE,
     RESET,
     bold,

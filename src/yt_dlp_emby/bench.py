@@ -8,12 +8,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from yt_emby.download import copy_to_library
-from yt_emby.log import error, info
-from yt_emby.progress import DownloadProgress, format_bytes
-from yt_emby.style import dim, green
+from yt_dlp_emby.download import copy_to_library
+from yt_dlp_emby.log import error, info
+from yt_dlp_emby.progress import DownloadProgress, format_bytes
+from yt_dlp_emby.style import dim, green
 
-BENCH_NAME = ".yt-emby-bench.bin"
+BENCH_NAME = ".yt-dlp-emby-bench.bin"
 DEFAULT_SIZE = 256 * 1024 * 1024
 _UNITS = {
     "B": 1,
@@ -127,7 +127,7 @@ def run_bench(
     baseline_dest = dest_dir / f"{BENCH_NAME}.copyfile"
     src: Path | None = None
     try:
-        fd, tmp = tempfile.mkstemp(prefix="yt-emby-bench-", suffix=".bin", dir=str(staging))
+        fd, tmp = tempfile.mkstemp(prefix="yt-dlp-emby-bench-", suffix=".bin", dir=str(staging))
         os.close(fd)
         src = Path(tmp)
         _write_payload(src, size)

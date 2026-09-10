@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from yt_emby.doctor import run_doctor
-from yt_emby.style import strip_ansi
+from yt_dlp_emby.doctor import run_doctor
+from yt_dlp_emby.style import strip_ansi
 
 
 def test_doctor_ok_with_ffmpeg_and_cookies(tmp_path: Path, capsys) -> None:

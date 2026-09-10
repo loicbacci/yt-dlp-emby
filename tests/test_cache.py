@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from yt_emby.cache import (
+from yt_dlp_emby.cache import (
     LEGACY_DROPOUT_CACHE_FILENAME,
     dropout_cache_path,
     dropout_listings_from_cache,
@@ -14,7 +14,7 @@ from yt_emby.cache import (
     save_cache,
     save_dropout_season_cache,
 )
-from yt_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
+from yt_dlp_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 
 def _listing(**kwargs: object) -> EpisodeInfo:

@@ -12,18 +12,19 @@ from typing import Any
 
 from yt_dlp import YoutubeDL
 
-from yt_emby.auth import YoutubeAuthError, auth_error_from_exception
-from yt_emby.config import Settings
-from yt_emby.cookies import sandbox_cookiefile
-from yt_emby.extract import js_runtime_opts
-from yt_emby.progress import DownloadProgress, copy_with_progress
+from yt_dlp_emby.auth import YoutubeAuthError, auth_error_from_exception
+from yt_dlp_emby.config import Settings
+from yt_dlp_emby.cookies import sandbox_cookiefile
+from yt_dlp_emby.extract import js_runtime_opts
+from yt_dlp_emby.progress import DownloadProgress, copy_with_progress
 
 DEFAULT_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/bv+ba/b"
 LOW_RES_FORMAT = "worst[height<=144]/worst"
 TARGET_HEIGHT = 1080
 _VIDEO_EXTS = {".mkv", ".mp4", ".webm", ".m4a", ".m4v"}
-_STALE_STAGING_PREFIX = "yt-emby-"
-_STAGING_PID = ".yt-emby-pid"
+_STALE_STAGING_PREFIXES = ("yt-dlp-emby-", "yt-emby-")
+_STAGING_PID = ".yt-dlp-emby-pid"
+_LEGACY_STAGING_PID = ".yt-emby-pid"
 
 
 def mark_live_staging(work_dir: Path) -> None:
@@ -48,12 +49,15 @@ def _pid_is_running(pid: int) -> bool:
 def _staging_in_use(path: Path) -> bool:
     if not path.is_dir():
         return False
-    try:
-        text = (path / _STAGING_PID).read_text(encoding="utf-8").strip()
-        pid = int(text)
-    except (OSError, ValueError):
-        return False
-    return _pid_is_running(pid)
+    for name in (_STAGING_PID, _LEGACY_STAGING_PID):
+        try:
+            text = (path / name).read_text(encoding="utf-8").strip()
+            pid = int(text)
+        except (OSError, ValueError):
+            continue
+        if _pid_is_running(pid):
+            return True
+    return False
 
 
 class _YdlErrorLog:
@@ -87,9 +91,10 @@ def cleanup_stale_staging(
 ) -> int:
     """Remove leftover run dirs and cookie copies that cannot be resumed.
 
-    Each download uses a unique `yt-emby-*` directory, so leftovers from a
-    killed process cannot be continued and only take disk. Directories still
-    owned by a running yt-emby process are left alone.
+    Each download uses a unique `yt-dlp-emby-*` directory (or a leftover
+    `yt-emby-*` dir from older builds), so leftovers from a killed process
+    cannot be continued and only take disk. Directories still owned by a
+    running yt-dlp-emby process are left alone.
     """
     removed = 0
     roots: list[Path] = [Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())]
@@ -109,7 +114,7 @@ def cleanup_stale_staging(
         except OSError:
             continue
         for path in children:
-            if not path.name.startswith(_STALE_STAGING_PREFIX):
+            if not path.name.startswith(_STALE_STAGING_PREFIXES):
                 continue
             if _staging_in_use(path):
                 continue

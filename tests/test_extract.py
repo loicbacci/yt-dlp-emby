@@ -1,4 +1,4 @@
-from yt_emby.extract import (
+from yt_dlp_emby.extract import (
     episode_from_info,
     extract_playlist,
     extract_video,

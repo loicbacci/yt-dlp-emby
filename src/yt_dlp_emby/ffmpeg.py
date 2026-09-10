@@ -22,7 +22,7 @@ class FFmpegNotFoundError(Exception):
 
 
 def find_ffmpeg(explicit: str | None, environ: Mapping[str, str]) -> Path:
-    candidate = explicit or environ.get("YT_EMBY_FFMPEG")
+    candidate = explicit or environ.get("YT_DLP_EMBY_FFMPEG") or environ.get("YT_EMBY_FFMPEG")
     if candidate:
         path = Path(candidate).expanduser()
         if path.is_dir():

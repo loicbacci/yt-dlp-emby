@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-USER_AGENT = "yt-emby/0.1 (+https://github.com/)"
+USER_AGENT = "yt-dlp-emby/0.1"
 
 
 def write_image_from_bytes(data: bytes, dest: Path) -> None:

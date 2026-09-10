@@ -9,15 +9,15 @@ import tempfile
 import time
 from pathlib import Path
 
-from yt_emby.cache import (
+from yt_dlp_emby.cache import (
     episode_from_cache,
     episode_to_cache,
     hydrate_playlist,
     load_cache,
     save_cache,
 )
-from yt_emby.config import Settings
-from yt_emby.download import (
+from yt_dlp_emby.config import Settings
+from yt_dlp_emby.download import (
     TARGET_HEIGHT,
     YoutubeAuthError,
     cleanup_stale_staging,
@@ -26,7 +26,7 @@ from yt_emby.download import (
     promote_episode,
     video_height,
 )
-from yt_emby.extract import (
+from yt_dlp_emby.extract import (
     ChannelArt,
     EpisodeInfo,
     PlaylistInfo,
@@ -36,9 +36,9 @@ from yt_emby.extract import (
     extract_video,
     with_episode,
 )
-from yt_emby.images import download_image
-from yt_emby.log import RunStats, error, format_dry_run_row, format_plan_counts, info, warn
-from yt_emby.library import (
+from yt_dlp_emby.images import download_image
+from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_plan_counts, info, warn
+from yt_dlp_emby.library import (
     EpisodeRecord,
     LibraryIndex,
     PlaylistRecord,
@@ -52,9 +52,9 @@ from yt_emby.library import (
     season_folder_name,
     series_dir,
 )
-from yt_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
-from yt_emby.progress import DownloadProgress
-from yt_emby.sync import (
+from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
+from yt_dlp_emby.progress import DownloadProgress
+from yt_dlp_emby.sync import (
     ActionKind,
     SyncAction,
     apply_renames,
@@ -479,7 +479,7 @@ def _run_download(
         else:
             _log(settings, "Staging downloads in the system temp directory")
         with tempfile.TemporaryDirectory(
-            prefix="yt-emby-", dir=staging_parent, ignore_cleanup_errors=True
+            prefix="yt-dlp-emby-", dir=staging_parent, ignore_cleanup_errors=True
         ) as tmp:
             work = Path(tmp)
             mark_live_staging(work)

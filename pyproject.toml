@@ -1,11 +1,8 @@
 [project]
-name = "yt-emby"
+name = "yt-dlp-emby"
 version = "0.1.0"
 description = "Download YouTube and Dropout.tv videos with yt-dlp for Emby."
 readme = "README.md"
-authors = [
-    { name = "Loïc Baccigalupi", email = "loic@bacci.ch" }
-]
 requires-python = ">=3.11"
 dependencies = [
     "bgutil-ytdlp-pot-provider>=2.0.0",
@@ -15,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-yt-emby = "yt_emby.cli:main"
+yt-dlp-emby = "yt_dlp_emby.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.30,<0.12.0"]

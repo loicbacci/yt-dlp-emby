@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from yt_emby.cache import CACHE_FILENAME, load_cache
-from yt_emby.config import resolve_settings
-from yt_emby.extract import ChannelArt, EpisodeInfo, PlaylistInfo
-from yt_emby.pipeline import run_download
+from yt_dlp_emby.cache import CACHE_FILENAME, load_cache
+from yt_dlp_emby.config import resolve_settings
+from yt_dlp_emby.extract import ChannelArt, EpisodeInfo, PlaylistInfo
+from yt_dlp_emby.pipeline import run_download
 
 
 def _playlist() -> PlaylistInfo:
@@ -80,11 +80,11 @@ def _patch_extractors(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None
             "webpage_url": url,
         }
 
-    monkeypatch.setattr("yt_emby.pipeline.extract_playlist", fake_extract_playlist)
-    monkeypatch.setattr("yt_emby.pipeline.extract_video", fake_extract_video)
-    monkeypatch.setattr("yt_emby.pipeline.extract_channel_art", fake_channel_art)
-    monkeypatch.setattr("yt_emby.pipeline.download_video", fake_download)
-    monkeypatch.setattr("yt_emby.pipeline.download_image", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", fake_extract_playlist)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_video", fake_extract_video)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", fake_channel_art)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_video", fake_download)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_image", lambda *_a, **_k: None)
 
 
 def test_pipeline_starts_download_after_listing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,7 +137,7 @@ def test_pipeline_force_refetch_extracts_existing_metadata(
 def test_pipeline_skips_download_when_mkv_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.library import episode_stem, load_index
+    from yt_dlp_emby.library import episode_stem, load_index
 
     series = tmp_path / "lib" / "Example Channel"
     season = series / "Season 1"
@@ -156,14 +156,14 @@ def test_pipeline_skips_download_when_mkv_exists(
 def test_pipeline_redownloads_when_existing_is_below_1080(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.library import episode_stem
+    from yt_dlp_emby.library import episode_stem
 
     series = tmp_path / "lib" / "Example Channel"
     season = series / "Season 1"
     season.mkdir(parents=True)
     stem = episode_stem("Example Channel", 1, 1, "Intro")
     (season / f"{stem}.mkv").write_bytes(b"lowres")
-    monkeypatch.setattr("yt_emby.pipeline.video_height", lambda *_a, **_k: 360)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.video_height", lambda *_a, **_k: 360)
     calls: list[str] = []
     _patch_extractors(monkeypatch, calls)
     assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
@@ -177,7 +177,7 @@ def test_pipeline_redownloads_refresh_when_below_1080(
     _patch_extractors(monkeypatch, calls)
     assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
     calls.clear()
-    monkeypatch.setattr("yt_emby.pipeline.video_height", lambda *_a, **_k: 360)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.video_height", lambda *_a, **_k: 360)
     assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
     assert "download" in calls
 
@@ -185,7 +185,7 @@ def test_pipeline_redownloads_refresh_when_below_1080(
 def test_pipeline_redownloads_when_mkv_missing_after_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.library import episode_stem
+    from yt_dlp_emby.library import episode_stem
 
     calls: list[str] = []
     _patch_extractors(monkeypatch, calls)
@@ -243,12 +243,12 @@ def test_pipeline_skips_unavailable_video_and_continues(
             "webpage_url": url,
         }
 
-    monkeypatch.setattr("yt_emby.pipeline.extract_playlist", lambda *_a, **_k: playlist)
-    monkeypatch.setattr("yt_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
-    monkeypatch.setattr("yt_emby.pipeline.download_video", fake_download)
-    monkeypatch.setattr("yt_emby.pipeline.download_image", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", lambda *_a, **_k: playlist)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_video", fake_download)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_image", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        "yt_emby.pipeline.extract_video",
+        "yt_dlp_emby.pipeline.extract_video",
         lambda url, index, **_k: playlist.episodes[index - 1],
     )
     code = run_download("https://example.invalid/playlist", _settings(tmp_path))

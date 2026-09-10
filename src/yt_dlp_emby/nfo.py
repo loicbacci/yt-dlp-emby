@@ -5,7 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from yt_emby.extract import EpisodeInfo
+from yt_dlp_emby.extract import EpisodeInfo
 
 PLOT_LIMIT = 8000
 

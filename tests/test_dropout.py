@@ -2,17 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from yt_emby.config import ConfigError, resolve_settings
-from yt_emby.dropout import (
+from yt_dlp_emby.config import ConfigError, resolve_settings
+from yt_dlp_emby.dropout import (
     emby_season_dir,
     format_dry_run_row,
     format_season_plan,
     resolve_emby_target,
     run_dropout,
 )
-from yt_emby.dropout_manifest import filter_dropout_manifest, load_dropout_manifest, season_page_url
-from yt_emby.extract import DropoutListing
-from yt_emby.style import strip_ansi
+from yt_dlp_emby.dropout_manifest import filter_dropout_manifest, load_dropout_manifest, season_page_url
+from yt_dlp_emby.extract import DropoutListing
+from yt_dlp_emby.style import strip_ansi
 
 
 def _write_manifest(tmp_path: Path) -> Path:
@@ -181,7 +181,7 @@ def test_emby_season_dir_specials(tmp_path: Path) -> None:
 
 
 def test_resolve_remap_and_default_to_season() -> None:
-    from yt_emby.dropout_manifest import DropoutRemap, DropoutSeason
+    from yt_dlp_emby.dropout_manifest import DropoutRemap, DropoutSeason
 
     listing = DropoutListing(
         url="https://watch.dropout.tv/x/videos/welcome",
@@ -378,10 +378,10 @@ def test_dropout_dry_run_does_not_download(tmp_path: Path) -> None:
 def test_dropout_cleans_stale_tmp_on_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    leftover = tmp_path / "yt-emby-dropout-killed"
+    leftover = tmp_path / "yt-dlp-emby-dropout-killed"
     leftover.mkdir()
     (leftover / "partial.temp.mkv").write_bytes(b"x")
-    monkeypatch.setattr("yt_emby.download.tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr("yt_dlp_emby.download.tempfile.gettempdir", lambda: str(tmp_path))
 
     def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
         return []
@@ -399,7 +399,7 @@ def test_dropout_cleans_stale_tmp_on_launch(
 
 
 def test_extract_dropout_season_omits_youtube_clients() -> None:
-    from yt_emby.extract import extract_dropout_season
+    from yt_dlp_emby.extract import extract_dropout_season
 
     seen: dict = {}
 
@@ -427,7 +427,7 @@ def test_extract_dropout_season_omits_youtube_clients() -> None:
 
 
 def test_extract_dropout_season_falls_back_to_list_order() -> None:
-    from yt_emby.extract import extract_dropout_season
+    from yt_dlp_emby.extract import extract_dropout_season
 
     listed = extract_dropout_season(
         "https://watch.dropout.tv/x/season:1",
@@ -442,7 +442,7 @@ def test_extract_dropout_season_falls_back_to_list_order() -> None:
 
 
 def test_parse_dropout_browse_titles_uses_on_site_label() -> None:
-    from yt_emby.extract import parse_dropout_browse_titles
+    from yt_dlp_emby.extract import parse_dropout_browse_titles
 
     html = """
     <a href="https://watch.dropout.tv/x/videos/welcome-to-the-wastes" class="browse-item-link"
@@ -455,7 +455,7 @@ def test_parse_dropout_browse_titles_uses_on_site_label() -> None:
 
 
 def test_extract_dropout_season_falls_back_to_url_slug() -> None:
-    from yt_emby.extract import extract_dropout_season
+    from yt_dlp_emby.extract import extract_dropout_season
 
     listed = extract_dropout_season(
         "https://watch.dropout.tv/x/season:1",
@@ -471,7 +471,7 @@ def test_extract_dropout_season_falls_back_to_url_slug() -> None:
 def test_extract_dropout_season_uses_browse_titles_when_yt_dlp_has_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yt_emby import extract as extract_mod
+    from yt_dlp_emby import extract as extract_mod
 
     def fake_extract(_url: str, _opts: dict) -> dict:
         return {
@@ -496,7 +496,7 @@ def test_extract_dropout_season_uses_browse_titles_when_yt_dlp_has_none(
 
 
 def test_format_season_plan_and_dry_run_row() -> None:
-    from yt_emby.dropout_manifest import DropoutRemap, DropoutSeason
+    from yt_dlp_emby.dropout_manifest import DropoutRemap, DropoutSeason
 
     mapped = DropoutSeason(dropout=28, to_season=27)
     assert "season 28 → Season 27" in format_season_plan(
@@ -949,7 +949,7 @@ def test_dropout_auth_error_aborts(tmp_path: Path) -> None:
 
 
 def test_dropout_download_auth_error_stops_remaining(tmp_path: Path) -> None:
-    from yt_emby.auth import DropoutAuthError
+    from yt_dlp_emby.auth import DropoutAuthError
 
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     calls: list[str] = []
@@ -988,7 +988,7 @@ def test_dropout_download_auth_error_stops_remaining(tmp_path: Path) -> None:
 
 
 def test_dropout_download_auth_error_stops_remaining(tmp_path: Path) -> None:
-    from yt_emby.auth import DropoutAuthError
+    from yt_dlp_emby.auth import DropoutAuthError
 
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     calls: list[str] = []
@@ -1065,7 +1065,7 @@ def test_dropout_title_change_skips_existing_sxxexx(tmp_path: Path) -> None:
 
 
 def test_dropout_caches_season_listings(tmp_path: Path) -> None:
-    from yt_emby.cache import DROPOUT_CACHE_FILENAME, load_dropout_season_cache
+    from yt_dlp_emby.cache import DROPOUT_CACHE_FILENAME, load_dropout_season_cache
 
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     calls: list[str] = []
@@ -1111,7 +1111,7 @@ def test_dropout_caches_season_listings(tmp_path: Path) -> None:
 def test_dropout_migrates_library_listing_cache(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from yt_emby.cache import (
+    from yt_dlp_emby.cache import (
         LEGACY_DROPOUT_CACHE_FILENAME,
         dropout_listings_to_cache,
         save_dropout_season_cache,
@@ -1241,7 +1241,7 @@ series:
     manifest = load_dropout_manifest(path)
     _seed_episode(tmp_path, "Season 27", "S27E01", "Welcome to the Wastes")
     _seed_episode(tmp_path, "Season 27", "S27E02", "The Next")
-    from yt_emby import dropout as dropout_mod
+    from yt_dlp_emby import dropout as dropout_mod
 
     calls: list[Path] = []
     real = dropout_mod.index_episode_mkvs

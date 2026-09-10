@@ -14,9 +14,9 @@ from typing import Any, Callable
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import extract_attributes, get_elements_html_by_class
 
-from yt_emby.auth import auth_error_from_exception
-from yt_emby.cookies import sandbox_cookiefile
-from yt_emby.progress import ExtractProgress, YtdlpLogger
+from yt_dlp_emby.auth import auth_error_from_exception
+from yt_dlp_emby.cookies import sandbox_cookiefile
+from yt_dlp_emby.progress import ExtractProgress, YtdlpLogger
 
 
 @dataclass(frozen=True)

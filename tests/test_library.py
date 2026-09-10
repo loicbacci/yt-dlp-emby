@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from yt_emby.library import (
+from yt_dlp_emby.library import (
     EpisodeRecord,
     LibraryIndex,
     PlaylistRecord,

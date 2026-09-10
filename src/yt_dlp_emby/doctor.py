@@ -7,11 +7,12 @@ import shutil
 from pathlib import Path
 from typing import Mapping
 
-from yt_emby.cookies import cookies_file_usable
-from yt_emby.extract import find_node
-from yt_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
-from yt_emby.log import info, warn
-from yt_emby.style import dim, green
+from yt_dlp_emby.config import env_value
+from yt_dlp_emby.cookies import cookies_file_usable
+from yt_dlp_emby.extract import find_node
+from yt_dlp_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
+from yt_dlp_emby.log import info, warn
+from yt_dlp_emby.style import dim, green
 
 WARN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 FAIL_FREE_BYTES = 200 * 1024 * 1024
@@ -94,7 +95,7 @@ def run_doctor(
         staging_path = Path(staging)
         try:
             staging_path.mkdir(parents=True, exist_ok=True)
-            probe = staging_path / ".yt-emby-doctor"
+            probe = staging_path / ".yt-dlp-emby-doctor"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
             info(f"{green('ok')}      staging {staging_path}")
@@ -103,7 +104,7 @@ def run_doctor(
             warn(f"staging is not writable: {staging_path} ({exc})")
             failed += 1
     else:
-        env_staging = environ.get("YT_EMBY_STAGING")
+        env_staging = env_value(environ, "STAGING")
         if env_staging:
             staging_path = Path(env_staging)
             if staging_path.exists():
@@ -111,10 +112,11 @@ def run_doctor(
                 failed += _report_disk(staging_path, "staging")
 
     library_path: Path | None = None
+    env_library = env_value(environ, "LIBRARY")
     if library:
         library_path = Path(library)
-    elif environ.get("YT_EMBY_LIBRARY"):
-        library_path = Path(environ["YT_EMBY_LIBRARY"])
+    elif env_library:
+        library_path = Path(env_library)
     if library_path is not None:
         if not library_path.exists():
             warn(f"library does not exist: {library_path}")

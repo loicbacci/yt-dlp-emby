@@ -1,5 +1,5 @@
-from yt_emby.log import fit_line, format_dry_run_row, format_run_summary, warn
-from yt_emby.style import (
+from yt_dlp_emby.log import fit_line, format_dry_run_row, format_run_summary, warn
+from yt_dlp_emby.style import (
     GREEN,
     RED,
     YELLOW,
@@ -42,7 +42,7 @@ def test_fit_line_truncates_visible_width(monkeypatch) -> None:
             return True
 
     monkeypatch.setattr(
-        "yt_emby.log.shutil.get_terminal_size",
+        "yt_dlp_emby.log.shutil.get_terminal_size",
         lambda *a, **k: type("Size", (), {"columns": 10})(),
     )
     styled = paint("abcdefghijklmnop", GREEN, enabled=True)

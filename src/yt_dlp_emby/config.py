@@ -9,14 +9,15 @@ from typing import Mapping
 
 import tomllib
 
-from yt_emby.cookies import cookies_file_usable
-from yt_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
+from yt_dlp_emby.cookies import cookies_file_usable
+from yt_dlp_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
 
 __all__ = [
     "ConfigError",
     "FFmpegNotFoundError",
     "MissingPathError",
     "Settings",
+    "env_value",
     "resolve_settings",
 ]
 
@@ -82,12 +83,21 @@ def _config_file(
 ) -> Path | None:
     if config_path:
         return Path(config_path)
-    env_path = environ.get("YT_EMBY_CONFIG")
+    env_path = env_value(environ, "CONFIG")
     if env_path:
         return Path(env_path)
     default = cwd / "config.toml"
     if default.is_file():
         return default
+    return None
+
+
+def env_value(environ: Mapping[str, str], name: str) -> str | None:
+    """`YT_DLP_EMBY_<name>`, then the legacy `YT_EMBY_<name>`."""
+    for prefix in ("YT_DLP_EMBY_", "YT_EMBY_"):
+        value = environ.get(prefix + name)
+        if value:
+            return value
     return None
 
 
@@ -134,14 +144,14 @@ def resolve_settings(
             raise ConfigError(f"Config file not found: {file_path}")
         file_values = _load_toml(file_path)
 
-    resolved_library = _pick(library, environ.get("YT_EMBY_LIBRARY"), file_values.get("library"))
-    resolved_old = _pick(old_dir, environ.get("YT_EMBY_OLD_DIR"), file_values.get("old_dir"))
+    resolved_library = _pick(library, env_value(environ, "LIBRARY"), file_values.get("library"))
+    resolved_old = _pick(old_dir, env_value(environ, "OLD_DIR"), file_values.get("old_dir"))
 
     missing: list[str] = []
     if not resolved_library:
-        missing.append("library (--library, YT_EMBY_LIBRARY, or config library)")
+        missing.append("library (--library, YT_DLP_EMBY_LIBRARY, or config library)")
     if not resolved_old:
-        missing.append("old_dir (--old-dir, YT_EMBY_OLD_DIR, or config old_dir)")
+        missing.append("old_dir (--old-dir, YT_DLP_EMBY_OLD_DIR, or config old_dir)")
     if missing:
         raise MissingPathError(
             "Missing required path(s): "
@@ -149,11 +159,11 @@ def resolve_settings(
             + ". Pass them as flags, environment variables, or a config file."
         )
 
-    resolved_staging = _pick(staging, environ.get("YT_EMBY_STAGING"), file_values.get("staging"))
+    resolved_staging = _pick(staging, env_value(environ, "STAGING"), file_values.get("staging"))
     resolved_bench = _pick(
-        bench_dest, environ.get("YT_EMBY_BENCH_DEST"), file_values.get("bench_dest")
+        bench_dest, env_value(environ, "BENCH_DEST"), file_values.get("bench_dest")
     )
-    resolved_cookies = _pick(cookiefile, environ.get("YT_EMBY_COOKIES"), file_values.get("cookies"))
+    resolved_cookies = _pick(cookiefile, env_value(environ, "COOKIES"), file_values.get("cookies"))
     if auto_cookies and not resolved_cookies:
         default_cookies = cwd / "cookies.txt"
         if default_cookies.is_file():
@@ -169,15 +179,15 @@ def resolve_settings(
     ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
 
     if not verbose:
-        env_verbose = environ.get("YT_EMBY_VERBOSE", "")
+        env_verbose = env_value(environ, "VERBOSE") or ""
         verbose = env_verbose.lower() in {"1", "true", "yes", "on"}
     if quiet or silent:
         verbose = False
     if not debug:
-        env_debug = environ.get("YT_EMBY_DEBUG", "")
+        env_debug = env_value(environ, "DEBUG") or ""
         debug = env_debug.lower() in {"1", "true", "yes", "on"}
     if not force_refetch:
-        env_refetch = environ.get("YT_EMBY_FORCE_REFETCH", "")
+        env_refetch = env_value(environ, "FORCE_REFETCH") or ""
         force_refetch = env_refetch.lower() in {"1", "true", "yes", "on"}
 
     return Settings(

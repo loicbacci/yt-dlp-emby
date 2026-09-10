@@ -3,8 +3,8 @@ from io import StringIO
 
 import pytest
 
-from yt_emby.config import Settings
-from yt_emby.download import cleanup_stale_staging, mark_live_staging, promote_episode
+from yt_dlp_emby.config import Settings
+from yt_dlp_emby.download import cleanup_stale_staging, mark_live_staging, promote_episode
 
 
 def _touch_mkv(opts: dict) -> None:
@@ -75,7 +75,7 @@ def test_promote_episode_succeeds_when_copystat_is_denied(
     def deny_copystat(*_args: object, **_kwargs: object) -> None:
         raise PermissionError(1, "Operation not permitted")
 
-    monkeypatch.setattr("yt_emby.download.shutil.copystat", deny_copystat)
+    monkeypatch.setattr("yt_dlp_emby.download.shutil.copystat", deny_copystat)
     staging = tmp_path / "staging"
     dest_dir = tmp_path / "library" / "Season 1"
     staging.mkdir()
@@ -90,7 +90,7 @@ def test_promote_episode_succeeds_when_copystat_is_denied(
 
 
 def test_copy_with_progress_writes_chunks(tmp_path: Path) -> None:
-    from yt_emby.progress import DownloadProgress, copy_with_progress
+    from yt_dlp_emby.progress import DownloadProgress, copy_with_progress
 
     src = tmp_path / "src.bin"
     dest = tmp_path / "dest.bin"
@@ -103,7 +103,7 @@ def test_copy_with_progress_writes_chunks(tmp_path: Path) -> None:
 
 
 def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class FakeYDL:
         opts_seen: dict = {}
@@ -122,7 +122,7 @@ def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest
             _touch_mkv(self.opts_seen)
             return {"id": "vid1", "title": "Intro", "description": "Plot"}
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -142,7 +142,7 @@ def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest
 
 
 def test_download_video_all_subtitle_langs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class FakeYDL:
         opts_seen: dict = {}
@@ -160,7 +160,7 @@ def test_download_video_all_subtitle_langs(tmp_path: Path, monkeypatch: pytest.M
             _touch_mkv(self.opts_seen)
             return {"id": "vid1"}
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -177,7 +177,7 @@ def test_download_video_all_subtitle_langs(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_download_video_passes_cookiefile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class FakeYDL:
         opts_seen: dict = {}
@@ -195,7 +195,7 @@ def test_download_video_passes_cookiefile(tmp_path: Path, monkeypatch: pytest.Mo
             _touch_mkv(self.opts_seen)
             return {"id": "vid1"}
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n")
     settings = Settings(
@@ -208,14 +208,14 @@ def test_download_video_passes_cookiefile(tmp_path: Path, monkeypatch: pytest.Mo
     download_video("https://www.youtube.com/watch?v=vid1", tmp_path / "ep", settings)
     used = FakeYDL.opts_seen["cookiefile"]
     assert used != str(cookies)
-    assert Path(used).name.startswith("yt-emby-cookies-")
+    assert Path(used).name.startswith("yt-dlp-emby-cookies-")
     assert cookies.is_file()
 
 
 def test_download_video_does_not_let_ydl_empty_cookiefile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class WipingYDL:
         def __init__(self, opts: dict) -> None:
@@ -232,7 +232,7 @@ def test_download_video_does_not_let_ydl_empty_cookiefile(
             _touch_mkv(self.opts)
             return {"id": "vid1"}
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", WipingYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", WipingYDL)
     cookies = tmp_path / "cookies.txt"
     original = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n"
     cookies.write_text(original)
@@ -250,7 +250,7 @@ def test_download_video_does_not_let_ydl_empty_cookiefile(
 def test_download_video_enables_node_js_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class FakeYDL:
         opts_seen: dict = {}
@@ -268,8 +268,8 @@ def test_download_video_enables_node_js_runtime(
             _touch_mkv(self.opts_seen)
             return {"id": "vid1"}
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
-    monkeypatch.setattr("yt_emby.extract.find_node", lambda: "/usr/bin/node")
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
+    monkeypatch.setattr("yt_dlp_emby.extract.find_node", lambda: "/usr/bin/node")
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -283,7 +283,7 @@ def test_download_video_enables_node_js_runtime(
 def test_download_video_empty_info_is_not_auth_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.download import YoutubeAuthError, download_video
+    from yt_dlp_emby.download import YoutubeAuthError, download_video
 
     class FakeYDL:
         def __init__(self, opts: dict) -> None:
@@ -298,7 +298,7 @@ def test_download_video_empty_info_is_not_auth_error(
         def extract_info(self, url: str, download: bool = True) -> None:
             return None
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FakeYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -318,8 +318,8 @@ def test_download_video_empty_info_is_not_auth_error(
 def test_download_video_auth_error_from_ydl_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.auth import DropoutAuthError
-    from yt_emby.download import download_video
+    from yt_dlp_emby.auth import DropoutAuthError
+    from yt_dlp_emby.download import download_video
 
     class AuthFailYDL:
         def __init__(self, opts: dict) -> None:
@@ -337,7 +337,7 @@ def test_download_video_auth_error_from_ydl_log(
             )
             return None
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", AuthFailYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", AuthFailYDL)
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -354,7 +354,7 @@ def test_download_video_auth_error_from_ydl_log(
 def test_download_video_reports_ydl_error_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_emby.download import download_video
+    from yt_dlp_emby.download import download_video
 
     class FragFailYDL:
         def __init__(self, opts: dict) -> None:
@@ -370,7 +370,7 @@ def test_download_video_reports_ydl_error_message(
             self.opts["logger"].error("Unable to rename file: [Errno 2] No such file or directory")
             return None
 
-    monkeypatch.setattr("yt_emby.download.YoutubeDL", FragFailYDL)
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FragFailYDL)
     settings = Settings(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -390,36 +390,39 @@ def test_cleanup_stale_staging_removes_unresumable_leftovers(tmp_path: Path) -> 
     staging = tmp_path / "staging"
     temp_dir.mkdir()
     staging.mkdir()
-    leftover = temp_dir / "yt-emby-abc123"
+    leftover = temp_dir / "yt-dlp-emby-abc123"
     leftover.mkdir()
     (leftover / "partial.temp.mkv").write_bytes(b"x")
-    dropout_left = staging / "yt-emby-dropout-xyz"
+    dropout_left = staging / "yt-dlp-emby-dropout-xyz"
     dropout_left.mkdir()
-    cookies = temp_dir / "yt-emby-cookies-zzzz.txt"
+    cookies = temp_dir / "yt-dlp-emby-cookies-zzzz.txt"
     cookies.write_text("cookies")
+    legacy = temp_dir / "yt-emby-oldrun"
+    legacy.mkdir()
     keep_dir = temp_dir / "other-app"
     keep_dir.mkdir()
-    keep_named = temp_dir / "yt-emby"
+    keep_named = temp_dir / "yt-dlp-emby"
     keep_named.mkdir()
     keep_file = staging / "unrelated.txt"
     keep_file.write_text("keep")
 
     removed = cleanup_stale_staging(staging, temp_dir=temp_dir)
 
-    assert removed == 3
+    assert removed == 4
     assert not leftover.exists()
     assert not dropout_left.exists()
     assert not cookies.exists()
+    assert not legacy.exists()
     assert keep_dir.is_dir()
     assert keep_named.is_dir()
     assert keep_file.read_text() == "keep"
 
 
 def test_cleanup_stale_staging_does_not_delete_staging_root(tmp_path: Path) -> None:
-    staging = tmp_path / "yt-emby"
+    staging = tmp_path / "yt-dlp-emby"
     staging.mkdir()
     (staging / "keep.txt").write_text("ok")
-    leftover = staging / "yt-emby-oldrun"
+    leftover = staging / "yt-dlp-emby-oldrun"
     leftover.mkdir()
     unused_tmp = tmp_path / "empty-tmp"
     unused_tmp.mkdir()
@@ -433,22 +436,22 @@ def test_cleanup_stale_staging_does_not_delete_staging_root(tmp_path: Path) -> N
 
 
 def test_cleanup_stale_staging_scans_same_root_once(tmp_path: Path) -> None:
-    leftover = tmp_path / "yt-emby-run"
+    leftover = tmp_path / "yt-dlp-emby-run"
     leftover.mkdir()
     assert cleanup_stale_staging(tmp_path, temp_dir=tmp_path) == 1
     assert not leftover.exists()
 
 
 def test_cleanup_stale_staging_skips_live_run_dir(tmp_path: Path) -> None:
-    live = tmp_path / "yt-emby-dropout-live"
+    live = tmp_path / "yt-dlp-emby-dropout-live"
     live.mkdir()
     mark_live_staging(live)
-    dead = tmp_path / "yt-emby-dropout-dead"
+    dead = tmp_path / "yt-dlp-emby-dropout-dead"
     dead.mkdir()
     (dead / ".yt-emby-pid").write_text("2000000000", encoding="utf-8")
     (dead / "partial.mkv").write_bytes(b"x")
 
     assert cleanup_stale_staging(temp_dir=tmp_path) == 1
     assert live.is_dir()
-    assert (live / ".yt-emby-pid").is_file()
+    assert (live / ".yt-dlp-emby-pid").is_file()
     assert not dead.exists()

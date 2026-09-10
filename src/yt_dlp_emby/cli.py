@@ -7,8 +7,8 @@ import sys
 
 from pathlib import Path
 
-from yt_emby.config import ConfigError, Settings, resolve_settings
-from yt_emby.ffmpeg import FFmpegNotFoundError
+from yt_dlp_emby.config import ConfigError, Settings, resolve_settings
+from yt_dlp_emby.ffmpeg import FFmpegNotFoundError
 
 
 def _add_verbosity(parser: argparse.ArgumentParser) -> None:
@@ -33,7 +33,7 @@ def _add_verbosity(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="yt-emby",
+        prog="yt-dlp-emby",
         description="Download YouTube or Dropout.tv videos with yt-dlp for Emby.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -166,7 +166,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
 
 
 def run_doctor(args: argparse.Namespace) -> int:
-    from yt_emby.doctor import run_doctor as doctor_run
+    from yt_dlp_emby.doctor import run_doctor as doctor_run
 
     return doctor_run(
         ffmpeg_location=getattr(args, "ffmpeg_location", None),
@@ -177,7 +177,7 @@ def run_doctor(args: argparse.Namespace) -> int:
 
 
 def run_bench(args: argparse.Namespace) -> int:
-    from yt_emby.bench import parse_size, run_bench as bench_run
+    from yt_dlp_emby.bench import parse_size, run_bench as bench_run
 
     try:
         settings = _settings_from_args(args)
@@ -201,7 +201,7 @@ def run_download(args: argparse.Namespace) -> int:
         print(exc, file=sys.stderr)
         return 1
 
-    from yt_emby.pipeline import run_download as pipeline_download
+    from yt_dlp_emby.pipeline import run_download as pipeline_download
 
     return pipeline_download(args.url, settings, format_selector=getattr(args, "format", None))
 
@@ -218,12 +218,12 @@ def _dropout_manifest_path(args: argparse.Namespace) -> Path:
 
 
 def run_dropout(args: argparse.Namespace) -> int:
-    from yt_emby.dropout import run_dropout as pipeline_dropout
-    from yt_emby.dropout_manifest import load_dropout_manifest
+    from yt_dlp_emby.dropout import run_dropout as pipeline_dropout
+    from yt_dlp_emby.dropout_manifest import load_dropout_manifest
 
     try:
         manifest = load_dropout_manifest(_dropout_manifest_path(args))
-        from yt_emby.dropout_manifest import filter_dropout_manifest
+        from yt_dlp_emby.dropout_manifest import filter_dropout_manifest
 
         manifest = filter_dropout_manifest(
             manifest,

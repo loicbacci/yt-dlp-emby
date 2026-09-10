@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from yt_emby.images import save_jpeg, write_image_from_bytes
+from yt_dlp_emby.images import save_jpeg, write_image_from_bytes
 
 
 def _png_bytes(color: tuple[int, int, int] = (255, 0, 0)) -> bytes:

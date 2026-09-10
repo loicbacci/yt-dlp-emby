@@ -7,8 +7,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from yt_emby.auth import DropoutAuthError, auth_error_from_exception
-from yt_emby.cache import (
+from yt_dlp_emby.auth import DropoutAuthError, auth_error_from_exception
+from yt_dlp_emby.cache import (
     dropout_cache_path,
     dropout_listings_from_cache,
     dropout_listings_to_cache,
@@ -16,16 +16,16 @@ from yt_emby.cache import (
     migrate_dropout_season_cache,
     save_dropout_season_cache,
 )
-from yt_emby.config import ConfigError, Settings
-from yt_emby.download import cleanup_stale_staging, download_video, mark_live_staging, promote_episode
-from yt_emby.dropout_manifest import (
+from yt_dlp_emby.config import ConfigError, Settings
+from yt_dlp_emby.download import cleanup_stale_staging, download_video, mark_live_staging, promote_episode
+from yt_dlp_emby.dropout_manifest import (
     DropoutManifest,
     DropoutSeason,
     DropoutSeries,
     season_page_url,
 )
-from yt_emby.extract import DropoutListing, extract_dropout_season
-from yt_emby.library import (
+from yt_dlp_emby.extract import DropoutListing, extract_dropout_season
+from yt_dlp_emby.library import (
     emby_code,
     episode_stem,
     episode_title_from_filename,
@@ -33,10 +33,10 @@ from yt_emby.library import (
     season_folder_name,
     titles_match,
 )
-from yt_emby.log import RunStats, error, format_dry_run_row, format_elapsed, info, warn
-from yt_emby.progress import DownloadProgress
-from yt_emby.style import bold, dim, green, red, yellow
-from yt_emby.sync import move_episode_files
+from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_elapsed, info, warn
+from yt_dlp_emby.progress import DownloadProgress
+from yt_dlp_emby.style import bold, dim, green, red, yellow
+from yt_dlp_emby.sync import move_episode_files
 
 DROPOUT_SUBS = ["all"]
 
@@ -395,7 +395,7 @@ def _run_dropout(
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     with tempfile.TemporaryDirectory(
-        prefix="yt-emby-dropout-", dir=staging_parent, ignore_cleanup_errors=True
+        prefix="yt-dlp-emby-dropout-", dir=staging_parent, ignore_cleanup_errors=True
     ) as tmp:
         work_dir = Path(tmp)
         mark_live_staging(work_dir)
