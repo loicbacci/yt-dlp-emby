@@ -2,7 +2,13 @@ from io import StringIO
 
 import pytest
 
-from yt_dlp_emby.log import format_duration, format_elapsed, format_plan_counts, format_run_summary
+from yt_dlp_emby.log import (
+    format_duration,
+    format_elapsed,
+    format_plan_counts,
+    format_run_summary,
+    format_unit_plan,
+)
 from yt_dlp_emby.progress import (
     DownloadProgress,
     format_bytes,
@@ -220,6 +226,36 @@ def test_run_summary_and_plan_counts() -> None:
     assert format_elapsed(0.012) == "12ms"
     assert format_elapsed(1.4) == "1.4s"
     assert format_elapsed(12) == "12s"
+    line = strip_ansi(
+        format_unit_plan(
+            "season 1",
+            dest="Season 1",
+            skip=12,
+            download=2,
+            extras={"rename": 1},
+            listing_source="listed",
+            listing_seconds=0.004,
+            disk_seconds=1.4,
+        )
+    )
+    assert line.startswith("  season 1 → Season 1")
+    assert "12 skip" in line
+    assert "2 download" in line
+    assert "1 rename" in line
+    assert line.endswith("listed  1.4s")
+    debug = strip_ansi(
+        format_unit_plan(
+            "season 1",
+            dest="Season 1",
+            skip=12,
+            download=0,
+            listing_source="listed",
+            listing_seconds=0.004,
+            disk_seconds=1.4,
+            debug=True,
+        )
+    )
+    assert "listed 4ms  disk 1.4s" in debug
     assert "interrupted" in strip_ansi(
         format_run_summary(
             downloaded=2, skipped=5, failed=0, remaining=9, interrupted=True, elapsed=181

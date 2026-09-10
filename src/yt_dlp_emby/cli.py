@@ -31,6 +31,16 @@ def _add_verbosity(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_debug(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-vv",
+        "--debug",
+        action="store_true",
+        dest="debug",
+        help="Show listing vs disk timings (does not dump yt-dlp HTTP or hide progress)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yt-dlp-emby",
@@ -67,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     youtube.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
     _add_verbosity(youtube)
+    _add_debug(youtube)
     youtube.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
     youtube.add_argument(
         "--cookies",
@@ -131,13 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore cached Dropout season listings and fetch them again",
     )
-    dropout.add_argument(
-        "-vv",
-        "--debug",
-        action="store_true",
-        dest="debug",
-        help="Show listing cache vs disk timings (does not dump yt-dlp HTTP or hide progress)",
-    )
+    _add_debug(dropout)
 
     bench = sub.add_parser("bench", help="Measure copy speed from local disk onto the library share")
     bench.add_argument(

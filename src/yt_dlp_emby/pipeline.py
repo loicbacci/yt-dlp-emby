@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import tempfile
 import time
@@ -37,7 +37,7 @@ from yt_dlp_emby.extract import (
     with_episode,
 )
 from yt_dlp_emby.images import download_image
-from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_plan_counts, info, warn
+from yt_dlp_emby.job import WorkRow, finish, log_step, note, note_series, print_work_rows, warn_if
 from yt_dlp_emby.library import (
     EpisodeRecord,
     LibraryIndex,
@@ -49,9 +49,9 @@ from yt_dlp_emby.library import (
     media_exists,
     save_index,
     season_dir,
-    season_folder_name,
     series_dir,
 )
+from yt_dlp_emby.log import RunStats, error, format_unit_plan
 from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
 from yt_dlp_emby.progress import DownloadProgress
 from yt_dlp_emby.sync import (
@@ -234,53 +234,162 @@ def _upgrade_low_res_actions(
             action.old_basename = basename
 
 
-def _print_plan(actions: list[SyncAction], settings: Settings) -> None:
-    if not actions:
-        _note(settings, "nothing to do")
-        return
-    if settings.show_steps:
-        for action in actions:
-            code = emby_code(action.season, action.episode or 0)
-            if action.live is not None:
-                title = action.live.title
-            elif action.stored is not None:
-                title = action.stored.title
-            else:
-                title = action.video_id
-            info(
-                format_dry_run_row(
-                    action.kind.value,
-                    code,
-                    title,
-                    f"{season_folder_name(action.season)}/",
-                )
-            )
+_ROW_ACTION = {
+    ActionKind.ADD: "download",
+    ActionKind.REFRESH: "skip",
+    ActionKind.REPLACE: "replace",
+    ActionKind.RENAME: "rename",
+    ActionKind.REMOVE: "remove",
+}
+
+
+@dataclass
+class YoutubePlaylistJob:
+    url: str
+    series_name: str
+    series: Path
+    season_number: int
+    season_path: Path
+    playlist: PlaylistInfo
+    actions: list[SyncAction]
+    listing_seconds: float
+    disk_seconds: float
+
+
+def _action_title(action: SyncAction) -> str:
+    if action.live is not None:
+        return action.live.title
+    if action.stored is not None:
+        return action.stored.title
+    return action.video_id
+
+
+def _youtube_plan_counts(actions: list[SyncAction]) -> tuple[int, int, dict[str, int]]:
     counts = Counter(action.kind.value for action in actions)
-    _note(settings, format_plan_counts(counts))
+    skip = counts.get("refresh", 0)
+    download = counts.get("add", 0) + counts.get("replace", 0)
+    extras: dict[str, int] = {}
+    if counts.get("rename"):
+        extras["rename"] = counts["rename"]
+    if counts.get("remove"):
+        extras["remove"] = counts["remove"]
+    return skip, download, extras
 
 
-def _log(settings: Settings, message: str) -> None:
-    if settings.show_steps:
-        info(message)
+def _tally_youtube_plan(job: YoutubePlaylistJob, stats: RunStats) -> None:
+    counts = Counter(action.kind.value for action in job.actions)
+    stats.downloaded += counts.get("add", 0) + counts.get("replace", 0)
+    stats.skipped += counts.get("refresh", 0) + counts.get("rename", 0)
 
 
-def _note(settings: Settings, message: str) -> None:
-    if settings.show_summary:
-        info(message)
+def _print_youtube_unit(job: YoutubePlaylistJob, settings: Settings) -> None:
+    skip, download, extras = _youtube_plan_counts(job.actions)
+    note(
+        settings,
+        format_unit_plan(
+            f"season {job.season_number}",
+            dest=job.season_path.name,
+            skip=skip,
+            download=download,
+            extras=extras,
+            listing_source="listed",
+            listing_seconds=job.listing_seconds,
+            disk_seconds=job.disk_seconds,
+            debug=settings.debug,
+        ),
+    )
+    print_work_rows(
+        settings,
+        [
+            WorkRow(
+                _ROW_ACTION.get(action.kind, action.kind.value),
+                emby_code(action.season, action.episode or 0),
+                _action_title(action),
+                f"{job.season_path.name}/",
+            )
+            for action in job.actions
+        ],
+    )
 
 
-def _warn(settings: Settings, message: str) -> None:
-    if settings.show_warnings:
-        warn(message)
+def _cleanup_start(settings: Settings) -> None:
+    stale = cleanup_stale_staging(settings.staging)
+    if stale:
+        log_step(settings, f"Removed {stale} leftover staging path(s)")
+    if settings.cookiefile:
+        log_step(settings, f"Using cookies file {settings.cookiefile}")
 
 
-def _finish(settings: Settings, stats: RunStats) -> int:
-    if settings.show_summary:
-        stats.recap()
-        info(stats.summary())
-    if stats.interrupted:
-        return 130
-    return 1 if stats.failed else 0
+def _prepare_playlist(
+    url: str,
+    settings: Settings,
+    *,
+    playlist_items: str | None = None,
+    series_folder: str | None = None,
+) -> YoutubePlaylistJob:
+    if settings.verbose or settings.debug:
+        log_step(settings, f"Listing playlist: {url}")
+    listing_started = time.monotonic()
+    playlist = extract_playlist(
+        url,
+        playlist_items=playlist_items,
+        cookies_from_browser=settings.cookies_from_browser,
+        cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
+        progress=settings.show_progress,
+        verbose=settings.verbose,
+        emit_warnings=settings.show_warnings,
+    )
+    listing_seconds = time.monotonic() - listing_started
+    if settings.debug:
+        log_step(
+            settings,
+            f"Found {len(playlist.episodes)} video(s) in "
+            f"{playlist.channel} / {playlist.title}",
+        )
+
+    disk_started = time.monotonic()
+    series_name = series_folder or playlist.channel
+    series = series_dir(settings.library, series_name)
+    cache = load_cache(series)
+    playlist = hydrate_playlist(playlist, cache, force_refetch=settings.force_refetch)
+    index = load_index(series)
+    if not index.channel_id:
+        index.channel_id = playlist.channel_id
+        index.channel_name = playlist.channel
+    season_number = assign_season(index, playlist.playlist_id, settings.season)
+    existing = index.playlists.get(playlist.playlist_id)
+    actions = plan_sync(playlist, existing, season_number)
+    season_path = season_dir(series, season_number)
+    _upgrade_low_res_actions(actions, season_path, settings.ffmpeg)
+    return YoutubePlaylistJob(
+        url=url,
+        series_name=series_name,
+        series=series,
+        season_number=season_number,
+        season_path=season_path,
+        playlist=playlist,
+        actions=actions,
+        listing_seconds=listing_seconds,
+        disk_seconds=time.monotonic() - disk_started,
+    )
+
+
+def _fetch_channel_art(playlist: PlaylistInfo, settings: Settings) -> ChannelArt | None:
+    if not playlist.channel_id:
+        return None
+    log_step(settings, "Fetching channel artwork")
+    try:
+        return extract_channel_art(
+            playlist.channel_id,
+            cookies_from_browser=settings.cookies_from_browser,
+            cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
+            progress=settings.show_progress,
+            verbose=settings.verbose,
+            emit_warnings=settings.show_warnings,
+        )
+    except Exception as exc:  # noqa: BLE001 — channel art is optional
+        warn_if(settings, f"could not fetch channel artwork: {exc}")
+        return None
 
 
 def _keep_listing(listing: EpisodeInfo, fetched: EpisodeInfo) -> EpisodeInfo:
@@ -312,6 +421,13 @@ def _resolve_episode(
     return _keep_listing(episode, resolved)
 
 
+def _listing_failed(settings: Settings, stats: RunStats, exc: Exception) -> int:
+    error(str(exc))
+    stats.failed += 1
+    stats.failures.append(("listing", str(exc)))
+    return finish(settings, stats)
+
+
 def run_download(
     url: str,
     settings: Settings,
@@ -322,18 +438,26 @@ def run_download(
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
-        return _run_download(
+        _cleanup_start(settings)
+        job = _prepare_playlist(
             url,
             settings,
-            stats,
-            format_selector=format_selector,
             playlist_items=playlist_items,
             series_folder=series_folder,
         )
+        note_series(settings, job.series_name, None)
+        _print_youtube_unit(job, settings)
+        if settings.dry_run:
+            _tally_youtube_plan(job, stats)
+            return finish(settings, stats)
+        _apply_youtube_job(job, settings, stats, format_selector)
+        return finish(settings, stats)
+    except YoutubeAuthError as exc:
+        return _listing_failed(settings, stats, exc)
     except KeyboardInterrupt:
         stats.interrupted = True
         error("interrupted")
-        return _finish(settings, stats)
+        return finish(settings, stats)
 
 
 def run_youtube_manifest(
@@ -341,103 +465,51 @@ def run_youtube_manifest(
     settings: Settings,
     format_selector: str | None = None,
 ) -> int:
-    worst = 0
-    for series in manifest.series:
-        for item in series.playlists:
-            code = run_download(
-                item.url,
-                replace(settings, season=item.season),
-                format_selector=format_selector,
-                series_folder=series.name,
-            )
-            if code == 130:
-                return 130
-            if code:
-                worst = code
-    return worst
+    stats = RunStats(dry_run=settings.dry_run)
+    try:
+        _cleanup_start(settings)
+        jobs: list[YoutubePlaylistJob] = []
+        last_series: str | None = None
+        for series in manifest.series:
+            for item in series.playlists:
+                job = _prepare_playlist(
+                    item.url,
+                    replace(settings, season=item.season),
+                    series_folder=series.name,
+                )
+                last_series = note_series(settings, series.name, last_series)
+                _print_youtube_unit(job, settings)
+                jobs.append(job)
+        if settings.dry_run:
+            for job in jobs:
+                _tally_youtube_plan(job, stats)
+            return finish(settings, stats)
+        for job in jobs:
+            if not _apply_youtube_job(job, settings, stats, format_selector):
+                return finish(settings, stats)
+        return finish(settings, stats)
+    except YoutubeAuthError as exc:
+        return _listing_failed(settings, stats, exc)
+    except KeyboardInterrupt:
+        stats.interrupted = True
+        error("interrupted")
+        return finish(settings, stats)
 
 
-def _run_download(
-    url: str,
+def _apply_youtube_job(
+    job: YoutubePlaylistJob,
     settings: Settings,
     stats: RunStats,
     format_selector: str | None = None,
-    *,
-    playlist_items: str | None = None,
-    series_folder: str | None = None,
-) -> int:
-    stale = cleanup_stale_staging(settings.staging)
-    if stale:
-        _log(settings, f"Removed {stale} leftover staging path(s)")
-    _log(settings, f"Listing playlist: {url}")
-    if settings.cookiefile:
-        _log(settings, f"Using cookies file {settings.cookiefile}")
-    try:
-        playlist = extract_playlist(
-            url,
-            playlist_items=playlist_items,
-            cookies_from_browser=settings.cookies_from_browser,
-            cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
-            progress=settings.show_progress,
-            verbose=settings.verbose,
-            emit_warnings=settings.show_warnings,
-        )
-    except YoutubeAuthError as exc:
-        error(str(exc))
-        stats.failed += 1
-        stats.failures.append(("listing", str(exc)))
-        return _finish(settings, stats)
-    _log(
-        settings,
-        f"Found {len(playlist.episodes)} video(s) in "
-        f"{playlist.channel} / {playlist.title}",
-    )
-    art: ChannelArt | None = None
-    if playlist.channel_id:
-        _log(settings, "Fetching channel artwork")
-        try:
-            art = extract_channel_art(
-                playlist.channel_id,
-                cookies_from_browser=settings.cookies_from_browser,
-                cookiefile=str(settings.cookiefile) if settings.cookiefile else None,
-                progress=settings.show_progress,
-                verbose=settings.verbose,
-                emit_warnings=settings.show_warnings,
-            )
-        except Exception as exc:  # noqa: BLE001 — channel art is optional
-            _warn(settings, f"could not fetch channel artwork: {exc}")
-
-    series = series_dir(settings.library, series_folder or playlist.channel)
-    cache = load_cache(series)
-    playlist = hydrate_playlist(playlist, cache, force_refetch=settings.force_refetch)
+) -> bool:
+    series = job.series
+    season_path = job.season_path
+    season_number = job.season_number
+    actions = job.actions
+    playlist = job.playlist
     index = load_index(series)
-    if not index.channel_id:
-        index.channel_id = playlist.channel_id
-        index.channel_name = playlist.channel
-    season_number = assign_season(index, playlist.playlist_id, settings.season)
-    existing = index.playlists.get(playlist.playlist_id)
-    actions = plan_sync(playlist, existing, season_number)
-    season_path = season_dir(series, season_number)
-    _upgrade_low_res_actions(actions, season_path, settings.ffmpeg)
-
-    _log(settings, f"series={series}")
-    _log(settings, f"season={season_number} ({playlist.title})")
-    _print_plan(actions, settings)
-
-    planned_downloads = [
-        action
-        for action in actions
-        if action.kind in {ActionKind.ADD, ActionKind.REPLACE}
-    ]
-    planned_skips = [
-        action
-        for action in actions
-        if action.kind in {ActionKind.REFRESH, ActionKind.RENAME}
-    ]
-    if settings.dry_run:
-        stats.downloaded = len(planned_downloads)
-        stats.skipped = len(planned_skips)
-        return _finish(settings, stats)
+    cache = load_cache(series)
+    art = _fetch_channel_art(playlist, settings)
 
     series.mkdir(parents=True, exist_ok=True)
     season_path.mkdir(parents=True, exist_ok=True)
@@ -450,7 +522,7 @@ def _run_download(
         if action.kind in {ActionKind.REMOVE, ActionKind.REPLACE} and action.old_basename
     ]
     if moved:
-        _log(settings, f"Moving {len(moved)} replaced/removed item(s) to {old_dest}")
+        log_step(settings, f"Moving {len(moved)} replaced/removed item(s) to {old_dest}")
     for action in moved:
         assert action.old_basename is not None
         move_episode_files(season_path, action.old_basename, old_dest)
@@ -461,7 +533,7 @@ def _run_download(
         if action.kind == ActionKind.RENAME and action.old_basename and action.new_basename
     ]
     if rename_pairs:
-        _log(settings, f"Renaming {len(rename_pairs)} episode(s)")
+        log_step(settings, f"Renaming {len(rename_pairs)} episode(s)")
     apply_renames(season_path, rename_pairs)
 
     index.channel_id = playlist.channel_id
@@ -481,7 +553,7 @@ def _run_download(
         stored.basename = action.new_basename
     save_index(series, index)
 
-    _log(settings, "Writing series NFO files and artwork")
+    log_step(settings, "Writing series NFO files and artwork")
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     write_series_artwork(series, season_path, season_number, playlist, art)
 
@@ -497,12 +569,12 @@ def _run_download(
     ]
     staging_parent = str(settings.staging) if settings.staging else None
     if downloads:
-        _log(settings, f"Downloading {len(downloads)} of {len(playlist.episodes)} episodes")
+        log_step(settings, f"Downloading {len(downloads)} of {len(playlist.episodes)} episodes")
         if settings.staging:
             settings.staging.mkdir(parents=True, exist_ok=True)
-            _log(settings, f"Staging downloads on local disk: {settings.staging}")
+            log_step(settings, f"Staging downloads on local disk: {settings.staging}")
         else:
-            _log(settings, "Staging downloads in the system temp directory")
+            log_step(settings, "Staging downloads in the system temp directory")
         with tempfile.TemporaryDirectory(
             prefix="yt-dlp-emby-", dir=staging_parent, ignore_cleanup_errors=True
         ) as tmp:
@@ -521,12 +593,15 @@ def _run_download(
                 )
                 if already and action.kind == ActionKind.ADD:
                     if existing_height is not None and existing_height < TARGET_HEIGHT:
-                        _log(
+                        log_step(
                             settings,
                             f"[{i}/{len(downloads)}] Replacing {existing_height}p with up to 1080p: {action.new_basename}",
                         )
                     else:
-                        _log(settings, f"[{i}/{len(downloads)}] Skipping existing {action.new_basename}")
+                        log_step(
+                            settings,
+                            f"[{i}/{len(downloads)}] Skipping existing {action.new_basename}",
+                        )
                         stats.skipped += 1
                         episode = (
                             episode_from_cache(action.live, cache[action.live.video_id])
@@ -539,7 +614,7 @@ def _run_download(
                         continue
                 eta = stats.eta(len(downloads) - i)
                 extra = f"  ETA {eta}" if eta else ""
-                _log(
+                log_step(
                     settings,
                     f"[{i}/{len(downloads)}] Downloading {action.new_basename}{extra}",
                 )
@@ -553,7 +628,7 @@ def _run_download(
                     stats.failed += 1
                     stats.failures.append((action.new_basename, str(exc)))
                     stats.remaining = len(downloads) - i
-                    return _finish(settings, stats)
+                    return False
                 except Exception as exc:
                     error(f"download failed for {action.new_basename}: {exc}")
                     stats.failed += 1
@@ -564,7 +639,7 @@ def _run_download(
                     stats.failed += 1
                     stats.failures.append((action.new_basename, "download returned no metadata"))
                     continue
-                _log(settings, f"[{i}/{len(downloads)}] Copying to library")
+                log_step(settings, f"[{i}/{len(downloads)}] Copying to library")
                 copy_progress = DownloadProgress(enabled=settings.show_progress)
                 promote_episode(local_stem, dest, copy_progress)
                 stats.mark_download(time.monotonic() - started)
@@ -592,4 +667,4 @@ def _run_download(
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     save_index(series, index)
     stats.skipped += len(sidecars)
-    return _finish(settings, stats)
+    return True

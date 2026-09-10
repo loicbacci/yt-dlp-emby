@@ -6,6 +6,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Mapping
 
 from yt_dlp_emby.style import (
     ANSI_RE,
@@ -151,6 +152,67 @@ def format_plan_counts(counts: dict[str, int], *, empty: str = "nothing to do") 
     extra = [f"{n} {key}" for key, n in counts.items() if key not in order and n]
     parts.extend(extra)
     return "  ".join(parts) if parts else empty
+
+
+_UNIT_EXTRA_ORDER = (
+    "replace",
+    "rename",
+    "remove",
+    "unmapped",
+    "omitted",
+    "title differs",
+)
+_UNIT_EXTRA_STYLE = {
+    "replace": yellow,
+    "rename": yellow,
+    "remove": red,
+    "unmapped": red,
+    "omitted": dim,
+    "title differs": yellow,
+}
+
+
+def format_unit_plan(
+    label: str,
+    *,
+    dest: str | None = None,
+    skip: int = 0,
+    download: int = 0,
+    extras: Mapping[str, int] | None = None,
+    listing_source: str | None = None,
+    listing_seconds: float | None = None,
+    disk_seconds: float | None = None,
+    debug: bool = False,
+) -> str:
+    skip_part = dim(f"{skip} skip")
+    download_part = (
+        green(f"{download} download") if download else dim(f"{download} download")
+    )
+    line = f"  {label}"
+    if dest:
+        line += f" → {dest}"
+    line += f"  {skip_part}  {download_part}"
+    extra_counts = dict(extras or {})
+    for key in _UNIT_EXTRA_ORDER:
+        count = extra_counts.pop(key, 0)
+        if not count:
+            continue
+        style = _UNIT_EXTRA_STYLE.get(key, lambda text: text)
+        line += f"  {style(f'{count} {key}')}"
+    for key, count in extra_counts.items():
+        if count:
+            line += f"  {count} {key}"
+    if listing_source is not None and listing_seconds is not None:
+        disk = disk_seconds or 0.0
+        if debug:
+            suffix = (
+                f"{listing_source} {format_elapsed(listing_seconds)}  "
+                f"disk {format_elapsed(disk)}"
+            )
+        else:
+            suffix = f"{listing_source}  {format_elapsed(listing_seconds + disk)}"
+        line += f"  {dim(suffix)}"
+    return line
 
 
 @dataclass

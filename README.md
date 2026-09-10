@@ -84,7 +84,7 @@ uv run yt-dlp-emby youtube --manifest youtube.yaml --dry-run
 uv run yt-dlp-emby youtube --series "Example Channel"
 ```
 
-Each playlist is listed, compared to the local series folder (`.yt-emby.json` plus the `.mkv` files), and only missing or changed episodes are downloaded. Season numbers come from `season:` in the manifest, or from the existing index if omitted.
+Each playlist is listed, compared to the local series folder (`.yt-emby.json` plus the `.mkv` files), and only missing or changed episodes are downloaded. Season numbers come from `season:` in the manifest, or from the existing index if omitted. A manifest run prints the same job UI as Dropout: the series name, one compact line per playlist (`skip` / `download`, plus `rename` / `remove` when those apply), a dim `listed` timing, and indented download rows on dry-run. Skip rows only appear with `-v`. The whole yaml is one job, so you get a single `Done` at the end. `-vv` / `--debug` splits listing vs disk time (`listed 1.4s  disk 12ms`). YouTube still lists the live playlist every time so reorders and removals show up.
 
 ```yaml
 library: /path/to/library
@@ -110,17 +110,18 @@ uv run yt-dlp-emby youtube URL --cookies cookies.txt
 uv run yt-dlp-emby youtube URL --quiet
 uv run yt-dlp-emby youtube URL --silent
 uv run yt-dlp-emby youtube URL --verbose
+uv run yt-dlp-emby youtube URL --debug
 uv run yt-dlp-emby youtube URL --force-refetch
 uv run yt-dlp-emby bench
 uv run yt-dlp-emby bench --size 64M
 ```
 
-Progress: by default the CLI logs each step, prints a plan summary, and draws its own bars while listing and downloading. Bars are TTY-only (piped output gets occasional one-line updates). Download bars are labeled by stream (`video`, `audio`, `en.srt`, `remux`); large library copies show a `copy` bar. yt-dlp's own output is silenced.
+Progress: by default the CLI prints a series name, compact per-season/playlist counts, and draws its own bars while listing and downloading. Bars are TTY-only (piped output gets occasional one-line updates). Download bars are labeled by stream (`video`, `audio`, `en.srt`, `remux`); large library copies show a `copy` bar. yt-dlp's own output is silenced.
 
-- `--quiet` hides bars and step logs; still prints warnings and a `Done  downloaded=N  skipped=N  failed=N` summary.
+- `--quiet` hides bars and step logs; still prints warnings, the compact plan, and a `Done` summary.
 - `--silent` prints errors only.
-- `-v` / `--verbose` (or `YT_DLP_EMBY_VERBOSE=1`) prints every yt-dlp message instead of our bars.
-- Dropout `-vv` / `--debug` (or `YT_DLP_EMBY_DEBUG=1`) splits listing vs disk timings and does **not** hide progress or dump yt-dlp HTTP.
+- `-v` / `--verbose` (or `YT_DLP_EMBY_VERBOSE=1`) prints skip rows and every yt-dlp message instead of our bars.
+- `-vv` / `--debug` (or `YT_DLP_EMBY_DEBUG=1`) splits listing vs disk timings and does **not** hide progress or dump yt-dlp HTTP.
 
 A run with any failed download exits `1`.
 

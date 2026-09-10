@@ -262,6 +262,18 @@ def test_dropout_accepts_debug() -> None:
     assert both.debug is True
 
 
+def test_youtube_accepts_debug() -> None:
+    parser = build_parser()
+    debug = parser.parse_args(["youtube", "--debug"])
+    assert debug.debug is True
+    assert debug.verbose is False
+    vv = parser.parse_args(["youtube", "-vv"])
+    assert vv.debug is True
+    both = parser.parse_args(["youtube", "-v", "--debug"])
+    assert both.verbose is True
+    assert both.debug is True
+
+
 def test_bench_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["bench", "--size", "64M", "--dest", "/mnt/share"])

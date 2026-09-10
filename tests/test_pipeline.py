@@ -6,6 +6,7 @@ from yt_dlp_emby.cache import CACHE_FILENAME, load_cache
 from yt_dlp_emby.config import resolve_settings
 from yt_dlp_emby.extract import ChannelArt, EpisodeInfo, PlaylistInfo
 from yt_dlp_emby.pipeline import run_download
+from yt_dlp_emby.style import strip_ansi
 
 
 def _playlist() -> PlaylistInfo:
@@ -28,7 +29,15 @@ def _playlist() -> PlaylistInfo:
     )
 
 
-def _settings(tmp_path: Path, *, force_refetch: bool = False):
+def _settings(
+    tmp_path: Path,
+    *,
+    force_refetch: bool = False,
+    dry_run: bool = False,
+    quiet: bool = True,
+    verbose: bool = False,
+    debug: bool = False,
+):
     ffmpeg = tmp_path / "ffmpeg"
     ffmpeg.write_text("#!/bin/sh\n")
     ffmpeg.chmod(0o755)
@@ -37,9 +46,12 @@ def _settings(tmp_path: Path, *, force_refetch: bool = False):
         old_dir=str(tmp_path / "old"),
         ffmpeg_location=str(ffmpeg),
         force_refetch=force_refetch,
+        dry_run=dry_run,
+        quiet=quiet,
+        verbose=verbose,
+        debug=debug,
         environ={},
         cwd=tmp_path,
-        quiet=True,
     )
 
 
@@ -272,20 +284,124 @@ def test_pipeline_series_folder_override(tmp_path: Path, monkeypatch: pytest.Mon
     assert not (tmp_path / "lib" / "Example Channel").exists()
 
 
-def test_youtube_manifest_runs_each_playlist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _playlist_named(playlist_id: str, video_id: str, title: str) -> PlaylistInfo:
+    return PlaylistInfo(
+        playlist_id=playlist_id,
+        title="Course",
+        description="Playlist plot",
+        channel="Example Channel",
+        channel_id="UC1",
+        thumbnail_url=None,
+        episodes=[
+            EpisodeInfo(
+                video_id=video_id,
+                title=title,
+                description="",
+                playlist_index=1,
+                webpage_url=f"https://www.youtube.com/watch?v={video_id}",
+            )
+        ],
+    )
+
+
+def test_pipeline_dry_run_prints_unit_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    _patch_extractors(monkeypatch, calls)
+    code = run_download(
+        "https://example.invalid/playlist",
+        _settings(tmp_path, dry_run=True, quiet=False),
+    )
+    assert code == 0
+    assert calls == ["list"]
+    out = strip_ansi(capsys.readouterr().out)
+    assert "Example Channel" in out
+    assert "season 1 → Season 1" in out
+    assert "1 download" in out
+    assert "listed" in out
+    assert "    download" in out
+    assert "S01E01" in out
+    assert out.count("Done") == 1
+    assert "Listing playlist" not in out
+
+
+def test_pipeline_dry_run_hides_skip_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    _patch_extractors(monkeypatch, calls)
+    assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
+    calls.clear()
+    capsys.readouterr()
+    assert (
+        run_download(
+            "https://example.invalid/playlist",
+            _settings(tmp_path, dry_run=True, quiet=False),
+        )
+        == 0
+    )
+    assert calls == ["list"]
+    out = strip_ansi(capsys.readouterr().out)
+    assert "1 skip" in out
+    assert "0 download" in out
+    assert "    skip" not in out
+    assert "    download" not in out
+
+
+def test_pipeline_verbose_dry_run_prints_skip_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    _patch_extractors(monkeypatch, calls)
+    assert run_download("https://example.invalid/playlist", _settings(tmp_path)) == 0
+    capsys.readouterr()
+    assert (
+        run_download(
+            "https://example.invalid/playlist",
+            _settings(tmp_path, dry_run=True, quiet=False, verbose=True),
+        )
+        == 0
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert "    skip" in out
+
+
+def test_pipeline_debug_splits_listing_and_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
+    _patch_extractors(monkeypatch, calls)
+    run_download(
+        "https://example.invalid/playlist",
+        _settings(tmp_path, dry_run=True, quiet=False, debug=True),
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert "listed" in out
+    assert "disk" in out
+
+
+def test_youtube_manifest_one_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from yt_dlp_emby.pipeline import run_youtube_manifest
     from yt_dlp_emby.youtube_manifest import YoutubeManifest, YoutubePlaylist, YoutubeSeries
 
     urls: list[str] = []
 
-    def fake_run(url: str, settings: object, format_selector: str | None = None, **kwargs: object) -> int:
+    def fake_extract_playlist(url: str, **_kwargs: object) -> PlaylistInfo:
         urls.append(url)
-        assert kwargs.get("series_folder") == "Example Channel"
-        return 0
+        if "PLaaaa" in url:
+            return _playlist_named("PLa", "vid1", "Intro")
+        return _playlist_named("PLb", "vid2", "Next")
 
-    monkeypatch.setattr("yt_dlp_emby.pipeline.run_download", fake_run)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", fake_extract_playlist)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "yt_dlp_emby.pipeline.download_video",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("dry-run downloaded")),
+    )
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_image", lambda *_a, **_k: None)
     manifest = YoutubeManifest(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -294,14 +410,20 @@ def test_youtube_manifest_runs_each_playlist(
                 name="Example Channel",
                 playlists=(
                     YoutubePlaylist("https://www.youtube.com/playlist?list=PLaaaa", 1),
-                    YoutubePlaylist("https://www.youtube.com/playlist?list=PLbbbb", None),
+                    YoutubePlaylist("https://www.youtube.com/playlist?list=PLbbbb", 2),
                 ),
             ),
         ),
     )
-    assert run_youtube_manifest(manifest, _settings(tmp_path)) == 0
+    assert run_youtube_manifest(manifest, _settings(tmp_path, dry_run=True, quiet=False)) == 0
     assert urls == [
         "https://www.youtube.com/playlist?list=PLaaaa",
         "https://www.youtube.com/playlist?list=PLbbbb",
     ]
+    out = strip_ansi(capsys.readouterr().out)
+    assert out.count("Example Channel") == 1
+    assert "season 1 → Season 1" in out
+    assert "season 2 → Season 2" in out
+    assert out.count("Done") == 1
+    assert "listed" in out
 

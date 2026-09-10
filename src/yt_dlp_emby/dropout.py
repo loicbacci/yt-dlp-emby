@@ -25,6 +25,7 @@ from yt_dlp_emby.dropout_manifest import (
     season_page_url,
 )
 from yt_dlp_emby.extract import DropoutListing, extract_dropout_season
+from yt_dlp_emby.job import WorkRow, finish, log_step, note, note_series, print_work_rows, warn_if
 from yt_dlp_emby.library import (
     emby_code,
     episode_stem,
@@ -34,9 +35,9 @@ from yt_dlp_emby.library import (
     season_folder_name,
     titles_match,
 )
-from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_elapsed, info, warn
+from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_elapsed, format_unit_plan
 from yt_dlp_emby.progress import DownloadProgress
-from yt_dlp_emby.style import bold, dim, green, red, yellow
+from yt_dlp_emby.style import dim
 from yt_dlp_emby.sync import move_episode_files
 
 DROPOUT_SUBS = ["all"]
@@ -76,54 +77,24 @@ def format_season_plan(
     debug: bool = False,
 ) -> str:
     key = f"season {season.dropout}" if season.dropout is not None else "season"
-    dest = season_dest_label(season)
-    skip_part = dim(f"{skip} skip")
-    download_part = (
-        green(f"{download} download") if download else dim(f"{download} download")
-    )
-    line = f"  {key} → {dest}  {skip_part}  {download_part}"
+    extras: dict[str, int] = {}
     if unmapped:
-        line += f"  {red(f'{unmapped} unmapped')}"
+        extras["unmapped"] = unmapped
     if omitted:
-        line += f"  {dim(f'{omitted} omitted')}"
+        extras["omitted"] = omitted
     if retitled:
-        line += f"  {yellow(f'{retitled} title differs')}"
-    if listing_source is not None and listing_seconds is not None:
-        disk = disk_seconds or 0.0
-        if debug:
-            suffix = (
-                f"{listing_source} {format_elapsed(listing_seconds)}  "
-                f"disk {format_elapsed(disk)}"
-            )
-        else:
-            suffix = f"{listing_source}  {format_elapsed(listing_seconds + disk)}"
-        line += f"  {dim(suffix)}"
-    return line
-
-
-def _log(settings: Settings, message: str) -> None:
-    if settings.show_steps:
-        info(message)
-
-
-def _note(settings: Settings, message: str) -> None:
-    if settings.show_summary:
-        info(message)
-
-
-def _warn(settings: Settings, message: str) -> None:
-    if settings.show_warnings:
-        warn(message)
-
-
-def _finish(settings: Settings, stats: RunStats) -> int:
-    if settings.show_summary:
-        stats.recap()
-        info("")
-        info(stats.summary())
-    if stats.interrupted:
-        return 130
-    return 1 if stats.failed else 0
+        extras["title differs"] = retitled
+    return format_unit_plan(
+        key,
+        dest=season_dest_label(season),
+        skip=skip,
+        download=download,
+        extras=extras,
+        listing_source=listing_source,
+        listing_seconds=listing_seconds,
+        disk_seconds=disk_seconds,
+        debug=debug,
+    )
 
 
 def resolve_emby_target(
@@ -162,11 +133,11 @@ def ensure_series_dirs(manifest: DropoutManifest, settings: Settings, *, create:
     if create:
         for path in missing:
             path.mkdir(parents=True, exist_ok=True)
-            _log(settings, f"Created series folder {path}")
+            log_step(settings, f"Created series folder {path}")
         return
     message = "Series folder(s) do not exist (pass --create to create them):\n  " + listing
     if settings.dry_run:
-        _warn(settings, message)
+        warn_if(settings, message)
         return
     raise ConfigError(message)
 
@@ -196,7 +167,7 @@ def run_dropout(
     except KeyboardInterrupt:
         stats.interrupted = True
         error("interrupted")
-        return _finish(settings, stats)
+        return finish(settings, stats)
 
 
 def _run_dropout(
@@ -212,10 +183,10 @@ def _run_dropout(
 ) -> int:
     stale = cleanup_stale_staging(settings.staging)
     if stale:
-        _log(settings, f"Removed {stale} leftover staging path(s)")
+        log_step(settings, f"Removed {stale} leftover staging path(s)")
     ensure_series_dirs(manifest, settings, create=create)
     if settings.cookiefile:
-        _log(settings, f"Using cookies file {settings.cookiefile}")
+        log_step(settings, f"Using cookies file {settings.cookiefile}")
     extract = extract_fn or extract_dropout_season
     download = download_fn or download_video
     jobs: list[tuple[DropoutSeries, DropoutListing, int, int, Path, str, Path | None]] = []
@@ -230,9 +201,9 @@ def _run_dropout(
     cached_seasons = load_dropout_season_cache(cache_path)
     cache_load = time.monotonic() - cache_started
     if moved_from:
-        _note(settings, dim(f"moved listing cache from {moved_from}"))
+        note(settings, dim(f"moved listing cache from {moved_from}"))
     if settings.debug:
-        _note(
+        note(
             settings,
             dim(
                 f"listing cache  {cache_path}  {len(cached_seasons)} seasons  "
@@ -279,7 +250,7 @@ def _run_dropout(
             retitled = 0
             omitted = 0
             disk_seconds = 0.0
-            work_rows: list[tuple[str, str, str, str, str | None]] = []
+            work_rows: list[WorkRow] = []
             allowed = set(season.only_episodes) if season.only_episodes else None
             for listing in listings:
                 if allowed is not None and listing.dropout_episode not in allowed:
@@ -289,12 +260,11 @@ def _run_dropout(
                 if target is None:
                     unmapped += 1
                     work_rows.append(
-                        (
+                        WorkRow(
                             "unmapped",
                             f"E{listing.dropout_episode}",
                             listing.title,
                             "",
-                            None,
                         )
                     )
                     continue
@@ -325,7 +295,7 @@ def _run_dropout(
                     (series, listing, to_season, to_episode, dest_dir, stem, existing)
                 )
                 work_rows.append(
-                    (
+                    WorkRow(
                         action,
                         emby_code(to_season, to_episode),
                         title,
@@ -333,12 +303,8 @@ def _run_dropout(
                         title_note,
                     )
                 )
-            if last_series != series.name:
-                if last_series is not None:
-                    _note(settings, "")
-                _note(settings, bold(series.name))
-                last_series = series.name
-            _note(
+            last_series = note_series(settings, series.name, last_series)
+            note(
                 settings,
                 format_season_plan(
                     season,
@@ -353,44 +319,34 @@ def _run_dropout(
                     debug=settings.debug,
                 ),
             )
-            for action, code, title, folder, title_note in work_rows:
-                if action == "skip" and not settings.verbose:
-                    continue
-                if action == "download" and not settings.dry_run:
-                    continue
-                _note(
-                    settings,
-                    "    " + format_dry_run_row(action, code, title, folder),
-                )
-                if title_note and settings.verbose:
-                    _note(settings, "              " + yellow(title_note))
+            print_work_rows(settings, work_rows)
     except DropoutAuthError as exc:
         error(str(exc))
         stats.failed += 1
         stats.failures.append(("listing", str(exc)))
-        return _finish(settings, stats)
+        return finish(settings, stats)
 
     download_jobs = [job for job in jobs if force or job[6] is None]
     stats.skipped = len(jobs) - len(download_jobs)
 
     if settings.dry_run:
         stats.downloaded = len(download_jobs)
-        return _finish(settings, stats)
+        return finish(settings, stats)
 
     if download_jobs:
-        _log(settings, f"Downloading {len(download_jobs)} of {len(jobs)} episodes")
+        log_step(settings, f"Downloading {len(download_jobs)} of {len(jobs)} episodes")
     elif jobs:
-        _log(settings, f"Skipping {stats.skipped} existing file(s)")
+        log_step(settings, f"Skipping {stats.skipped} existing file(s)")
 
     if not download_jobs:
-        return _finish(settings, stats)
+        return finish(settings, stats)
 
     staging_parent = str(settings.staging) if settings.staging else None
     if settings.staging:
         settings.staging.mkdir(parents=True, exist_ok=True)
-        _log(settings, f"Staging downloads on local disk: {settings.staging}")
+        log_step(settings, f"Staging downloads on local disk: {settings.staging}")
     else:
-        _log(settings, "Staging downloads in the system temp directory")
+        log_step(settings, "Staging downloads in the system temp directory")
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     with tempfile.TemporaryDirectory(
@@ -406,7 +362,7 @@ def _run_dropout(
             extra = f"  ETA {eta}" if eta else ""
             local_stem = work_dir / stem
             dest_stem = dest_dir / stem
-            _log(settings, f"[{i}/{len(download_jobs)}] Downloading {stem}{extra}")
+            log_step(settings, f"[{i}/{len(download_jobs)}] Downloading {stem}{extra}")
             started = time.monotonic()
             try:
                 info_dict = download(
@@ -421,7 +377,7 @@ def _run_dropout(
                 stats.failed += 1
                 stats.failures.append((stem, str(exc)))
                 stats.remaining = len(download_jobs) - i
-                return _finish(settings, stats)
+                return finish(settings, stats)
             except Exception as exc:
                 auth = auth_error_from_exception(listing.url, exc)
                 if auth is not None:
@@ -429,7 +385,7 @@ def _run_dropout(
                     stats.failed += 1
                     stats.failures.append((stem, str(auth)))
                     stats.remaining = len(download_jobs) - i
-                    return _finish(settings, stats)
+                    return finish(settings, stats)
                 message = str(exc)
                 error(f"download failed for {stem}: {message}")
                 stats.failed += 1
@@ -441,15 +397,15 @@ def _run_dropout(
                 stats.failed += 1
                 stats.failures.append((stem, message))
                 continue
-            _log(settings, f"[{i}/{len(download_jobs)}] Copying to library")
+            log_step(settings, f"[{i}/{len(download_jobs)}] Copying to library")
             copy_progress = DownloadProgress(enabled=settings.show_progress)
             promote_episode(local_stem, dest_stem, copy_progress)
             if existing is not None and existing.stem != stem:
                 old_dest = settings.old_dir / series.name / stamp
                 move_episode_files(dest_dir, existing.stem, old_dest)
-                _log(settings, f"Moved previous title to {old_dest}")
+                log_step(settings, f"Moved previous title to {old_dest}")
             stats.mark_download(time.monotonic() - started)
             stats.downloaded += 1
             stats.remaining = len(download_jobs) - i
 
-    return _finish(settings, stats)
+    return finish(settings, stats)
