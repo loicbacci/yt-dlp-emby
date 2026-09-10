@@ -12,6 +12,7 @@ from yt_dlp_emby.library import (
     load_index,
     save_index,
     sanitize_filename,
+    season_dir,
     season_folder_name,
     series_dir,
     titles_match,
@@ -31,6 +32,15 @@ def test_series_and_season_paths(tmp_path: Path) -> None:
     assert season_folder_name(1) == "Season 1"
     assert season_folder_name(3) == "Season 3"
     assert season_folder_name(12) == "Season 12"
+    assert season_dir(series, 1) == series / "Season 1"
+
+
+def test_season_dir_reuses_padded_folder(tmp_path: Path) -> None:
+    series = tmp_path / "Show"
+    padded = series / "Season 01"
+    padded.mkdir(parents=True)
+    assert season_dir(series, 1) == padded
+    assert season_dir(series, 0) == series / "Specials"
 
 
 def test_episode_stem_uses_emby_pattern() -> None:

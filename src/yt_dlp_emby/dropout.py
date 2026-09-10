@@ -30,6 +30,7 @@ from yt_dlp_emby.library import (
     episode_stem,
     episode_title_from_filename,
     index_episode_mkvs,
+    season_dir,
     season_folder_name,
     titles_match,
 )
@@ -42,9 +43,7 @@ DROPOUT_SUBS = ["all"]
 
 
 def emby_season_dir(series: Path, season: int) -> Path:
-    if season == 0:
-        return series / "Specials"
-    return series / season_folder_name(season)
+    return season_dir(series, season)
 
 
 def season_dest_label(season: DropoutSeason) -> str:

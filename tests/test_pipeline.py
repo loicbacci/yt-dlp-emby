@@ -258,3 +258,50 @@ def test_pipeline_skips_unavailable_video_and_continues(
     assert len(mkvs) == 1
     assert "Ready" in mkvs[0].name
 
+
+def test_pipeline_series_folder_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    _patch_extractors(monkeypatch, calls)
+    code = run_download(
+        "https://example.invalid/playlist",
+        _settings(tmp_path),
+        series_folder="Custom Series",
+    )
+    assert code == 0
+    assert (tmp_path / "lib" / "Custom Series" / "Season 1").is_dir()
+    assert not (tmp_path / "lib" / "Example Channel").exists()
+
+
+def test_youtube_manifest_runs_each_playlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_dlp_emby.pipeline import run_youtube_manifest
+    from yt_dlp_emby.youtube_manifest import YoutubeManifest, YoutubePlaylist, YoutubeSeries
+
+    urls: list[str] = []
+
+    def fake_run(url: str, settings: object, format_selector: str | None = None, **kwargs: object) -> int:
+        urls.append(url)
+        assert kwargs.get("series_folder") == "Example Channel"
+        return 0
+
+    monkeypatch.setattr("yt_dlp_emby.pipeline.run_download", fake_run)
+    manifest = YoutubeManifest(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        series=(
+            YoutubeSeries(
+                name="Example Channel",
+                playlists=(
+                    YoutubePlaylist("https://www.youtube.com/playlist?list=PLaaaa", 1),
+                    YoutubePlaylist("https://www.youtube.com/playlist?list=PLbbbb", None),
+                ),
+            ),
+        ),
+    )
+    assert run_youtube_manifest(manifest, _settings(tmp_path)) == 0
+    assert urls == [
+        "https://www.youtube.com/playlist?list=PLaaaa",
+        "https://www.youtube.com/playlist?list=PLbbbb",
+    ]
+

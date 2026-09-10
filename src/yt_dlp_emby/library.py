@@ -55,7 +55,16 @@ def season_folder_name(season: int) -> str:
 
 
 def season_dir(series: Path, season: int) -> Path:
-    return series / season_folder_name(season)
+    """Prefer an existing folder, including zero-padded names like Season 01."""
+    if season == 0:
+        return series / "Specials"
+    unpadded = series / season_folder_name(season)
+    padded = series / f"Season {season:02d}"
+    if unpadded.is_dir():
+        return unpadded
+    if padded.is_dir():
+        return padded
+    return unpadded
 
 
 def media_exists(season: Path, basename: str) -> bool:

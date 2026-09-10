@@ -169,6 +169,31 @@ def test_download_accepts_force_refetch() -> None:
     assert args.force_refetch is True
 
 
+def test_youtube_url_is_optional() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["youtube", "--dry-run"])
+    assert args.command == "youtube"
+    assert args.url is None
+    assert args.dry_run is True
+
+
+def test_youtube_accepts_manifest_and_series() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "youtube",
+            "--manifest",
+            "youtube.yaml",
+            "--series",
+            "Example Channel",
+            "--dry-run",
+        ]
+    )
+    assert args.manifest == "youtube.yaml"
+    assert args.series_filter == ["Example Channel"]
+    assert args.url is None
+
+
 def test_download_accepts_cookies_file() -> None:
     parser = build_parser()
     args = parser.parse_args(

@@ -1,0 +1,12 @@
+library: /path/to/library
+old_dir: /path/to/old
+# staging: /var/tmp/yt-dlp-emby
+# cookies: cookies.txt
+
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://www.youtube.com/playlist?list=PLxxxxxxxx
+        season: 1
+      - url: https://www.youtube.com/playlist?list=PLyyyyyyyy
+        # season omitted: next unused season in this series folder

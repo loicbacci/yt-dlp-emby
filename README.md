@@ -76,6 +76,31 @@ Downloads always happen on **local disk** first (system temp, or `staging` if yo
 
 ## Usage
 
+Copy [`youtube.yaml.example`](youtube.yaml.example) to `youtube.yaml` (gitignored). Add playlists there, then re-run the command whenever you want the library checked against YouTube:
+
+```bash
+uv run yt-dlp-emby youtube
+uv run yt-dlp-emby youtube --manifest youtube.yaml --dry-run
+uv run yt-dlp-emby youtube --series "Example Channel"
+```
+
+Each playlist is listed, compared to the local series folder (`.yt-emby.json` plus the `.mkv` files), and only missing or changed episodes are downloaded. Season numbers come from `season:` in the manifest, or from the existing index if omitted.
+
+```yaml
+library: /path/to/library
+old_dir: /path/to/old
+cookies: cookies.txt
+
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://www.youtube.com/playlist?list=PLxxxxxxxx
+        season: 1
+      - url: https://www.youtube.com/playlist?list=PLyyyyyyyy
+```
+
+`name` is the Emby series folder. A one-off URL still works without a manifest (paths then come from `config.toml` or flags):
+
 ```bash
 uv run yt-dlp-emby youtube "https://www.youtube.com/playlist?list=PLAYLIST_ID"
 uv run yt-dlp-emby youtube URL --library /path/to/library --old-dir /path/to/old

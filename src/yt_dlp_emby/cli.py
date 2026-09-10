@@ -44,12 +44,27 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--staging", help="Local staging directory to verify (writable + free space)")
     doctor.add_argument("--library", help="Library directory to verify (exists + free space)")
 
-    youtube = sub.add_parser("youtube", help="Download a YouTube playlist or video and write NFO files")
-    youtube.add_argument("url", help="YouTube playlist or video URL")
+    youtube = sub.add_parser("youtube", help="Download YouTube playlists into an Emby library")
+    youtube.add_argument(
+        "url",
+        nargs="?",
+        help="Playlist or video URL (omit to use youtube.yaml)",
+    )
+    youtube.add_argument(
+        "--manifest",
+        help="Path to youtube.yaml (default: youtube.yaml in the current directory if that file exists)",
+    )
     youtube.add_argument("--library", help="Emby library root directory")
     youtube.add_argument("--old-dir", help="Directory for replaced or removed files")
     youtube.add_argument("--config", help="Path to a TOML config file")
-    youtube.add_argument("--season", type=int, help="Force season number for this playlist")
+    youtube.add_argument("--season", type=int, help="Force season number (URL mode only)")
+    youtube.add_argument(
+        "--series",
+        action="append",
+        dest="series_filter",
+        metavar="NAME",
+        help="Only this series name or playlist URL substring (manifest mode, repeatable)",
+    )
     youtube.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
     _add_verbosity(youtube)
     youtube.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
@@ -194,16 +209,69 @@ def run_bench(args: argparse.Namespace) -> int:
     )
 
 
+def _youtube_manifest_path(args: argparse.Namespace) -> Path:
+    if args.manifest:
+        return Path(args.manifest)
+    default = Path.cwd() / "youtube.yaml"
+    if default.is_file():
+        return default
+    raise ConfigError(
+        "Missing YouTube URL or manifest. Pass a playlist URL, --manifest, or put youtube.yaml in the current directory."
+    )
+
+
 def run_download(args: argparse.Namespace) -> int:
+    from yt_dlp_emby.pipeline import run_download as pipeline_download
+    from yt_dlp_emby.pipeline import run_youtube_manifest
+    from yt_dlp_emby.youtube_manifest import filter_youtube_manifest, load_youtube_manifest
+
+    if args.url:
+        if getattr(args, "series_filter", None):
+            print("error: --series is only used with a youtube.yaml manifest", file=sys.stderr)
+            return 1
+        try:
+            settings = _settings_from_args(args)
+        except (ConfigError, FFmpegNotFoundError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        return pipeline_download(args.url, settings, format_selector=getattr(args, "format", None))
+
+    if getattr(args, "season", None) is not None:
+        print("error: --season is for a single URL; set season: on the playlist in youtube.yaml", file=sys.stderr)
+        return 1
+
     try:
-        settings = _settings_from_args(args)
+        manifest = load_youtube_manifest(_youtube_manifest_path(args))
+        manifest = filter_youtube_manifest(
+            manifest,
+            series_names=getattr(args, "series_filter", None),
+        )
+        settings = resolve_settings(
+            library=getattr(args, "library", None) or str(manifest.library),
+            old_dir=getattr(args, "old_dir", None) or str(manifest.old_dir),
+            ffmpeg_location=getattr(args, "ffmpeg_location", None),
+            cookies_from_browser=getattr(args, "cookies_from_browser", None),
+            cookiefile=getattr(args, "cookies", None)
+            or (str(manifest.cookies) if manifest.cookies else None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            quiet=bool(getattr(args, "quiet", False)),
+            silent=bool(getattr(args, "silent", False)),
+            verbose=bool(getattr(args, "verbose", False)),
+            debug=bool(getattr(args, "debug", False)),
+            staging=getattr(args, "staging", None)
+            or (str(manifest.staging) if manifest.staging else None),
+            force_refetch=bool(getattr(args, "force_refetch", False)),
+            use_default_config=False,
+            auto_cookies=False,
+        )
+        return run_youtube_manifest(
+            manifest,
+            settings,
+            format_selector=getattr(args, "format", None),
+        )
     except (ConfigError, FFmpegNotFoundError) as exc:
         print(exc, file=sys.stderr)
         return 1
-
-    from yt_dlp_emby.pipeline import run_download as pipeline_download
-
-    return pipeline_download(args.url, settings, format_selector=getattr(args, "format", None))
 
 
 def _dropout_manifest_path(args: argparse.Namespace) -> Path:

@@ -20,6 +20,7 @@ htmlcov/
 # Local config (keep the example)
 config.toml
 dropout.yaml
+youtube.yaml
 cookies.txt
 *cookies.txt
 

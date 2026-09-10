@@ -61,6 +61,7 @@ from yt_dlp_emby.sync import (
     move_episode_files,
     plan_sync,
 )
+from yt_dlp_emby.youtube_manifest import YoutubeManifest
 
 
 def _premiered(playlist: PlaylistInfo) -> str | None:
@@ -317,6 +318,7 @@ def run_download(
     format_selector: str | None = None,
     *,
     playlist_items: str | None = None,
+    series_folder: str | None = None,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
@@ -326,11 +328,33 @@ def run_download(
             stats,
             format_selector=format_selector,
             playlist_items=playlist_items,
+            series_folder=series_folder,
         )
     except KeyboardInterrupt:
         stats.interrupted = True
         error("interrupted")
         return _finish(settings, stats)
+
+
+def run_youtube_manifest(
+    manifest: YoutubeManifest,
+    settings: Settings,
+    format_selector: str | None = None,
+) -> int:
+    worst = 0
+    for series in manifest.series:
+        for item in series.playlists:
+            code = run_download(
+                item.url,
+                replace(settings, season=item.season),
+                format_selector=format_selector,
+                series_folder=series.name,
+            )
+            if code == 130:
+                return 130
+            if code:
+                worst = code
+    return worst
 
 
 def _run_download(
@@ -340,6 +364,7 @@ def _run_download(
     format_selector: str | None = None,
     *,
     playlist_items: str | None = None,
+    series_folder: str | None = None,
 ) -> int:
     stale = cleanup_stale_staging(settings.staging)
     if stale:
@@ -382,7 +407,7 @@ def _run_download(
         except Exception as exc:  # noqa: BLE001 — channel art is optional
             _warn(settings, f"could not fetch channel artwork: {exc}")
 
-    series = series_dir(settings.library, playlist.channel)
+    series = series_dir(settings.library, series_folder or playlist.channel)
     cache = load_cache(series)
     playlist = hydrate_playlist(playlist, cache, force_refetch=settings.force_refetch)
     index = load_index(series)
