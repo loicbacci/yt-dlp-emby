@@ -17,7 +17,7 @@ from yt_emby.cache import (
     save_dropout_season_cache,
 )
 from yt_emby.config import ConfigError, Settings
-from yt_emby.download import cleanup_stale_staging, download_video, promote_episode
+from yt_emby.download import cleanup_stale_staging, download_video, mark_live_staging, promote_episode
 from yt_emby.dropout_manifest import (
     DropoutManifest,
     DropoutSeason,
@@ -70,6 +70,7 @@ def format_season_plan(
     download: int,
     unmapped: int,
     retitled: int = 0,
+    omitted: int = 0,
     listing_source: str | None = None,
     listing_seconds: float | None = None,
     disk_seconds: float | None = None,
@@ -84,6 +85,8 @@ def format_season_plan(
     line = f"  {key} → {dest}  {skip_part}  {download_part}"
     if unmapped:
         line += f"  {red(f'{unmapped} unmapped')}"
+    if omitted:
+        line += f"  {dim(f'{omitted} omitted')}"
     if retitled:
         line += f"  {yellow(f'{retitled} title differs')}"
     if listing_source is not None and listing_seconds is not None:
@@ -127,14 +130,14 @@ def _finish(settings: Settings, stats: RunStats) -> int:
 def resolve_emby_target(
     listing: DropoutListing,
     season: DropoutSeason,
-) -> tuple[int, int] | None:
+) -> tuple[int, int, str] | None:
     for remap in season.remap:
         if remap.dropout_episode == listing.dropout_episode:
-            return remap.to_season, remap.to_episode
+            return remap.to_season, remap.to_episode, remap.title or listing.title
     if season.to_season is not None:
-        return season.to_season, listing.dropout_episode
+        return season.to_season, listing.dropout_episode, listing.title
     if season.dropout is not None:
-        return season.dropout, listing.dropout_episode
+        return season.dropout, listing.dropout_episode, listing.title
     return None
 
 
@@ -143,8 +146,9 @@ def planned_stem(
     listing: DropoutListing,
     to_season: int,
     to_episode: int,
+    title: str | None = None,
 ) -> str:
-    return episode_stem(series.name, to_season, to_episode, listing.title)
+    return episode_stem(series.name, to_season, to_episode, title or listing.title)
 
 
 def ensure_series_dirs(manifest: DropoutManifest, settings: Settings, *, create: bool) -> None:
@@ -274,9 +278,14 @@ def _run_dropout(
             queued = 0
             unmapped = 0
             retitled = 0
+            omitted = 0
             disk_seconds = 0.0
             work_rows: list[tuple[str, str, str, str, str | None]] = []
+            allowed = set(season.only_episodes) if season.only_episodes else None
             for listing in listings:
+                if allowed is not None and listing.dropout_episode not in allowed:
+                    omitted += 1
+                    continue
                 target = resolve_emby_target(listing, season)
                 if target is None:
                     unmapped += 1
@@ -290,9 +299,9 @@ def _run_dropout(
                         )
                     )
                     continue
-                to_season, to_episode = target
+                to_season, to_episode, title = target
                 dest_dir = emby_season_dir(series_path, to_season)
-                stem = planned_stem(series, listing, to_season, to_episode)
+                stem = planned_stem(series, listing, to_season, to_episode, title)
                 if dest_dir not in mkv_indexes:
                     disk_started = time.monotonic()
                     mkv_indexes[dest_dir] = index_episode_mkvs(dest_dir)
@@ -300,7 +309,7 @@ def _run_dropout(
                 existing = mkv_indexes[dest_dir].get((to_season, to_episode))
                 title_note = None
                 if existing is not None and not titles_match(
-                    episode_title_from_filename(existing.name), listing.title
+                    episode_title_from_filename(existing.name), title
                 ):
                     retitled += 1
                     if force:
@@ -320,7 +329,7 @@ def _run_dropout(
                     (
                         action,
                         emby_code(to_season, to_episode),
-                        listing.title,
+                        title,
                         f"{dest_dir.name}/",
                         title_note,
                     )
@@ -338,6 +347,7 @@ def _run_dropout(
                     download=queued,
                     unmapped=unmapped,
                     retitled=retitled,
+                    omitted=omitted,
                     listing_source=listing_source,
                     listing_seconds=listing_seconds,
                     disk_seconds=disk_seconds,
@@ -388,6 +398,7 @@ def _run_dropout(
         prefix="yt-emby-dropout-", dir=staging_parent, ignore_cleanup_errors=True
     ) as tmp:
         work_dir = Path(tmp)
+        mark_live_staging(work_dir)
         for i, (series, listing, to_season, to_episode, dest_dir, stem, existing) in enumerate(
             download_jobs, start=1
         ):

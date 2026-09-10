@@ -37,6 +37,8 @@ FFmpeg is an external program invoked by yt-dlp to merge and remux. It is **not*
 uv sync
 uv run yt-emby doctor
 uv run yt-emby doctor --cookies cookies.txt --staging /var/tmp/yt-emby --library /mnt/nas-video/Youtube
+uv run yt-emby bench
+uv run yt-emby bench --size 64M --dest /mnt/nas-video/_old
 ```
 
 `doctor` checks ffmpeg, Node (for YouTube JS), cookies, that staging is writable, and free space on staging/library/temp.
@@ -51,6 +53,7 @@ Resolution order (highest wins): **CLI flag → environment variable → config 
 | --- | --- | --- | --- |
 | Library root | `--library` | `YT_EMBY_LIBRARY` | `library` |
 | Old/replaced files | `--old-dir` | `YT_EMBY_OLD_DIR` | `old_dir` |
+| Bench copy destination | `--dest` | `YT_EMBY_BENCH_DEST` | `bench_dest` |
 | Local download staging | `--staging` | `YT_EMBY_STAGING` | `staging` |
 | Config file | `--config` | `YT_EMBY_CONFIG` | — |
 | ffmpeg binary | `--ffmpeg-location` | `YT_EMBY_FFMPEG` | — |
@@ -66,9 +69,10 @@ Copy [`config.toml.example`](config.toml.example):
 library = "/path/to/library"
 old_dir = "/path/to/old"
 # staging = "/path/to/local/tmp"
+# bench_dest = "/path/to/old"
 ```
 
-Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and subtitle `.srt` files are copied to `library` and the staged files are deleted. Merge temps (`.temp.mkv`) and stream fragments (`.mp4` / `.m4a`) stay in staging and are never copied, so Emby does not pick them up. Point `staging` at a local SSD if `/tmp` is small. Leftover `yt-emby-*` folders in temp/staging from a killed run cannot be resumed (each run uses a new directory) and are deleted the next time you launch.
+Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and subtitle `.srt` files are copied to `library` and the staged files are deleted. Merge temps (`.temp.mkv`) and stream fragments (`.mp4` / `.m4a`) stay in staging and are never copied, so Emby does not pick them up. Point `staging` at a local SSD if `/tmp` is small. Leftover `yt-emby-*` folders in temp/staging from a killed run cannot be resumed (each run uses a new directory) and are deleted the next time you launch, unless another `yt-emby` process is still using that folder.
 
 ## Usage
 
@@ -82,6 +86,8 @@ uv run yt-emby youtube URL --quiet
 uv run yt-emby youtube URL --silent
 uv run yt-emby youtube URL --verbose
 uv run yt-emby youtube URL --force-refetch
+uv run yt-emby bench
+uv run yt-emby bench --size 64M
 ```
 
 Progress: by default the CLI logs each step, prints a plan summary, and draws its own bars while listing and downloading. Bars are TTY-only (piped output gets occasional one-line updates). Download bars are labeled by stream (`video`, `audio`, `en.srt`, `remux`); large library copies show a `copy` bar. yt-dlp's own output is silenced.
@@ -130,11 +136,18 @@ series:
           - dropout_episode: 1
             to_season: 0
             to_episode: 70
+            title: D20 on a Bus
 ```
 
-If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`).
+If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`). Optional `title` on a remap sets the Emby filename title (and is what “title differs” compares against). `only_episodes` limits a season to those Dropout episode numbers (the rest of the page is ignored); omit it to keep downloading every episode on the page.
 
-Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. yt-dlp is given a temp copy so it cannot truncate that file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
+```yaml
+      - url: https://watch.dropout.tv/dimension-20-fantasy-high/season:2
+        to_season: 7
+        only_episodes: [18, 19]
+```
+
+Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. yt-dlp is given a temp copy and that jar is never written back, so a failed or logged-out request cannot empty your file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
 
 ```bash
 uv run yt-emby dropout

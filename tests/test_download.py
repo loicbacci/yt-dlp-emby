@@ -4,7 +4,7 @@ from io import StringIO
 import pytest
 
 from yt_emby.config import Settings
-from yt_emby.download import cleanup_stale_staging, promote_episode
+from yt_emby.download import cleanup_stale_staging, mark_live_staging, promote_episode
 
 
 def _touch_mkv(opts: dict) -> None:
@@ -315,6 +315,76 @@ def test_download_video_empty_info_is_not_auth_error(
         raise AssertionError("expected RuntimeError")
 
 
+def test_download_video_auth_error_from_ydl_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_emby.auth import DropoutAuthError
+    from yt_emby.download import download_video
+
+    class AuthFailYDL:
+        def __init__(self, opts: dict) -> None:
+            self.opts = opts
+
+        def __enter__(self) -> "AuthFailYDL":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> None:
+            self.opts["logger"].error(
+                "[Dropout] ep: This video is only available for registered users."
+            )
+            return None
+
+    monkeypatch.setattr("yt_emby.download.YoutubeDL", AuthFailYDL)
+    settings = Settings(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        ffmpeg=tmp_path / "ffmpeg",
+        quiet=True,
+    )
+    try:
+        download_video("https://watch.dropout.tv/videos/ep", tmp_path / "ep", settings)
+    except DropoutAuthError:
+        return
+    raise AssertionError("expected DropoutAuthError")
+
+
+def test_download_video_reports_ydl_error_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_emby.download import download_video
+
+    class FragFailYDL:
+        def __init__(self, opts: dict) -> None:
+            self.opts = opts
+
+        def __enter__(self) -> "FragFailYDL":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> None:
+            self.opts["logger"].error("Unable to rename file: [Errno 2] No such file or directory")
+            return None
+
+    monkeypatch.setattr("yt_emby.download.YoutubeDL", FragFailYDL)
+    settings = Settings(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        ffmpeg=tmp_path / "ffmpeg",
+        quiet=True,
+    )
+    try:
+        download_video("https://watch.dropout.tv/videos/ep", tmp_path / "ep", settings)
+    except RuntimeError as exc:
+        assert "Unable to rename file" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
 def test_cleanup_stale_staging_removes_unresumable_leftovers(tmp_path: Path) -> None:
     temp_dir = tmp_path / "tmp"
     staging = tmp_path / "staging"
@@ -367,3 +437,18 @@ def test_cleanup_stale_staging_scans_same_root_once(tmp_path: Path) -> None:
     leftover.mkdir()
     assert cleanup_stale_staging(tmp_path, temp_dir=tmp_path) == 1
     assert not leftover.exists()
+
+
+def test_cleanup_stale_staging_skips_live_run_dir(tmp_path: Path) -> None:
+    live = tmp_path / "yt-emby-dropout-live"
+    live.mkdir()
+    mark_live_staging(live)
+    dead = tmp_path / "yt-emby-dropout-dead"
+    dead.mkdir()
+    (dead / ".yt-emby-pid").write_text("2000000000", encoding="utf-8")
+    (dead / "partial.mkv").write_bytes(b"x")
+
+    assert cleanup_stale_staging(temp_dir=tmp_path) == 1
+    assert live.is_dir()
+    assert (live / ".yt-emby-pid").is_file()
+    assert not dead.exists()

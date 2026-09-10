@@ -3,3 +3,5 @@ old_dir = "/path/to/old"
 # Optional local disk for in-progress downloads (recommended when the library is on SMB/NFS).
 # If unset, the system temp directory is used.
 # cookies = "cookies.txt"
+# Destination for `yt-emby bench` (defaults to library).
+# bench_dest = "/path/to/old"

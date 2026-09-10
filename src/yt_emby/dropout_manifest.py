@@ -27,6 +27,7 @@ class DropoutRemap:
     dropout_episode: int
     to_season: int
     to_episode: int
+    title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class DropoutSeason:
     url: str | None = None
     to_season: int | None = None
     remap: tuple[DropoutRemap, ...] = ()
+    only_episodes: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,13 +76,38 @@ def _int_field(value: Any, key: str, context: str) -> int:
     return value
 
 
+def _parse_only_episodes(raw: Any, context: str) -> tuple[int, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ConfigError(f"only_episodes must be a non-empty list in {context}")
+    seen: set[int] = set()
+    numbers: list[int] = []
+    for item in raw:
+        number = _int_field(item, "only_episodes", context)
+        if number < 1:
+            raise ConfigError(f"only_episodes values must be >= 1 in {context}")
+        if number in seen:
+            continue
+        seen.add(number)
+        numbers.append(number)
+    return tuple(numbers)
+
+
 def _parse_remap(raw: Any, context: str) -> DropoutRemap:
     if not isinstance(raw, dict):
         raise ConfigError(f"remap entry must be a mapping in {context}")
+    title_raw = raw.get("title")
+    title = None
+    if title_raw is not None:
+        if not isinstance(title_raw, str) or not title_raw.strip():
+            raise ConfigError(f"title must be a non-empty string in {context}")
+        title = title_raw.strip()
     return DropoutRemap(
         dropout_episode=_int_field(raw.get("dropout_episode"), "dropout_episode", context),
         to_season=_int_field(raw.get("to_season"), "to_season", context),
         to_episode=_int_field(raw.get("to_episode"), "to_episode", context),
+        title=title,
     )
 
 
@@ -103,9 +130,16 @@ def _parse_season(raw: Any, series_name: str, index: int) -> DropoutSeason:
     if not isinstance(remaps, list):
         raise ConfigError(f"remap must be a list in {context}")
     parsed = tuple(_parse_remap(item, context) for item in remaps)
+    only_episodes = _parse_only_episodes(raw.get("only_episodes"), context)
     if to_season is None and not parsed and dropout is None:
         raise ConfigError(f"Season needs to_season, remap, or dropout in {context}")
-    return DropoutSeason(dropout=dropout, url=url, to_season=to_season, remap=parsed)
+    return DropoutSeason(
+        dropout=dropout,
+        url=url,
+        to_season=to_season,
+        remap=parsed,
+        only_episodes=only_episodes,
+    )
 
 
 def _parse_series(raw: Any, index: int) -> DropoutSeries:

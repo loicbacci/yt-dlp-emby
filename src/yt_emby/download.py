@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,61 @@ LOW_RES_FORMAT = "worst[height<=144]/worst"
 TARGET_HEIGHT = 1080
 _VIDEO_EXTS = {".mkv", ".mp4", ".webm", ".m4a", ".m4v"}
 _STALE_STAGING_PREFIX = "yt-emby-"
+_STAGING_PID = ".yt-emby-pid"
+
+
+def mark_live_staging(work_dir: Path) -> None:
+    """Record this process so a later launch will not delete this run's temp dir."""
+    (work_dir / _STAGING_PID).write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _staging_in_use(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        text = (path / _STAGING_PID).read_text(encoding="utf-8").strip()
+        pid = int(text)
+    except (OSError, ValueError):
+        return False
+    return _pid_is_running(pid)
+
+
+class _YdlErrorLog:
+    """Keep yt-dlp ERROR lines so ignoreerrors does not hide login failures."""
+
+    def __init__(self, *, verbose: bool) -> None:
+        self.errors: list[str] = []
+        self.verbose = verbose
+
+    def debug(self, message: str) -> None:
+        if self.verbose:
+            sys.stderr.write(f"{message}\n")
+
+    def info(self, message: str) -> None:
+        self.debug(message)
+
+    def warning(self, message: str) -> None:
+        if self.verbose:
+            sys.stderr.write(f"{message}\n")
+
+    def error(self, message: str) -> None:
+        text = str(message)
+        self.errors.append(text)
+        sys.stderr.write(f"ERROR: {text}\n")
 
 
 def cleanup_stale_staging(
@@ -31,7 +88,8 @@ def cleanup_stale_staging(
     """Remove leftover run dirs and cookie copies that cannot be resumed.
 
     Each download uses a unique `yt-emby-*` directory, so leftovers from a
-    killed process cannot be continued and only take disk.
+    killed process cannot be continued and only take disk. Directories still
+    owned by a running yt-emby process are left alone.
     """
     removed = 0
     roots: list[Path] = [Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())]
@@ -52,6 +110,8 @@ def cleanup_stale_staging(
             continue
         for path in children:
             if not path.name.startswith(_STALE_STAGING_PREFIX):
+                continue
+            if _staging_in_use(path):
                 continue
             try:
                 if path.is_dir():
@@ -219,6 +279,8 @@ def download_video(
     }
     if settings.cookies_from_browser:
         opts["cookiesfrombrowser"] = (settings.cookies_from_browser,)
+    log = _YdlErrorLog(verbose=settings.verbose)
+    opts["logger"] = log
     opts.update(js_runtime_opts())
     with sandbox_cookiefile(
         str(settings.cookiefile) if settings.cookiefile else None
@@ -236,6 +298,13 @@ def download_video(
             raise
     progress.close()
     mkv = dest_stem.with_suffix(".mkv")
-    if not info or not info.get("id") or not mkv.is_file() or mkv.stat().st_size == 0:
-        raise RuntimeError("download did not produce an mkv (merge or remux failed)")
-    return info
+    ok = bool(info and info.get("id") and mkv.is_file() and mkv.stat().st_size > 0)
+    if ok:
+        return info
+    blob = "\n".join(log.errors)
+    auth = auth_error_from_exception(url, RuntimeError(blob or "download failed"))
+    if auth is not None:
+        raise auth
+    if blob.strip():
+        raise RuntimeError(blob.strip())
+    raise RuntimeError("download did not produce an mkv (merge or remux failed)")

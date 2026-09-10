@@ -15,3 +15,8 @@ series:
           - dropout_episode: 1
             to_season: 0
             to_episode: 70
+            # title: D20 on a Bus
+      # Extra episodes that live on a different Dropout series page:
+      # - url: https://watch.dropout.tv/dimension-20-fantasy-high/season:2
+      #   to_season: 7
+      #   only_episodes: [18, 19]

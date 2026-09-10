@@ -237,6 +237,14 @@ def test_dropout_accepts_debug() -> None:
     assert both.debug is True
 
 
+def test_bench_subcommand() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["bench", "--size", "64M", "--dest", "/mnt/share"])
+    assert args.command == "bench"
+    assert args.size == "64M"
+    assert args.dest == "/mnt/share"
+
+
 def test_dropout_accepts_series_season_create() -> None:
     parser = build_parser()
     args = parser.parse_args(

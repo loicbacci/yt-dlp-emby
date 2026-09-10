@@ -22,6 +22,7 @@ from yt_emby.download import (
     YoutubeAuthError,
     cleanup_stale_staging,
     download_video,
+    mark_live_staging,
     promote_episode,
     video_height,
 )
@@ -481,6 +482,7 @@ def _run_download(
             prefix="yt-emby-", dir=staging_parent, ignore_cleanup_errors=True
         ) as tmp:
             work = Path(tmp)
+            mark_live_staging(work)
             for i, action in enumerate(downloads, start=1):
                 assert action.live is not None and action.new_basename is not None
                 video_url = _video_url(action.live)

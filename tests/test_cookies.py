@@ -24,13 +24,13 @@ def test_sandbox_cookiefile_keeps_original_if_ydl_wipes(tmp_path: Path) -> None:
     assert source.read_text() == _netscape()
 
 
-def test_sandbox_cookiefile_copies_valid_refresh(tmp_path: Path) -> None:
+def test_sandbox_cookiefile_never_copies_ydl_jar_back(tmp_path: Path) -> None:
     source = tmp_path / "dropout-cookies.txt"
     source.write_text(_netscape())
     refreshed = _netscape(".watch.dropout.tv\tTRUE\t/\tTRUE\t0\t_session\tnew\n")
     with sandbox_cookiefile(source) as cookiefile:
         Path(cookiefile).write_text(refreshed)
-    assert source.read_text() == refreshed
+    assert source.read_text() == _netscape()
 
 
 def test_sandbox_cookiefile_none() -> None:

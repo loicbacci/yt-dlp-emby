@@ -123,6 +123,25 @@ def build_parser() -> argparse.ArgumentParser:
         dest="debug",
         help="Show listing cache vs disk timings (does not dump yt-dlp HTTP or hide progress)",
     )
+
+    bench = sub.add_parser("bench", help="Measure copy speed from local disk onto the library share")
+    bench.add_argument(
+        "--dest",
+        help="Directory to copy into (default: bench_dest from config, else library)",
+    )
+    bench.add_argument(
+        "--size",
+        default="256M",
+        help="Payload size, e.g. 64M, 256M, 1G (default: 256M)",
+    )
+    bench.add_argument("--library", help="Emby library root (used when --dest / bench_dest are unset)")
+    bench.add_argument("--old-dir", help="Directory for replaced files (needed to resolve config)")
+    bench.add_argument("--config", help="Path to a TOML config file")
+    bench.add_argument(
+        "--staging",
+        help="Local directory for the source file. Defaults to the system temp dir.",
+    )
+    _add_verbosity(bench)
     return parser
 
 
@@ -142,6 +161,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         debug=bool(getattr(args, "debug", False)),
         staging=getattr(args, "staging", None),
         force_refetch=bool(getattr(args, "force_refetch", False)),
+        bench_dest=getattr(args, "dest", None),
     )
 
 
@@ -153,6 +173,24 @@ def run_doctor(args: argparse.Namespace) -> int:
         cookies=getattr(args, "cookies", None),
         staging=getattr(args, "staging", None),
         library=getattr(args, "library", None),
+    )
+
+
+def run_bench(args: argparse.Namespace) -> int:
+    from yt_emby.bench import parse_size, run_bench as bench_run
+
+    try:
+        settings = _settings_from_args(args)
+        size = parse_size(str(args.size))
+    except (ConfigError, FFmpegNotFoundError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    dest = settings.bench_dest or settings.library
+    return bench_run(
+        dest,
+        size=size,
+        source_dir=settings.staging,
+        show_progress=settings.show_progress,
     )
 
 
@@ -228,6 +266,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.command == "doctor":
             code = run_doctor(args)
+        elif args.command == "bench":
+            code = run_bench(args)
         elif args.command == "youtube":
             code = run_download(args)
         elif args.command == "dropout":

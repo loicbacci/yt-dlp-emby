@@ -23,9 +23,10 @@ def cookies_file_usable(path: Path) -> bool:
 
 @contextmanager
 def sandbox_cookiefile(path: str | Path | None) -> Iterator[str | None]:
-    """Give yt-dlp a temp copy so it cannot empty the user's cookies file.
+    """Give yt-dlp a temp copy so it cannot empty or rewrite the user's cookies file.
 
-    If yt-dlp writes a still-usable jar (session refresh), copy that back.
+    Never copy the jar back. After a failed or logged-out request yt-dlp often
+    saves a still-non-empty file that no longer has the Dropout `_session` cookie.
     """
     if not path:
         yield None
@@ -34,7 +35,7 @@ def sandbox_cookiefile(path: str | Path | None) -> Iterator[str | None]:
     try:
         original = source.read_bytes()
     except OSError:
-        yield str(source)
+        yield None
         return
     fd, tmp = tempfile.mkstemp(prefix="yt-emby-cookies-", suffix=".txt")
     os.close(fd)
@@ -42,11 +43,5 @@ def sandbox_cookiefile(path: str | Path | None) -> Iterator[str | None]:
     try:
         tmp_path.write_bytes(original)
         yield str(tmp_path)
-        try:
-            updated = tmp_path.read_bytes()
-        except OSError:
-            return
-        if cookie_lines(updated.decode("utf-8", "replace")) and updated != original:
-            source.write_bytes(updated)
     finally:
         tmp_path.unlink(missing_ok=True)

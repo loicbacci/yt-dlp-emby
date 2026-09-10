@@ -46,6 +46,7 @@ class Settings:
     debug: bool = False
     staging: Path | None = None
     force_refetch: bool = False
+    bench_dest: Path | None = None
 
     @property
     def show_progress(self) -> bool:
@@ -67,7 +68,7 @@ class Settings:
 def _load_toml(path: Path) -> dict[str, str]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     result: dict[str, str] = {}
-    for key in ("library", "old_dir", "staging", "cookies"):
+    for key in ("library", "old_dir", "staging", "cookies", "bench_dest"):
         value = data.get(key)
         if value is not None:
             result[key] = str(value)
@@ -114,6 +115,7 @@ def resolve_settings(
     debug: bool = False,
     staging: str | None = None,
     force_refetch: bool = False,
+    bench_dest: str | None = None,
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     use_default_config: bool = True,
@@ -148,6 +150,9 @@ def resolve_settings(
         )
 
     resolved_staging = _pick(staging, environ.get("YT_EMBY_STAGING"), file_values.get("staging"))
+    resolved_bench = _pick(
+        bench_dest, environ.get("YT_EMBY_BENCH_DEST"), file_values.get("bench_dest")
+    )
     resolved_cookies = _pick(cookiefile, environ.get("YT_EMBY_COOKIES"), file_values.get("cookies"))
     if auto_cookies and not resolved_cookies:
         default_cookies = cwd / "cookies.txt"
@@ -191,4 +196,5 @@ def resolve_settings(
         debug=debug,
         staging=Path(resolved_staging) if resolved_staging else None,
         force_refetch=force_refetch,
+        bench_dest=Path(resolved_bench) if resolved_bench else None,
     )
