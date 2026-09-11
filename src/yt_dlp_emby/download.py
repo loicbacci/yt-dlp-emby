@@ -302,7 +302,11 @@ def download_video(
                 raise auth from exc
             raise
     progress.close()
-    mkv = dest_stem.with_suffix(".mkv")
+    mkv = (
+        dest_stem
+        if dest_stem.name.endswith(".mkv")
+        else Path(f"{dest_stem}.mkv")
+    )
     ok = bool(info and info.get("id") and mkv.is_file() and mkv.stat().st_size > 0)
     if ok:
         return info

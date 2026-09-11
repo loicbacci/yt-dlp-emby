@@ -280,6 +280,100 @@ def test_download_video_enables_node_js_runtime(
     assert FakeYDL.opts_seen["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
 
 
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "Dimension 20 - S01E17 - Prompocalypse Pt. 2",
+        "Dimension 20 - S01E16 - Prompocalypse Pt. 1",
+        "Dimension 20 - S03E17 - Times Squaremageddon Pt. 2",
+        "Example Channel - S01E01 - Dr. Strange",
+    ],
+)
+def test_download_video_accepts_titles_with_dots_in_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stem: str
+) -> None:
+    from yt_dlp_emby.download import download_video
+
+    class FakeYDL:
+        opts_seen: dict = {}
+
+        def __init__(self, opts: dict) -> None:
+            type(self).opts_seen = opts
+
+        def __enter__(self) -> "FakeYDL":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            _touch_mkv(self.opts_seen)
+            return {"id": "vid1"}
+
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
+    settings = Settings(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        ffmpeg=tmp_path / "ffmpeg",
+        quiet=True,
+    )
+    dest = tmp_path / stem
+    wrong = dest.with_suffix(".mkv")
+    assert wrong.name != f"{dest.name}.mkv", "pathlib with_suffix must not be used for these stems"
+    info = download_video("https://watch.dropout.tv/x/videos/example", dest, settings)
+    assert info["id"] == "vid1"
+    assert (tmp_path / f"{stem}.mkv").is_file()
+    assert not wrong.is_file()
+
+
+def test_download_video_pt_title_fails_when_only_wrong_with_suffix_mkv_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: pathlib treats '. 2' as the suffix and looks for the wrong file."""
+    from yt_dlp_emby.download import download_video
+
+    class FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYDL":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def extract_info(self, url: str, download: bool = True) -> dict:
+            return {"id": "vid1"}
+
+    monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
+    settings = Settings(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        ffmpeg=tmp_path / "ffmpeg",
+        quiet=True,
+    )
+    dest = tmp_path / "Dimension 20 - S01E17 - Prompocalypse Pt. 2"
+    dest.with_suffix(".mkv").write_bytes(b"wrong path")
+    with pytest.raises(RuntimeError, match="did not produce an mkv"):
+        download_video("https://watch.dropout.tv/x/videos/example", dest, settings)
+
+
+def test_promote_episode_copies_pt_dot_title(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    dest_dir = tmp_path / "library" / "Season 1"
+    staging.mkdir()
+    dest_dir.mkdir(parents=True)
+    stem = "Dimension 20 - S01E17 - Prompocalypse Pt. 2"
+    (staging / f"{stem}.mkv").write_bytes(b"video")
+    (staging / f"{stem}.en.srt").write_text("subs")
+
+    promote_episode(staging / stem, dest_dir / stem)
+
+    assert (dest_dir / f"{stem}.mkv").read_bytes() == b"video"
+    assert (dest_dir / f"{stem}.en.srt").read_text() == "subs"
+    assert not (staging / f"{stem}.mkv").exists()
+
+
 def test_download_video_empty_info_is_not_auth_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
