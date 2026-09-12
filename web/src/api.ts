@@ -99,6 +99,11 @@ export const apiClient = {
       method: "PUT",
       body: JSON.stringify({ text }),
     }),
+  validateManifest: (kind: Source, text: string) =>
+    api<{ ok: boolean }>(`/api/manifests/${kind}/validate`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
   getRun: () => api<Run>("/api/runs"),
   startRun: (options: StartOptions) =>
     api<Run>("/api/runs", {

@@ -16,7 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from yt_dlp_emby.config import ConfigError
 from yt_dlp_emby.server.auth import AuthState, load_auth, setup_password, verify_password
-from yt_dlp_emby.server.manifests import ALLOWED, read_manifest, write_manifest
+from yt_dlp_emby.server.manifests import ALLOWED, read_manifest, validate_manifest_text, write_manifest
 from yt_dlp_emby.server.runner import CommandFactory, RunManager
 
 LOG_POLL_SECONDS = 0.2
@@ -197,6 +197,19 @@ def create_app(
         return JSONResponse(
             {"kind": payload.kind, "text": payload.text, "exists": payload.exists}
         )
+
+    @app.post("/api/manifests/{kind}/validate")
+    async def validate_manifest(kind: str, body: ManifestBody, request: Request) -> dict[str, bool]:
+        require_auth(request)
+        if kind not in ALLOWED:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        try:
+            validate_manifest_text(request.app.state.data_dir, kind, body.text)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return {"ok": True}
 
     @app.get("/api/runs")
     async def get_runs(request: Request) -> dict[str, Any]:

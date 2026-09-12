@@ -33,6 +33,7 @@ export function Dashboard() {
   const [text, setText] = useState("");
   const [savedText, setSavedText] = useState("");
   const [exists, setExists] = useState(false);
+  const [loadedSource, setLoadedSource] = useState<Source | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [run, setRun] = useState<Run>(idleRun);
@@ -48,6 +49,7 @@ export function Dashboard() {
     setText(manifest.text);
     setSavedText(manifest.text);
     setExists(manifest.exists);
+    setLoadedSource(kind);
     setManifestError(null);
   };
 
@@ -68,6 +70,32 @@ export function Dashboard() {
       );
     });
   }, [source]);
+
+  useEffect(() => {
+    if (loadedSource !== source) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      apiClient
+        .validateManifest(source, text)
+        .then(() => {
+          if (!cancelled) setManifestError(null);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof ApiError && err.status === 401) {
+            go("/login");
+            return;
+          }
+          setManifestError(
+            err instanceof ApiError ? err.message : "Validation failed",
+          );
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [source, text, loadedSource]);
 
   useEffect(() => {
     refreshRun();

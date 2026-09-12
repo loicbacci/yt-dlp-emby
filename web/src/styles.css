@@ -11,6 +11,7 @@
   --danger-hover: #ff8b90;
   --ok: #7fd99a;
   --warn: #e6c07b;
+  --syntax-bool: #7dc4ff;
   --radius: 10px;
   --radius-sm: 6px;
   --pad: 16px;
@@ -19,6 +20,7 @@
   --font: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
@@ -29,7 +31,9 @@
     --border: #d5dbe3;
     --text: #1c232d;
     --text-muted: #5c6773;
+    --syntax-bool: #0b6ebd;
     --shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+    color-scheme: light;
   }
 }
 
@@ -279,6 +283,40 @@ textarea {
   align-items: center;
 }
 
+.source-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.source-select {
+  appearance: none;
+  min-height: var(--tap);
+  min-width: 12rem;
+  padding: 0 2.25rem 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-inset);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'><path d='M1.5 1.75 6 6.25 10.5 1.75' stroke='%238b98a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 8px;
+  color: var(--text);
+}
+
+.source-select:disabled {
+  opacity: 0.45;
+}
+
+@media (prefers-color-scheme: light) {
+  .source-select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'><path d='M1.5 1.75 6 6.25 10.5 1.75' stroke='%235c6773' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  }
+}
+
 .check-row {
   display: flex;
   align-items: center;
@@ -315,18 +353,75 @@ textarea {
   font-size: 13px;
 }
 
-.editor-textarea {
+.editor-frame {
+  position: relative;
   width: 100%;
   min-height: 12rem;
-  padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-inset);
-  color: var(--text);
+}
+
+.editor-highlight,
+.editor-textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.4;
   tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.editor-highlight {
+  pointer-events: none;
+  color: var(--text);
+  scrollbar-width: none;
+}
+
+.editor-highlight::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.editor-textarea {
+  z-index: 1;
+  min-height: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  resize: none;
+}
+
+.tok-comment {
+  color: var(--text-muted);
+}
+
+.tok-key {
+  color: var(--accent);
+}
+
+.tok-punct {
+  color: var(--text-muted);
+}
+
+.tok-string {
+  color: var(--ok);
+}
+
+.tok-number {
+  color: var(--warn);
+}
+
+.tok-bool {
+  color: var(--syntax-bool);
 }
 
 .banner {
@@ -451,10 +546,9 @@ textarea {
     margin-bottom: 0;
   }
 
-  .dashboard-left .editor-textarea {
+  .dashboard-left .editor-frame {
     flex: 1;
     min-height: 0;
-    resize: none;
   }
 
   .dashboard-log {

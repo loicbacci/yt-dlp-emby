@@ -42,13 +42,85 @@ series:
     assert (tmp_path / "youtube.yaml").is_file()
 
 
-def test_put_keeps_invalid_yaml_on_disk(tmp_path) -> None:
+def test_put_rejects_invalid_without_writing(tmp_path) -> None:
     client = _authed_client(tmp_path)
     bad = "library: /lib\nold_dir: /old\nseries: []\n"
     response = client.put("/api/manifests/youtube", json={"text": bad})
     assert response.status_code == 400
-    assert (tmp_path / "youtube.yaml").is_file()
     assert "series" in response.json()["detail"]["error"].lower()
+    assert not (tmp_path / "youtube.yaml").exists()
+
+
+def test_put_keeps_previous_file_when_invalid(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    good = f"""
+library: {tmp_path / "lib"}
+old_dir: {tmp_path / "old"}
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://www.youtube.com/playlist?list=PLaaaa
+"""
+    assert client.put("/api/manifests/youtube", json={"text": good}).status_code == 200
+    original = (tmp_path / "youtube.yaml").read_text(encoding="utf-8")
+    response = client.put(
+        "/api/manifests/youtube",
+        json={"text": "library: /lib\nold_dir: /old\nseries: []\n"},
+    )
+    assert response.status_code == 400
+    assert (tmp_path / "youtube.yaml").read_text(encoding="utf-8") == original
+
+
+def test_validate_rejects_invalid_yaml_syntax(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    response = client.post(
+        "/api/manifests/youtube/validate",
+        json={"text": "library: [\n"},
+    )
+    assert response.status_code == 400
+    assert "invalid yaml" in response.json()["detail"]["error"].lower()
+
+
+def test_validate_rejects_schema(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    response = client.post(
+        "/api/manifests/youtube/validate",
+        json={"text": "library: /lib\nold_dir: /old\nseries: []\n"},
+    )
+    assert response.status_code == 400
+    assert "series" in response.json()["detail"]["error"].lower()
+
+
+def test_validate_accepts_valid_manifest(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    text = f"""
+library: {tmp_path / "lib"}
+old_dir: {tmp_path / "old"}
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://www.youtube.com/playlist?list=PLaaaa
+"""
+    response = client.post("/api/manifests/youtube/validate", json={"text": text})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert not (tmp_path / "youtube.yaml").exists()
+
+
+def test_validate_dropout_schema(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    bad = f"""
+library: {tmp_path / "lib"}
+old_dir: {tmp_path / "old"}
+series:
+  - name: Dimension 20
+    path: Dimension 20
+    seasons:
+      - dropout: 1
+"""
+    response = client.post("/api/manifests/dropout/validate", json={"text": bad})
+    assert response.status_code == 400
+    assert "url" in response.json()["detail"]["error"].lower()
 
 
 def test_unknown_kind_404(tmp_path) -> None:

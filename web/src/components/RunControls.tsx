@@ -34,9 +34,10 @@ export function RunControls({
   return (
     <section class="card">
       <div class="controls-row">
-        <label>
+        <label class="source-field">
           Source
           <select
+            class="source-select"
             disabled={frozen}
             value={source}
             onChange={(e) =>

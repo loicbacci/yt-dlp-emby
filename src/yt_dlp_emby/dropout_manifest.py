@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 import yaml
 
-from yt_dlp_emby.config import ConfigError
+from yt_dlp_emby.config import ConfigError, format_yaml_error
 from yt_dlp_emby.cookies import cookies_file_usable
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "DropoutSeason",
     "DropoutSeries",
     "load_dropout_manifest",
+    "parse_dropout_manifest",
     "filter_dropout_manifest",
     "season_page_url",
 ]
@@ -170,10 +171,7 @@ def season_page_url(series: DropoutSeries, season: DropoutSeason) -> str:
     return f"{series.url.rstrip('/')}/season:{season.dropout}"
 
 
-def load_dropout_manifest(path: Path) -> DropoutManifest:
-    if not path.is_file():
-        raise ConfigError(f"Dropout manifest not found: {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+def parse_dropout_manifest(data: Any, path: Path) -> DropoutManifest:
     if not isinstance(data, dict):
         raise ConfigError(f"Dropout manifest must be a mapping: {path}")
     library = _require_str(data, "library", str(path))
@@ -197,6 +195,16 @@ def load_dropout_manifest(path: Path) -> DropoutManifest:
         cookies=cookies,
         path=path,
     )
+
+
+def load_dropout_manifest(path: Path) -> DropoutManifest:
+    if not path.is_file():
+        raise ConfigError(f"Dropout manifest not found: {path}")
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(format_yaml_error(exc)) from exc
+    return parse_dropout_manifest(data, path)
 
 
 def _series_matches(series: DropoutSeries, needles: Sequence[str]) -> bool:

@@ -18,12 +18,25 @@ __all__ = [
     "MissingPathError",
     "Settings",
     "env_value",
+    "format_yaml_error",
     "resolve_settings",
 ]
 
 
 class ConfigError(Exception):
     """Invalid or incomplete configuration."""
+
+
+def format_yaml_error(exc: BaseException) -> str:
+    mark = getattr(exc, "problem_mark", None)
+    problem = getattr(exc, "problem", None) or str(exc).strip()
+    if mark is not None and hasattr(mark, "line"):
+        column = getattr(mark, "column", None)
+        where = f"line {mark.line + 1}"
+        if isinstance(column, int):
+            where += f", column {column + 1}"
+        return f"Invalid YAML at {where}: {problem}"
+    return f"Invalid YAML: {problem}"
 
 
 class MissingPathError(ConfigError):

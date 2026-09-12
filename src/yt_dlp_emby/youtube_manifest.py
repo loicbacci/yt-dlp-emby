@@ -8,13 +8,14 @@ from typing import Any, Sequence
 
 import yaml
 
-from yt_dlp_emby.config import ConfigError
+from yt_dlp_emby.config import ConfigError, format_yaml_error
 from yt_dlp_emby.cookies import cookies_file_usable
 
 __all__ = [
     "YoutubeManifest",
     "YoutubePlaylist",
     "YoutubeSeries",
+    "parse_youtube_manifest",
     "load_youtube_manifest",
     "filter_youtube_manifest",
 ]
@@ -86,10 +87,7 @@ def _parse_series(raw: Any, index: int) -> YoutubeSeries:
     return YoutubeSeries(name=name, playlists=playlists)
 
 
-def load_youtube_manifest(path: Path) -> YoutubeManifest:
-    if not path.is_file():
-        raise ConfigError(f"YouTube manifest not found: {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+def parse_youtube_manifest(data: Any, path: Path) -> YoutubeManifest:
     if not isinstance(data, dict):
         raise ConfigError(f"YouTube manifest must be a mapping: {path}")
     library = _require_str(data, "library", str(path))
@@ -113,6 +111,16 @@ def load_youtube_manifest(path: Path) -> YoutubeManifest:
         cookies=cookies,
         path=path,
     )
+
+
+def load_youtube_manifest(path: Path) -> YoutubeManifest:
+    if not path.is_file():
+        raise ConfigError(f"YouTube manifest not found: {path}")
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(format_yaml_error(exc)) from exc
+    return parse_youtube_manifest(data, path)
 
 
 def _name_matches(series: YoutubeSeries, needles: Sequence[str]) -> bool:

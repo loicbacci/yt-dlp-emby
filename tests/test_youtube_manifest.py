@@ -70,6 +70,13 @@ series:
         load_youtube_manifest(path)
 
 
+def test_youtube_manifest_rejects_invalid_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "youtube.yaml"
+    path.write_text("library: [\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Invalid YAML"):
+        load_youtube_manifest(path)
+
+
 def test_filter_youtube_manifest_by_name(tmp_path: Path) -> None:
     extra = """
   - name: Other Show
