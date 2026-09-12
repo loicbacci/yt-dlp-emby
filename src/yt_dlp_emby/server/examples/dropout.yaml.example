@@ -1,0 +1,22 @@
+library: /path/to/dropout-library
+old_dir: /path/to/old
+# staging: /var/tmp/yt-dlp-emby
+cookies: dropout-cookies.txt
+
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 28
+        to_season: 27
+      - dropout: 29
+        remap:
+          - dropout_episode: 1
+            to_season: 0
+            to_episode: 70
+            # title: D20 on a Bus
+      # Extra episodes that live on a different Dropout series page:
+      # - url: https://watch.dropout.tv/dimension-20-fantasy-high/season:2
+      #   to_season: 7
+      #   only_episodes: [18, 19]

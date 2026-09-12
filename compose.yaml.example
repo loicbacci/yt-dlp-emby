@@ -1,0 +1,27 @@
+# Optional web UI addon. The CLI still works on the host without Docker.
+# Copy to compose.yaml and edit. compose.yaml is gitignored.
+#
+# Run compose from the same directory you run the CLI (the one with
+# youtube.yaml / dropout.yaml / cookies.txt) so both share those files.
+services:
+  yt-dlp-emby:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "8080:8080"
+    environment:
+      # Optional path overrides passed to each youtube/dropout child:
+      # YT_DLP_EMBY_LIBRARY: /mnt/emby/library
+      # YT_DLP_EMBY_OLD_DIR: /mnt/emby/old
+      # YT_DLP_EMBY_STAGING: /var/tmp/yt-dlp-emby
+      # YT_DLP_EMBY_HTTPS: "1"   # behind TLS reverse proxy
+      # YT_DLP_EMBY_PASSWORD: changeme
+    volumes:
+      # CLI working directory: manifests, cookies, Dropout listing cache, auth.
+      - .:/data
+      # Library paths in the yaml are absolute, so bind the same host paths:
+      # - /mnt/emby/library:/mnt/emby/library
+      # - /mnt/emby/old:/mnt/emby/old
+    user: "${UID:-1000}:${GID:-1000}"

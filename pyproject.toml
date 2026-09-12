@@ -11,6 +11,13 @@ dependencies = [
     "yt-dlp[default]>=2026.8.19",
 ]
 
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "itsdangerous>=2.2",
+]
+
 [project.scripts]
 yt-dlp-emby = "yt_dlp_emby.cli:main"
 
@@ -21,6 +28,10 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "httpx>=0.28",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "itsdangerous>=2.2",
 ]
 
 [tool.pytest.ini_options]
@@ -28,4 +39,13 @@ addopts = "-m 'not network'"
 testpaths = ["tests"]
 markers = [
     "network: tests that contact YouTube",
+    "web: needs the [server] extra",
+]
+
+[tool.uv.build-backend]
+module-name = "yt_dlp_emby"
+module-root = "src"
+source-exclude = [
+    "web/**",
+    "**/server/static/**",
 ]

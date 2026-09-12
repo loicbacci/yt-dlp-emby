@@ -23,6 +23,13 @@ dropout.yaml
 youtube.yaml
 cookies.txt
 *cookies.txt
+compose.yaml
+compose.yml
+compose.override.yaml
+compose.override.yml
+data/
+.env
+backup/
 
 # Media and caches
 cache/
@@ -39,3 +46,9 @@ cache/
 .vscode/
 .cursor/
 *.swp
+
+# Web UI
+web/node_modules/
+web/dist/
+src/yt_dlp_emby/server/static/
+.yt-dlp-emby-auth.json

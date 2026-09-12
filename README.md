@@ -209,11 +209,50 @@ Missing Emby series folders are refused unless you pass `--create` (dry-run warn
     .yt-emby-cache.json
 ```
 
+## Web UI / Docker (optional)
+
+The CLI is the primary interface. The web UI is an **optional addon** for managing manifests and runs from a phone or browser without tmux.
+
+Install the server extra:
+
+```bash
+uv sync --extra server
+uv run yt-dlp-emby server --port 8080
+```
+
+Development (API + Vite dev server with `/api` proxy):
+
+```bash
+uv run yt-dlp-emby server --port 8080
+cd web && pnpm install && pnpm dev
+```
+
+Docker:
+
+```bash
+cp compose.yaml.example compose.yaml
+docker compose up --build
+```
+
+Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, start/stop runs, and watch logs. Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
+
+| Variable | Role |
+| --- | --- |
+| `YT_DLP_EMBY_DATA` | Data dir (default `/data` in Docker, else cwd) |
+| `YT_DLP_EMBY_LIBRARY` | `--library` on each UI-started job |
+| `YT_DLP_EMBY_OLD_DIR` | `--old-dir` on each job |
+| `YT_DLP_EMBY_STAGING` | `--staging` on each job |
+| `YT_DLP_EMBY_PASSWORD` | Optional first-boot admin password (does not auto-login) |
+| `YT_DLP_EMBY_HTTPS` | Set `Secure` on session cookies (use behind TLS) |
+
+`--create`, `--force-refetch`, and `doctor` / `bench` remain CLI-only for now.
+
 ## Tests
 
 ```bash
 uv run pytest            # unit tests only (no network)
 uv run pytest -m network  # live metadata for two playlist items, plus one low-res download
+cd web && pnpm test      # frontend unit tests
 ```
 
 ## License

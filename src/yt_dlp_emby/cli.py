@@ -162,6 +162,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local directory for the source file. Defaults to the system temp dir.",
     )
     _add_verbosity(bench)
+
+    server = sub.add_parser(
+        "server",
+        help="Run the optional web UI (requires extra [server])",
+    )
+    server.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    server.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Listen port (default: 8080)",
+    )
+    server.add_argument(
+        "--data",
+        dest="data_dir",
+        default=None,
+        help="Data directory for manifests and auth (default: current directory)",
+    )
+    server.add_argument(
+        "--proxy-headers",
+        action="store_true",
+        help="Trust X-Forwarded-* headers from a reverse proxy",
+    )
     return parser
 
 
@@ -290,6 +317,25 @@ def _dropout_manifest_path(args: argparse.Namespace) -> Path:
     )
 
 
+def run_server(args: argparse.Namespace) -> int:
+    try:
+        from yt_dlp_emby.server.app import serve
+    except ImportError:
+        print(
+            "error: web UI requires extra [server]. Try: uv sync --extra server",
+            file=sys.stderr,
+        )
+        return 1
+    data_dir = Path(args.data_dir) if args.data_dir else None
+    serve(
+        host=args.host,
+        port=args.port,
+        data_dir=data_dir,
+        proxy_headers=bool(args.proxy_headers),
+    )
+    return 0
+
+
 def run_dropout(args: argparse.Namespace) -> int:
     from yt_dlp_emby.dropout import run_dropout as pipeline_dropout
     from yt_dlp_emby.dropout_manifest import load_dropout_manifest
@@ -345,6 +391,8 @@ def main(argv: list[str] | None = None) -> None:
             code = run_download(args)
         elif args.command == "dropout":
             code = run_dropout(args)
+        elif args.command == "server":
+            code = run_server(args)
         else:
             parser.error(f"unknown command {args.command}")
             return
