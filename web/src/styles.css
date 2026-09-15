@@ -343,6 +343,29 @@ textarea {
   margin-bottom: 8px;
 }
 
+.editor-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.editor-tab {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.editor-tab.active {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
 .editor-filename {
   font-family: var(--mono);
   font-size: 13px;
@@ -488,6 +511,26 @@ textarea {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.log-pre .ansi-bold {
+  font-weight: 700;
+}
+
+.log-pre .ansi-dim {
+  opacity: 0.65;
+}
+
+.log-pre .ansi-red {
+  color: var(--danger);
+}
+
+.log-pre .ansi-green {
+  color: var(--ok);
+}
+
+.log-pre .ansi-yellow {
+  color: var(--warn);
 }
 
 .dashboard-shell {

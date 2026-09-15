@@ -90,6 +90,7 @@ def test_dropout_flags_unchanged() -> None:
     args = build_parser().parse_args(
         [
             "dropout",
+            "download",
             "--manifest",
             "dropout.yaml",
             "--dry-run",

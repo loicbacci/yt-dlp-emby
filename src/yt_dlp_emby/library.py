@@ -100,6 +100,16 @@ def index_episode_mkvs(season: Path) -> dict[tuple[int, int], Path]:
     return found
 
 
+def index_series_mkvs(series: Path) -> dict[tuple[int, int], Path]:
+    """Map (season, episode) -> .mkv by walking season/specials folders."""
+    found: dict[tuple[int, int], Path] = {}
+    if not series.is_dir():
+        return found
+    for child in sorted(path for path in series.iterdir() if path.is_dir()):
+        found.update(index_episode_mkvs(child))
+    return found
+
+
 def find_episode_mkv(season: Path, season_number: int, episode: int) -> Path | None:
     """Return the .mkv for this SxxExx, even if the title in the filename differs."""
     return index_episode_mkvs(season).get((season_number, episode))
@@ -111,13 +121,13 @@ def episode_title_from_filename(name: str) -> str:
     return parts[2] if len(parts) >= 3 else stem
 
 
+def title_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
 def titles_match(left: str, right: str) -> bool:
     """True when titles differ only by case, punctuation, or spacing."""
-
-    def norm(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", value.casefold())
-
-    a, b = norm(left), norm(right)
+    a, b = title_key(left), title_key(right)
     return bool(a) and a == b
 
 

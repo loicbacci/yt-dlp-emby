@@ -2,24 +2,42 @@ import { describe, expect, it } from "vitest";
 import { routeForSession, runKeyFor, startPayload } from "./api";
 
 describe("startPayload", () => {
-  it("omits force for youtube", () => {
+  it("forces action download for youtube", () => {
     const payload = startPayload({
       source: "youtube",
       dry_run: true,
       verbose: false,
       force: true,
+      action: "layout",
     });
     expect(payload.force).toBe(false);
+    expect(payload.action).toBe("download");
   });
 
-  it("keeps force for dropout", () => {
+  it("keeps force for dropout download", () => {
     const payload = startPayload({
       source: "dropout",
       dry_run: false,
       verbose: true,
       force: true,
+      action: "download",
     });
     expect(payload.force).toBe(true);
+    expect(payload.action).toBe("download");
+  });
+
+  it("clears force for layout and check", () => {
+    for (const action of ["layout", "check"] as const) {
+      const payload = startPayload({
+        source: "dropout",
+        dry_run: true,
+        verbose: false,
+        force: true,
+        action,
+      });
+      expect(payload.force).toBe(false);
+      expect(payload.action).toBe(action);
+    }
   });
 });
 

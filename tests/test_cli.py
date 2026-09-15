@@ -127,6 +127,7 @@ def test_silent_is_exclusive_with_quiet() -> None:
     args = parser.parse_args(
         [
             "dropout",
+            "download",
             "--manifest",
             "dropout.yaml",
             "--silent",
@@ -231,6 +232,7 @@ def test_dropout_accepts_manifest_and_force() -> None:
     args = parser.parse_args(
         [
             "dropout",
+            "download",
             "--manifest",
             "dropout.yaml",
             "--force",
@@ -238,26 +240,77 @@ def test_dropout_accepts_manifest_and_force() -> None:
         ]
     )
     assert args.command == "dropout"
+    assert args.dropout_command == "download"
     assert args.manifest == "dropout.yaml"
     assert args.force is True
     assert args.dry_run is True
 
 
+def test_dropout_requires_verb() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dropout"])
+
+
+def test_dropout_rejects_layout_flag() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dropout", "download", "--layout"])
+
+
+def test_dropout_layout_verb() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["dropout", "layout"])
+    assert args.dropout_command == "layout"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dropout", "layout", "--force"])
+
+
+def test_dropout_check_verb() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["dropout", "check", "--series", "Game Changer"])
+    assert args.dropout_command == "check"
+    assert args.series_filter == ["Game Changer"]
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dropout", "check", "--force"])
+
+
+def test_dropout_help_explains_verbs(capsys) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dropout", "--help"])
+    out = capsys.readouterr().out
+    assert "download" in out
+    assert "layout" in out
+    assert "check" in out
+    assert "remap" in out.lower() or "grouped" in out.lower()
+    assert "Sonarr" in out or "missing" in out.lower()
+
+
+def test_top_level_help_mentions_dropout_verbs() -> None:
+    help_text = build_parser().format_help()
+    assert "download" in help_text
+    assert "layout" in help_text
+    assert "check" in help_text
+
+
 def test_dropout_accepts_force_refetch() -> None:
     parser = build_parser()
-    args = parser.parse_args(["dropout", "--manifest", "dropout.yaml", "--force-refetch"])
+    args = parser.parse_args(
+        ["dropout", "download", "--manifest", "dropout.yaml", "--force-refetch"]
+    )
     assert args.force_refetch is True
 
 
 def test_dropout_accepts_debug() -> None:
     parser = build_parser()
-    debug = parser.parse_args(["dropout", "--debug"])
+    debug = parser.parse_args(["dropout", "download", "--debug"])
     assert debug.debug is True
     assert debug.verbose is False
-    vv = parser.parse_args(["dropout", "-vv"])
+    vv = parser.parse_args(["dropout", "download", "-vv"])
     assert vv.debug is True
     assert vv.verbose is False
-    both = parser.parse_args(["dropout", "-v", "--debug"])
+    both = parser.parse_args(["dropout", "download", "-v", "--debug"])
     assert both.verbose is True
     assert both.debug is True
 
@@ -287,6 +340,7 @@ def test_dropout_accepts_series_season_create() -> None:
     args = parser.parse_args(
         [
             "dropout",
+            "download",
             "--series",
             "Dimension 20",
             "--season",
@@ -299,3 +353,47 @@ def test_dropout_accepts_series_season_create() -> None:
     assert args.series_filter == ["Dimension 20"]
     assert args.season_filter == [28, 29]
     assert args.create is True
+
+
+def test_cli_check_passes_sonarr_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "dropout",
+            "check",
+            "--sonarr-url",
+            "http://localhost:8989",
+            "--sonarr-api-key",
+            "secret",
+            "--force-refetch",
+        ]
+    )
+    assert args.dropout_command == "check"
+    assert args.sonarr_url == "http://localhost:8989"
+    assert args.sonarr_api_key == "secret"
+    assert args.force_refetch is True
+
+
+def test_cli_check_does_not_require_cookies(tmp_path, monkeypatch) -> None:
+    from yt_dlp_emby.cli import run_dropout
+
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffmpeg.chmod(0o755)
+    monkeypatch.setenv("YT_DLP_EMBY_FFMPEG", str(ffmpeg))
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        f"""
+library: {tmp_path / "lib"}
+old_dir: {tmp_path / "old"}
+series:
+  - name: No Id Show
+    path: No Id Show
+    url: https://watch.dropout.tv/no-id
+    seasons:
+      - dropout: 1
+""",
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(["dropout", "check", "--manifest", str(path)])
+    assert run_dropout(args) == 0

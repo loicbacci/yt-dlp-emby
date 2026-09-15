@@ -62,29 +62,33 @@ def default_command(
     dry_run: bool,
     verbose: bool,
     force: bool,
+    action: str = "download",
     library: str | None,
     old_dir: str | None,
     staging: str | None,
 ) -> list[str]:
+    if action not in {"download", "layout", "check"}:
+        action = "download"
     argv = [
         sys.executable,
         "-m",
         "yt_dlp_emby",
         source,
-        "--manifest",
-        str(manifest_path),
     ]
-    if dry_run:
+    if source == "dropout":
+        argv.append(action)
+    argv.extend(["--manifest", str(manifest_path)])
+    if dry_run and action == "download":
         argv.append("--dry-run")
     if verbose:
         argv.append("--verbose")
-    if force and source == "dropout":
+    if force and source == "dropout" and action == "download":
         argv.append("--force")
     if library:
         argv.extend(["--library", library])
     if old_dir:
         argv.extend(["--old-dir", old_dir])
-    if staging:
+    if staging and action == "download":
         argv.extend(["--staging", staging])
     return argv
 
@@ -240,15 +244,24 @@ class RunManager:
         dry_run: bool = False,
         verbose: bool = False,
         force: bool = False,
+        action: str = "download",
     ) -> RunState:
         if source not in ALLOWED:
             raise ValueError(f"unknown source: {source}")
+        if action not in {"download", "layout", "check"}:
+            raise ValueError(f"unknown action: {action}")
+        if source == "youtube" and action != "download":
+            raise ValueError("action is not valid for youtube")
         if source == "youtube" and force:
             raise ValueError("force is not valid for youtube")
+        if source == "dropout" and force and action != "download":
+            raise ValueError("force is not valid for layout or check")
         manifest_path = self.data_dir / ALLOWED[source]
         if not manifest_path.is_file():
             raise FileNotFoundError(f"manifest not found: {manifest_path.name}")
 
+        use_dry = dry_run and action == "download"
+        use_force = force and action == "download"
         async with self._lock:
             if self._state.status in {"running", "stopping"}:
                 raise RuntimeError("already running")
@@ -257,21 +270,23 @@ class RunManager:
             self._state = RunState(
                 status="running",
                 source=source,
-                dry_run=dry_run,
+                dry_run=use_dry,
                 verbose=verbose,
-                force=force,
+                force=use_force,
                 started_at=_utc_now(),
             )
 
             env = _scrub_env(self._environ)
             env["PYTHONUNBUFFERED"] = "1"
-            env["NO_COLOR"] = "1"
+            env.pop("NO_COLOR", None)
+            env["FORCE_COLOR"] = "1"
             argv = self._command_factory(
                 source,
                 manifest_path,
-                dry_run=dry_run,
+                dry_run=use_dry,
                 verbose=verbose,
-                force=force,
+                force=use_force,
+                action=action,
                 library=env.get("YT_DLP_EMBY_LIBRARY") or env.get("YT_EMBY_LIBRARY"),
                 old_dir=env.get("YT_DLP_EMBY_OLD_DIR") or env.get("YT_EMBY_OLD_DIR"),
                 staging=env.get("YT_DLP_EMBY_STAGING") or env.get("YT_EMBY_STAGING"),

@@ -154,3 +154,20 @@ def test_index_roundtrip(tmp_path: Path) -> None:
     assert loaded.channel_id == "UC1"
     assert loaded.playlists["PLa"].season == 1
     assert loaded.playlists["PLa"].episodes["vid1"].basename.endswith("Intro")
+
+
+def test_index_series_mkvs_walks_season_and_specials(tmp_path: Path) -> None:
+    from yt_dlp_emby.library import index_series_mkvs
+
+    series = tmp_path / "Game Changer [tvdbid=361151]"
+    season = series / "Season 1"
+    specials = series / "Specials"
+    season.mkdir(parents=True)
+    specials.mkdir()
+    ep = season / "Game Changer - S01E04 - Slug Eater.mkv"
+    special = specials / "Game Changer - S00E12 - Cut for Time.mkv"
+    ep.write_bytes(b"x")
+    special.write_bytes(b"x")
+    indexed = index_series_mkvs(series)
+    assert indexed[(1, 4)] == ep
+    assert indexed[(0, 12)] == special

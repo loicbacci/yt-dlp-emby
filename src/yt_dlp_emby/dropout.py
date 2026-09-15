@@ -6,6 +6,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from yt_dlp_emby.auth import DropoutAuthError, auth_error_from_exception
 from yt_dlp_emby.cache import (
@@ -35,7 +36,7 @@ from yt_dlp_emby.library import (
     season_folder_name,
     titles_match,
 )
-from yt_dlp_emby.log import RunStats, error, format_dry_run_row, format_elapsed, format_unit_plan
+from yt_dlp_emby.log import RunStats, error, format_elapsed, format_unit_plan
 from yt_dlp_emby.progress import DownloadProgress
 from yt_dlp_emby.style import dim
 from yt_dlp_emby.sync import move_episode_files
@@ -54,7 +55,8 @@ def season_dest_label(season: DropoutSeason) -> str:
     elif season.dropout is not None:
         dests.add(season.dropout)
     for remap in season.remap:
-        dests.add(remap.to_season)
+        if remap.to_season is not None:
+            dests.add(remap.to_season)
     if len(dests) == 1:
         number = next(iter(dests))
         return "Specials" if number == 0 else season_folder_name(number)
@@ -100,15 +102,120 @@ def format_season_plan(
 def resolve_emby_target(
     listing: DropoutListing,
     season: DropoutSeason,
-) -> tuple[int, int, str] | None:
+) -> tuple[int, int, str] | Literal["skip"] | None:
     for remap in season.remap:
         if remap.dropout_episode == listing.dropout_episode:
+            if remap.skip:
+                return "skip"
+            assert remap.to_season is not None and remap.to_episode is not None
             return remap.to_season, remap.to_episode, remap.title or listing.title
     if season.to_season is not None:
         return season.to_season, listing.dropout_episode, listing.title
     if season.dropout is not None:
         return season.dropout, listing.dropout_episode, listing.title
     return None
+
+
+def layout_origin(
+    season: DropoutSeason,
+    listing: DropoutListing,
+    to_season: int,
+    to_episode: int,
+) -> str | None:
+    if season.dropout == to_season and listing.dropout_episode == to_episode:
+        return None
+    if season.dropout is not None:
+        return f"season {season.dropout} E{listing.dropout_episode:02d}"
+    if listing.dropout_episode != to_episode:
+        return f"E{listing.dropout_episode:02d}"
+    return None
+
+
+def layout_series_groups(
+    series_list: tuple[DropoutSeries, ...],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """Map manifest (name, path) to a shared layout group key and header label."""
+    if not series_list:
+        return {}
+    parent = list(range(len(series_list)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    by_name: dict[str, list[int]] = {}
+    by_path: dict[str, list[int]] = {}
+    for index, series in enumerate(series_list):
+        by_name.setdefault(series.name.casefold(), []).append(index)
+        by_path.setdefault(series.path.casefold(), []).append(index)
+
+    for indices in by_name.values():
+        base = indices[0]
+        for other in indices[1:]:
+            union(base, other)
+    for indices in by_path.values():
+        base = indices[0]
+        for other in indices[1:]:
+            union(base, other)
+
+    members: dict[int, list[DropoutSeries]] = {}
+    for index, series in enumerate(series_list):
+        members.setdefault(find(index), []).append(series)
+
+    grouped: dict[tuple[str, str], tuple[str, str]] = {}
+    for root, group in members.items():
+        paths = {item.path for item in group}
+        names = {item.name for item in group}
+        if len(paths) == 1:
+            label = next(iter(paths))
+        elif len(names) == 1:
+            label = next(iter(names))
+        else:
+            label = group[0].path
+        group_key = str(root)
+        for item in group:
+            grouped[(item.name, item.path)] = (group_key, label)
+    return grouped
+
+
+def _dest_sort_key(season: int | None) -> tuple[int, int]:
+    if season is None:
+        return (2, 0)
+    if season == 0:
+        return (1, 0)
+    return (0, season)
+
+
+def print_series_layout(settings: Settings, rows: list[WorkRow]) -> None:
+    groups: dict[int | None, list[WorkRow]] = {}
+    for row in rows:
+        groups.setdefault(row.dest_season, []).append(row)
+    dests = sorted(groups, key=_dest_sort_key)
+    for index, dest in enumerate(dests):
+        if index:
+            note(settings, "")
+        grouped = groups[dest]
+        if dest is None:
+            note(settings, "  unmapped")
+            print_work_rows(settings, grouped)
+            continue
+        skip = sum(1 for row in grouped if row.action == "skip")
+        download = sum(1 for row in grouped if row.action == "download")
+        retitled = sum(1 for row in grouped if row.note)
+        extras = {"title differs": retitled} if retitled else None
+        label = "Specials" if dest == 0 else season_folder_name(dest)
+        note(
+            settings,
+            format_unit_plan(label, skip=skip, download=download, extras=extras),
+        )
+        print_work_rows(settings, grouped)
 
 
 def planned_stem(
@@ -191,9 +298,10 @@ def _run_dropout(
     download = download_fn or download_video
     jobs: list[tuple[DropoutSeries, DropoutListing, int, int, Path, str, Path | None]] = []
     seasons = [
-        (series, season)
+        (series, source, season)
         for series in manifest.series
-        for season in series.seasons
+        for source in series.sources
+        for season in source.seasons
     ]
     cache_path = dropout_cache_path(manifest.path)
     cache_started = time.monotonic()
@@ -212,10 +320,30 @@ def _run_dropout(
         )
     mkv_indexes: dict[Path, dict[tuple[int, int], Path]] = {}
     last_series: str | None = None
+    layout_rows: list[WorkRow] = []
+    layout_plans: list[str] = []
+    layout_groups = layout_series_groups(manifest.series) if settings.layout else {}
+    last_layout_group: str | None = None
+
+    def flush_layout() -> None:
+        if settings.debug:
+            for plan in layout_plans:
+                note(settings, plan)
+        print_series_layout(settings, layout_rows)
+        layout_rows.clear()
+        layout_plans.clear()
+
     try:
-        for series, season in seasons:
+        for series, source, season in seasons:
+            if settings.layout:
+                group_key, group_label = layout_groups[(series.name, series.path)]
+                if last_layout_group is not None and last_layout_group != group_key:
+                    flush_layout()
+                if last_layout_group != group_key:
+                    last_series = note_series(settings, group_label, last_series)
+                    last_layout_group = group_key
             series_path = settings.library / series.path
-            page = season_page_url(series, season)
+            page = season_page_url(source, season)
             listing_started = time.monotonic()
             listings = (
                 None
@@ -257,6 +385,9 @@ def _run_dropout(
                     omitted += 1
                     continue
                 target = resolve_emby_target(listing, season)
+                if target == "skip":
+                    omitted += 1
+                    continue
                 if target is None:
                     unmapped += 1
                     work_rows.append(
@@ -299,28 +430,40 @@ def _run_dropout(
                         action,
                         emby_code(to_season, to_episode),
                         title,
-                        f"{dest_dir.name}/",
+                        "" if settings.layout else f"{dest_dir.name}/",
                         title_note,
+                        dest_season=to_season,
+                        origin=(
+                            layout_origin(season, listing, to_season, to_episode)
+                            if settings.layout
+                            else None
+                        ),
                     )
                 )
-            last_series = note_series(settings, series.name, last_series)
-            note(
-                settings,
-                format_season_plan(
-                    season,
-                    skip=skip,
-                    download=queued,
-                    unmapped=unmapped,
-                    retitled=retitled,
-                    omitted=omitted,
-                    listing_source=listing_source,
-                    listing_seconds=listing_seconds,
-                    disk_seconds=disk_seconds,
-                    debug=settings.debug,
-                ),
+            plan = format_season_plan(
+                season,
+                skip=skip,
+                download=queued,
+                unmapped=unmapped,
+                retitled=retitled,
+                omitted=omitted,
+                listing_source=listing_source,
+                listing_seconds=listing_seconds,
+                disk_seconds=disk_seconds,
+                debug=settings.debug,
             )
-            print_work_rows(settings, work_rows)
+            if settings.layout:
+                layout_rows.extend(work_rows)
+                layout_plans.append(plan)
+            else:
+                last_series = note_series(settings, series.name, last_series)
+                note(settings, plan)
+                print_work_rows(settings, work_rows)
+        if settings.layout:
+            flush_layout()
     except DropoutAuthError as exc:
+        if settings.layout:
+            flush_layout()
         error(str(exc))
         stats.failed += 1
         stats.failures.append(("listing", str(exc)))

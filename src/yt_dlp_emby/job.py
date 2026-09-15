@@ -22,6 +22,8 @@ class WorkRow:
     title: str
     folder: str
     note: str | None = None
+    dest_season: int | None = None
+    origin: str | None = None
 
 
 def log_step(settings: Settings, message: str) -> None:
@@ -70,7 +72,10 @@ def print_work_rows(
             continue
         note(
             settings,
-            indent + format_dry_run_row(row.action, row.code, row.title, row.folder),
+            indent
+            + format_dry_run_row(
+                row.action, row.code, row.title, row.folder, origin=row.origin
+            ),
         )
         if row.note and settings.verbose:
             note(settings, "              " + yellow(row.note))

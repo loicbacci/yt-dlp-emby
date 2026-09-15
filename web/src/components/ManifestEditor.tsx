@@ -2,12 +2,17 @@ import { useEffect, useRef } from "preact/hooks";
 import type { Source } from "../api";
 import { highlightYaml } from "../yamlHighlight";
 
+export type EditorTab = { path: string; label: string };
+
 export function ManifestEditor({
   source,
   text,
   savedText,
   exists,
   error,
+  tabs,
+  activePath,
+  onTabChange,
   onChange,
   onSave,
 }: {
@@ -16,13 +21,22 @@ export function ManifestEditor({
   savedText: string;
   exists: boolean;
   error: string | null;
+  tabs?: EditorTab[];
+  activePath?: string;
+  onTabChange?: (path: string) => void;
   onChange: (text: string) => void;
   onSave: () => void;
 }) {
   const dirty = text !== savedText;
-  const filename = source === "youtube" ? "youtube.yaml" : "dropout.yaml";
+  const filename =
+    activePath && activePath.length > 0
+      ? activePath
+      : source === "youtube"
+        ? "youtube.yaml"
+        : "dropout.yaml";
   const preRef = useRef<HTMLPreElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const showTabs = Boolean(tabs && tabs.length > 1 && onTabChange);
 
   useEffect(() => {
     const pre = preRef.current;
@@ -45,6 +59,22 @@ export function ManifestEditor({
       {!exists && (
         <div class="banner">
           File not on disk yet. Save to create it. Start is disabled until then.
+        </div>
+      )}
+      {showTabs && (
+        <div class="editor-tabs" role="tablist">
+          {tabs!.map((tab) => (
+            <button
+              key={tab.path || "root"}
+              type="button"
+              role="tab"
+              class={tab.path === (activePath ?? "") ? "editor-tab active" : "editor-tab"}
+              aria-selected={tab.path === (activePath ?? "")}
+              onClick={() => onTabChange?.(tab.path)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
       )}
       <div class="editor-header">

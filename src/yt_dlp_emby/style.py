@@ -12,6 +12,7 @@ DIM = "\033[2m"
 RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
+CYAN = "\033[36m"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -74,6 +75,10 @@ def green(text: str, *, enabled: bool | None = None, stream: object | None = Non
 
 def yellow(text: str, *, enabled: bool | None = None, stream: object | None = None) -> str:
     return paint(text, YELLOW, enabled=enabled, stream=stream)
+
+
+def cyan(text: str, *, enabled: bool | None = None, stream: object | None = None) -> str:
+    return paint(text, CYAN, enabled=enabled, stream=stream)
 
 
 def pad_visible(text: str, width: int) -> str:

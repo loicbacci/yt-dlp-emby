@@ -41,6 +41,23 @@ def _add_debug(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_dropout_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--manifest",
+        help="Path to dropout.yaml (default: dropout.yaml in the current directory if that file exists)",
+    )
+    parser.add_argument("--library", help="Emby library root directory (overrides manifest)")
+    parser.add_argument(
+        "--series",
+        action="append",
+        dest="series_filter",
+        metavar="NAME",
+        help="Only this series name or folder (repeatable)",
+    )
+    _add_verbosity(parser)
+    _add_debug(parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yt-dlp-emby",
@@ -48,13 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    doctor = sub.add_parser("doctor", help="Check ffmpeg, Node, cookies, staging, and disk space")
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check ffmpeg, Node, cookies, staging writability, and free disk space",
+    )
     doctor.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
     doctor.add_argument("--cookies", help="Netscape cookies.txt to verify")
     doctor.add_argument("--staging", help="Local staging directory to verify (writable + free space)")
     doctor.add_argument("--library", help="Library directory to verify (exists + free space)")
 
-    youtube = sub.add_parser("youtube", help="Download YouTube playlists into an Emby library")
+    youtube = sub.add_parser(
+        "youtube",
+        help="Download YouTube playlists into an Emby library (writes NFO/artwork, no TVDB)",
+    )
     youtube.add_argument(
         "url",
         nargs="?",
@@ -95,27 +118,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore cached video metadata and fetch it again (playlist listing still runs first)",
     )
 
-    dropout = sub.add_parser("dropout", help="Download Dropout.tv seasons into an existing Emby/TVDB library")
-    dropout.add_argument(
-        "--manifest",
-        help="Path to dropout.yaml (default: dropout.yaml in the current directory if that file exists)",
+    dropout = sub.add_parser(
+        "dropout",
+        help="Dropout.tv into an existing Sonarr/TVDB library (download, layout, or check)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Download Dropout.tv seasons into an existing Emby/TVDB library.",
+        epilog=(
+            "Commands:\n"
+            "  download  Download or refresh Dropout.tv episodes into the Emby library folder\n"
+            "  layout    Dry-run: show planned files grouped by Emby season folder "
+            "(Season 17, Specials) so you can verify remaps. Does not download.\n"
+            "  check     Compare local .mkv files to Sonarr/TVDB: unmapped missing episodes, "
+            "yaml dests that are not in Sonarr, and titles that do not match. "
+            "Missing lines may suggest a Dropout listing or a Sonarr duplicate. "
+            "Only series with tvdb_id. Does not download."
+        ),
     )
-    dropout.add_argument("--library", help="Emby library root directory (overrides manifest)")
-    dropout.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
-    dropout.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
-    dropout.add_argument(
+    dropout_sub = dropout.add_subparsers(
+        dest="dropout_command",
+        required=True,
+        metavar="COMMAND",
+    )
+    download = dropout_sub.add_parser(
+        "download",
+        help="Download or refresh Dropout.tv episodes into the Emby library folder",
+    )
+    layout = dropout_sub.add_parser(
+        "layout",
+        allow_abbrev=False,
+        help=(
+            "Dry-run: show planned files grouped by Emby season folder so you can "
+            "verify remaps. Does not download."
+        ),
+    )
+    check = dropout_sub.add_parser(
+        "check",
+        allow_abbrev=False,
+        help=(
+            "Compare local .mkv files to Sonarr/TVDB: unmapped missing episodes, "
+            "yaml dests that are not in Sonarr, and titles that do not match. "
+            "Missing lines may suggest a Dropout listing or a Sonarr duplicate. "
+            "Does not download."
+        ),
+    )
+    for verb in (download, layout, check):
+        _add_dropout_common(verb)
+    download.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
+    download.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
+    download.add_argument(
         "--force",
         action="store_true",
         help="Redownload even when the destination .mkv already exists",
     )
-    dropout.add_argument(
-        "--series",
-        action="append",
-        dest="series_filter",
-        metavar="NAME",
-        help="Only this series name or folder (repeatable)",
-    )
-    dropout.add_argument(
+    download.add_argument(
         "--season",
         type=int,
         action="append",
@@ -123,26 +178,49 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Only this Dropout season number (repeatable)",
     )
-    dropout.add_argument(
+    download.add_argument(
         "--create",
         action="store_true",
         help="Create missing Emby series folders instead of refusing",
     )
-    _add_verbosity(dropout)
-    dropout.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
-    dropout.add_argument("--cookies", help="Netscape cookies.txt for Dropout (overrides manifest)")
-    dropout.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
-    dropout.add_argument(
+    download.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
+    download.add_argument("--cookies", help="Netscape cookies.txt for Dropout (overrides manifest)")
+    download.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
+    download.add_argument(
         "--staging",
         help="Local directory for in-progress downloads. Defaults to the system temp dir.",
     )
-    dropout.add_argument("--format", help="yt-dlp format selector override")
-    dropout.add_argument(
+    download.add_argument("--format", help="yt-dlp format selector override")
+    download.add_argument(
         "--force-refetch",
         action="store_true",
         help="Ignore cached Dropout season listings and fetch them again",
     )
-    _add_debug(dropout)
+    layout.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
+    layout.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        dest="season_filter",
+        metavar="N",
+        help="Only this Dropout season number (repeatable)",
+    )
+    layout.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
+    layout.add_argument("--cookies", help="Netscape cookies.txt for Dropout (overrides manifest)")
+    layout.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
+    layout.add_argument(
+        "--force-refetch",
+        action="store_true",
+        help="Ignore cached Dropout season listings and fetch them again",
+    )
+    check.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
+    check.add_argument(
+        "--force-refetch",
+        action="store_true",
+        help="Ignore cached Sonarr episode lists and fetch them again",
+    )
+    check.add_argument("--sonarr-url", help="Sonarr base URL (overrides config / env)")
+    check.add_argument("--sonarr-api-key", help="Sonarr API key (overrides config / env)")
 
     bench = sub.add_parser("bench", help="Measure copy speed from local disk onto the library share")
     bench.add_argument(
@@ -165,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     server = sub.add_parser(
         "server",
-        help="Run the optional web UI (requires extra [server])",
+        help="Run the optional web UI (needs extra [server])",
     )
     server.add_argument(
         "--host",
@@ -202,6 +280,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         cookies_from_browser=getattr(args, "cookies_from_browser", None),
         cookiefile=getattr(args, "cookies", None),
         dry_run=bool(getattr(args, "dry_run", False)),
+        layout=bool(getattr(args, "layout", False)),
         quiet=bool(getattr(args, "quiet", False)),
         silent=bool(getattr(args, "silent", False)),
         verbose=bool(getattr(args, "verbose", False)),
@@ -337,13 +416,12 @@ def run_server(args: argparse.Namespace) -> int:
 
 
 def run_dropout(args: argparse.Namespace) -> int:
-    from yt_dlp_emby.dropout import run_dropout as pipeline_dropout
-    from yt_dlp_emby.dropout_manifest import load_dropout_manifest
+    from yt_dlp_emby.dropout_manifest import filter_dropout_manifest, load_dropout_manifest
 
+    layout = getattr(args, "dropout_command", None) == "layout"
+    check = getattr(args, "dropout_command", None) == "check"
     try:
         manifest = load_dropout_manifest(_dropout_manifest_path(args))
-        from yt_dlp_emby.dropout_manifest import filter_dropout_manifest
-
         manifest = filter_dropout_manifest(
             manifest,
             series_names=getattr(args, "series_filter", None),
@@ -353,20 +431,39 @@ def run_dropout(args: argparse.Namespace) -> int:
             library=getattr(args, "library", None) or str(manifest.library),
             old_dir=getattr(args, "old_dir", None) or str(manifest.old_dir),
             ffmpeg_location=getattr(args, "ffmpeg_location", None),
-            cookies_from_browser=getattr(args, "cookies_from_browser", None),
-            cookiefile=getattr(args, "cookies", None)
-            or (str(manifest.cookies) if manifest.cookies else None),
-            dry_run=bool(getattr(args, "dry_run", False)),
+            cookies_from_browser=None
+            if check
+            else getattr(args, "cookies_from_browser", None),
+            cookiefile=None
+            if check
+            else (
+                getattr(args, "cookies", None)
+                or (str(manifest.cookies) if manifest.cookies else None)
+            ),
+            dry_run=bool(getattr(args, "dry_run", False)) or layout,
+            layout=layout,
             quiet=bool(getattr(args, "quiet", False)),
             silent=bool(getattr(args, "silent", False)),
             verbose=bool(getattr(args, "verbose", False)),
             debug=bool(getattr(args, "debug", False)),
-            staging=getattr(args, "staging", None)
-            or (str(manifest.staging) if manifest.staging else None),
+            staging=None
+            if check
+            else (
+                getattr(args, "staging", None)
+                or (str(manifest.staging) if manifest.staging else None)
+            ),
             force_refetch=bool(getattr(args, "force_refetch", False)),
-            use_default_config=False,
+            sonarr_url=getattr(args, "sonarr_url", None),
+            sonarr_api_key=getattr(args, "sonarr_api_key", None),
+            use_default_config=check,
             auto_cookies=False,
         )
+        if check:
+            from yt_dlp_emby.dropout_check import run_dropout_check
+
+            return run_dropout_check(manifest, settings)
+        from yt_dlp_emby.dropout import run_dropout as pipeline_dropout
+
         return pipeline_dropout(
             manifest,
             settings,

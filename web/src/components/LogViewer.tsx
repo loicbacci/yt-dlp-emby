@@ -1,6 +1,24 @@
+import { Fragment } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { ansiStyleClass, hasAnsiStyle, parseAnsi } from "../ansiColor";
 import { ApiError, apiClient } from "../api";
 import { go } from "../nav";
+
+function AnsiLine({ line }: { line: string }) {
+  return (
+    <>
+      {parseAnsi(line).map((span, index) =>
+        hasAnsiStyle(span.style) ? (
+          <span key={index} class={ansiStyleClass(span.style)}>
+            {span.text}
+          </span>
+        ) : (
+          <Fragment key={index}>{span.text}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
 
 export function LogViewer({ runKey }: { runKey: string }) {
   const preRef = useRef<HTMLPreElement>(null);
@@ -113,7 +131,12 @@ export function LogViewer({ runKey }: { runKey: string }) {
           setPinned(nearBottom);
         }}
       >
-        {lines.join("\n")}
+        {lines.map((line, index) => (
+          <Fragment key={index}>
+            {index > 0 ? "\n" : null}
+            <AnsiLine line={line} />
+          </Fragment>
+        ))}
       </pre>
     </section>
   );

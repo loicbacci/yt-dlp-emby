@@ -65,18 +65,84 @@ def test_dropout_command_includes_force() -> None:
         dry_run=False,
         verbose=False,
         force=True,
+        action="download",
         library=None,
         old_dir=None,
         staging=None,
     )
     assert argv[3] == "dropout"
+    assert argv[4] == "download"
     assert "--force" in argv
+
+
+def test_dropout_layout_verb_argv() -> None:
+    argv = default_command(
+        "dropout",
+        __import__("pathlib").Path("/data/dropout.yaml"),
+        dry_run=True,
+        verbose=False,
+        force=False,
+        action="layout",
+        library=None,
+        old_dir=None,
+        staging=None,
+    )
+    assert argv[3:5] == ["dropout", "layout"]
+    assert "--layout" not in argv
+    assert "--dry-run" not in argv
+
+
+def test_dropout_check_verb_argv() -> None:
+    argv = default_command(
+        "dropout",
+        __import__("pathlib").Path("/data/dropout.yaml"),
+        dry_run=False,
+        verbose=False,
+        force=False,
+        action="check",
+        library=None,
+        old_dir=None,
+        staging=None,
+    )
+    assert argv[3:5] == ["dropout", "check"]
+    assert "--layout" not in argv
+    assert "--dry-run" not in argv
+    assert "--force" not in argv
+
+
+def test_youtube_layout_is_ignored() -> None:
+    argv = default_command(
+        "youtube",
+        __import__("pathlib").Path("/data/youtube.yaml"),
+        dry_run=False,
+        verbose=False,
+        force=False,
+        action="layout",
+        library=None,
+        old_dir=None,
+        staging=None,
+    )
+    assert "layout" not in argv
+    assert "--dry-run" not in argv
+    assert argv[3] == "youtube"
 
 
 def test_youtube_force_rejected() -> None:
     runner = RunManager(__import__("pathlib").Path("/tmp"))
     with pytest.raises(ValueError, match="force"):
         asyncio.run(runner.start("youtube", force=True))
+
+
+def test_dropout_rejects_force_on_layout_start(tmp_path) -> None:
+    (tmp_path / "dropout.yaml").write_text(
+        "library: /lib\nold_dir: /old\nseries:\n"
+        "  - name: X\n    path: X\n    url: https://watch.dropout.tv/x\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    runner = RunManager(tmp_path)
+    with pytest.raises(ValueError, match="force"):
+        asyncio.run(runner.start("dropout", force=True, action="layout"))
 
 
 def test_second_start_raises_while_running(tmp_path) -> None:
@@ -203,3 +269,32 @@ def test_env_scrub_on_child(monkeypatch, tmp_path) -> None:
 
     asyncio.run(run())
     assert "--verbose" not in captured["argv"]
+
+
+def test_web_run_enables_color(tmp_path) -> None:
+    _write_youtube_manifest(tmp_path)
+    captured: dict = {}
+
+    def factory(*args, **kwargs):
+        captured["env"] = dict(os.environ)
+        return [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('FORCE_COLOR', '')); "
+            "print(os.environ.get('NO_COLOR', '<unset>'))",
+        ]
+
+    async def run() -> None:
+        runner = RunManager(
+            tmp_path,
+            environ={**os.environ, "NO_COLOR": "1"},
+            command_factory=factory,
+        )
+        await runner.start("youtube")
+        await _wait_exited(runner)
+        lines = [item.line for item in runner.lines_after(0)]
+        assert lines[0] == "1"
+        assert lines[1] == "<unset>"
+
+    asyncio.run(run())
+

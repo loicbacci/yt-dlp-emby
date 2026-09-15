@@ -1,7 +1,14 @@
 export type Source = "youtube" | "dropout";
+export type DropoutAction = "download" | "layout" | "check";
 export type RunStatus = "idle" | "running" | "stopping" | "exited";
 export type Session = { setup_required: boolean; authenticated: boolean };
-export type Manifest = { kind: Source; text: string; exists: boolean };
+export type ManifestImport = { path: string; text: string; exists: boolean };
+export type Manifest = {
+  kind: Source;
+  text: string;
+  exists: boolean;
+  imports?: ManifestImport[];
+};
 export type Run = {
   status: RunStatus;
   source: Source | null;
@@ -18,6 +25,7 @@ export type StartOptions = {
   dry_run: boolean;
   verbose: boolean;
   force: boolean;
+  action: DropoutAction;
 };
 
 export class ApiError extends Error {
@@ -55,7 +63,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function startPayload(options: StartOptions): StartOptions {
   if (options.source === "youtube") {
-    return { ...options, force: false };
+    return { ...options, force: false, action: "download" };
+  }
+  if (options.action === "layout" || options.action === "check") {
+    return { ...options, force: false, dry_run: false };
   }
   return options;
 }
@@ -98,6 +109,11 @@ export const apiClient = {
     api<Manifest>(`/api/manifests/${kind}`, {
       method: "PUT",
       body: JSON.stringify({ text }),
+    }),
+  putDropoutImport: (path: string, text: string) =>
+    api<ManifestImport>("/api/manifests/dropout/imports", {
+      method: "PUT",
+      body: JSON.stringify({ path, text }),
     }),
   validateManifest: (kind: Source, text: string) =>
     api<{ ok: boolean }>(`/api/manifests/${kind}/validate`, {

@@ -16,7 +16,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from yt_dlp_emby.config import ConfigError
 from yt_dlp_emby.server.auth import AuthState, load_auth, setup_password, verify_password
-from yt_dlp_emby.server.manifests import ALLOWED, read_manifest, validate_manifest_text, write_manifest
+from yt_dlp_emby.server.manifests import (
+    ALLOWED,
+    read_manifest,
+    validate_manifest_text,
+    write_dropout_import,
+    write_manifest,
+)
 from yt_dlp_emby.server.runner import CommandFactory, RunManager
 
 LOG_POLL_SECONDS = 0.2
@@ -41,6 +47,12 @@ class StartRunBody(BaseModel):
     dry_run: bool = False
     verbose: bool = False
     force: bool = False
+    action: str = "download"
+
+
+class ImportManifestBody(BaseModel):
+    path: str
+    text: str
 
 
 def resolve_data_dir(data_dir: Path | None, environ: Mapping[str, str]) -> Path:
@@ -181,7 +193,15 @@ def create_app(
         if kind not in ALLOWED:
             raise HTTPException(status_code=404, detail={"error": "not found"})
         payload = read_manifest(request.app.state.data_dir, kind)
-        return {"kind": payload.kind, "text": payload.text, "exists": payload.exists}
+        return {
+            "kind": payload.kind,
+            "text": payload.text,
+            "exists": payload.exists,
+            "imports": [
+                {"path": item.path, "text": item.text, "exists": item.exists}
+                for item in payload.imports
+            ],
+        }
 
     @app.put("/api/manifests/{kind}")
     async def put_manifest(kind: str, body: ManifestBody, request: Request) -> JSONResponse:
@@ -195,7 +215,28 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return JSONResponse(
-            {"kind": payload.kind, "text": payload.text, "exists": payload.exists}
+            {
+                "kind": payload.kind,
+                "text": payload.text,
+                "exists": payload.exists,
+                "imports": [
+                    {"path": item.path, "text": item.text, "exists": item.exists}
+                    for item in payload.imports
+                ],
+            }
+        )
+
+    @app.put("/api/manifests/dropout/imports")
+    async def put_dropout_import(body: ImportManifestBody, request: Request) -> JSONResponse:
+        require_auth(request)
+        try:
+            payload = write_dropout_import(request.app.state.data_dir, body.path, body.text)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return JSONResponse(
+            {"path": payload.path, "text": payload.text, "exists": payload.exists}
         )
 
     @app.post("/api/manifests/{kind}/validate")
@@ -224,6 +265,11 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": "unknown source"})
         if body.source == "youtube" and body.force:
             raise HTTPException(status_code=400, detail={"error": "force invalid for youtube"})
+        action = body.action or "download"
+        if body.source == "youtube" and action != "download":
+            raise HTTPException(status_code=400, detail={"error": "action invalid for youtube"})
+        if body.force and action != "download":
+            raise HTTPException(status_code=400, detail={"error": "force invalid for layout or check"})
         manifest = request.app.state.data_dir / ALLOWED[body.source]
         if not manifest.is_file():
             raise HTTPException(status_code=400, detail={"error": "manifest not on disk"})
@@ -233,6 +279,7 @@ def create_app(
                 dry_run=body.dry_run,
                 verbose=body.verbose,
                 force=body.force,
+                action=action,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc

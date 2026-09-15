@@ -1,6 +1,8 @@
 import { useEffect, useState } from "preact/hooks";
 import {
   ApiError,
+  type DropoutAction,
+  type ManifestImport,
   type Run,
   type Source,
   apiClient,
@@ -25,19 +27,37 @@ const idleRun: Run = {
   exit_code: null,
 };
 
+const ROOT = "";
+
+type TabState = { text: string; savedText: string; exists: boolean };
+
+function tabLabel(path: string, source: Source): string {
+  if (!path) return source === "youtube" ? "youtube.yaml" : "dropout.yaml";
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
+}
+
 export function Dashboard() {
   const [source, setSource] = useState<Source>("youtube");
+  const [action, setAction] = useState<DropoutAction>("download");
   const [dryRun, setDryRun] = useState(false);
   const [verbose, setVerbose] = useState(false);
   const [force, setForce] = useState(false);
-  const [text, setText] = useState("");
-  const [savedText, setSavedText] = useState("");
-  const [exists, setExists] = useState(false);
+  const [tabs, setTabs] = useState<Record<string, TabState>>({
+    [ROOT]: { text: "", savedText: "", exists: false },
+  });
+  const [importPaths, setImportPaths] = useState<string[]>([]);
+  const [activePath, setActivePath] = useState(ROOT);
   const [loadedSource, setLoadedSource] = useState<Source | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [run, setRun] = useState<Run>(idleRun);
   const [runKey, setRunKey] = useState("idle");
+
+  const active = tabs[activePath] ?? tabs[ROOT];
+  const text = active?.text ?? "";
+  const savedText = active?.savedText ?? "";
+  const rootExists = tabs[ROOT]?.exists ?? false;
 
   const applyRun = (next: Run) => {
     setRun(next);
@@ -46,9 +66,24 @@ export function Dashboard() {
 
   const loadManifest = async (kind: Source) => {
     const manifest = await apiClient.getManifest(kind);
-    setText(manifest.text);
-    setSavedText(manifest.text);
-    setExists(manifest.exists);
+    const imports: ManifestImport[] = kind === "dropout" ? (manifest.imports ?? []) : [];
+    const nextTabs: Record<string, TabState> = {
+      [ROOT]: {
+        text: manifest.text,
+        savedText: manifest.text,
+        exists: manifest.exists,
+      },
+    };
+    for (const item of imports) {
+      nextTabs[item.path] = {
+        text: item.text,
+        savedText: item.text,
+        exists: item.exists,
+      };
+    }
+    setTabs(nextTabs);
+    setImportPaths(imports.map((item) => item.path));
+    setActivePath(ROOT);
     setLoadedSource(kind);
     setManifestError(null);
   };
@@ -73,6 +108,7 @@ export function Dashboard() {
 
   useEffect(() => {
     if (loadedSource !== source) return;
+    if (activePath !== ROOT) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       apiClient
@@ -95,7 +131,7 @@ export function Dashboard() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [source, text, loadedSource]);
+  }, [source, text, loadedSource, activePath]);
 
   useEffect(() => {
     refreshRun();
@@ -110,17 +146,58 @@ export function Dashboard() {
     };
   }, []);
 
+  const anyDirty = Object.values(tabs).some((tab) => tab.text !== tab.savedText);
+
   const changeSource = async (next: Source) => {
-    if (text !== savedText && !confirmDirtySwitch()) return;
+    if (anyDirty && !confirmDirtySwitch()) return;
     setSource(next);
+    if (next === "youtube") setAction("download");
+  };
+
+  const changeTab = (next: string) => {
+    if (next === activePath) return;
+    if (text !== savedText && !confirmDirtySwitch()) return;
+    setActivePath(next);
+    setManifestError(null);
   };
 
   const save = async () => {
     setManifestError(null);
     try {
-      const manifest = await apiClient.putManifest(source, text);
-      setSavedText(manifest.text);
-      setExists(manifest.exists);
+      if (activePath === ROOT) {
+        const manifest = await apiClient.putManifest(source, text);
+        const imports: ManifestImport[] =
+          source === "dropout" ? (manifest.imports ?? []) : [];
+        setTabs((current) => {
+          const next: Record<string, TabState> = {
+            ...current,
+            [ROOT]: {
+              text: manifest.text,
+              savedText: manifest.text,
+              exists: manifest.exists,
+            },
+          };
+          for (const item of imports) {
+            next[item.path] = current[item.path] ?? {
+              text: item.text,
+              savedText: item.text,
+              exists: item.exists,
+            };
+          }
+          return next;
+        });
+        setImportPaths(imports.map((item) => item.path));
+      } else {
+        const saved = await apiClient.putDropoutImport(activePath, text);
+        setTabs((current) => ({
+          ...current,
+          [activePath]: {
+            text: saved.text,
+            savedText: saved.text,
+            exists: saved.exists,
+          },
+        }));
+      }
     } catch (err) {
       setManifestError(err instanceof ApiError ? err.message : "Save failed");
       if (err instanceof ApiError && err.status === 401) go("/login");
@@ -128,7 +205,7 @@ export function Dashboard() {
   };
 
   const start = async () => {
-    if (text !== savedText && !confirmDirtyStart()) return;
+    if (anyDirty && !confirmDirtyStart()) return;
     setRunError(null);
     try {
       applyRun(
@@ -137,6 +214,7 @@ export function Dashboard() {
           dry_run: dryRun,
           verbose,
           force,
+          action: source === "dropout" ? action : "download",
         }),
       );
     } catch (err) {
@@ -166,18 +244,28 @@ export function Dashboard() {
     go("/login");
   };
 
+  const editorTabs =
+    source === "dropout"
+      ? [
+          { path: ROOT, label: tabLabel(ROOT, source) },
+          ...importPaths.map((path) => ({ path, label: tabLabel(path, source) })),
+        ]
+      : undefined;
+
   return (
     <div class="dashboard-shell">
       <Header run={run} onLogout={logout} />
       <div class="dashboard-left">
         <RunControls
           source={source}
+          action={action}
           dryRun={dryRun}
           verbose={verbose}
           force={force}
-          exists={exists}
+          exists={rootExists}
           run={run}
           onSourceChange={changeSource}
+          onActionChange={setAction}
           onDryRunChange={setDryRun}
           onVerboseChange={setVerbose}
           onForceChange={setForce}
@@ -189,9 +277,21 @@ export function Dashboard() {
           source={source}
           text={text}
           savedText={savedText}
-          exists={exists}
+          exists={active?.exists ?? false}
           error={manifestError}
-          onChange={setText}
+          tabs={editorTabs}
+          activePath={activePath}
+          onTabChange={changeTab}
+          onChange={(value) =>
+            setTabs((current) => ({
+              ...current,
+              [activePath]: {
+                text: value,
+                savedText: current[activePath]?.savedText ?? "",
+                exists: current[activePath]?.exists ?? false,
+              },
+            }))
+          }
           onSave={save}
         />
       </div>

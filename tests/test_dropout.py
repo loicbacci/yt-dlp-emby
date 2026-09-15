@@ -5,13 +5,21 @@ import pytest
 from yt_dlp_emby.config import ConfigError, resolve_settings
 from yt_dlp_emby.dropout import (
     emby_season_dir,
-    format_dry_run_row,
     format_season_plan,
+    layout_origin,
+    layout_series_groups,
     resolve_emby_target,
     run_dropout,
 )
-from yt_dlp_emby.dropout_manifest import filter_dropout_manifest, load_dropout_manifest, season_page_url
+from yt_dlp_emby.dropout_manifest import (
+    DropoutSeries,
+    DropoutSource,
+    filter_dropout_manifest,
+    load_dropout_manifest,
+    season_page_url,
+)
 from yt_dlp_emby.extract import DropoutListing
+from yt_dlp_emby.log import format_dry_run_row
 from yt_dlp_emby.style import strip_ansi
 
 
@@ -48,6 +56,7 @@ def _settings(
     verbose: bool = False,
     debug: bool = False,
     force_refetch: bool = False,
+    layout: bool = False,
 ):
     ffmpeg = tmp_path / "ffmpeg"
     ffmpeg.write_text("#!/bin/sh\n")
@@ -57,6 +66,7 @@ def _settings(
         old_dir=str(tmp_path / "old"),
         ffmpeg_location=str(ffmpeg),
         dry_run=dry_run,
+        layout=layout,
         quiet=quiet,
         silent=silent,
         verbose=verbose,
@@ -72,15 +82,16 @@ def _settings(
 def test_load_manifest_series_url_and_remap(tmp_path: Path) -> None:
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     series = manifest.series[0]
+    source = series.sources[0]
     assert series.name == "Dimension 20"
-    assert season_page_url(series, series.seasons[0]).endswith("/season:28")
-    assert series.seasons[1].to_season is None
-    remap = series.seasons[1].remap[0]
+    assert season_page_url(source, source.seasons[0]).endswith("/season:28")
+    assert source.seasons[1].to_season is None
+    remap = source.seasons[1].remap[0]
     assert remap.to_season == 0
     assert remap.to_episode == 70
     assert remap.title is None
-    assert series.seasons[0].only_episodes is None
-    assert series.seasons[1].only_episodes is None
+    assert source.seasons[0].only_episodes is None
+    assert source.seasons[1].only_episodes is None
 
 
 def test_load_manifest_only_episodes(tmp_path: Path) -> None:
@@ -100,7 +111,7 @@ series:
 """.format(lib=tmp_path / "lib", old=tmp_path / "old"),
         encoding="utf-8",
     )
-    season = load_dropout_manifest(path).series[0].seasons[0]
+    season = load_dropout_manifest(path).series[0].sources[0].seasons[0]
     assert season.url.endswith("/season:2")
     assert season.to_season == 7
     assert season.only_episodes == (18, 19)
@@ -147,7 +158,7 @@ series:
 """.format(lib=tmp_path / "lib", old=tmp_path / "old"),
         encoding="utf-8",
     )
-    remap = load_dropout_manifest(path).series[0].seasons[0].remap[0]
+    remap = load_dropout_manifest(path).series[0].sources[0].seasons[0].remap[0]
     assert remap.title == "D20 on a Bus"
 
 
@@ -208,6 +219,161 @@ def test_resolve_remap_and_default_to_season() -> None:
         remap=(DropoutRemap(1, 0, 70, title="D20 on a Bus"),),
     )
     assert resolve_emby_target(listing, named) == (0, 70, "D20 on a Bus")
+    skipped = DropoutSeason(
+        dropout=29,
+        remap=(DropoutRemap(2, skip=True),),
+    )
+    assert resolve_emby_target(
+        DropoutListing(url="https://x", title="Bonus", dropout_episode=2),
+        skipped,
+    ) == "skip"
+
+
+def test_layout_origin_only_when_remapped() -> None:
+    from yt_dlp_emby.dropout_manifest import DropoutSeason
+
+    listing = DropoutListing(url="https://x", title="Welcome", dropout_episode=1)
+    identity = DropoutSeason(dropout=17, to_season=17)
+    assert layout_origin(identity, listing, 17, 1) is None
+    remapped = DropoutSeason(dropout=17, to_season=17)
+    assert layout_origin(remapped, listing, 0, 28) == "season 17 E01"
+    shifted = DropoutSeason(dropout=28, to_season=27)
+    assert layout_origin(shifted, listing, 27, 1) == "season 28 E01"
+    url_only = DropoutSeason(url="https://x", to_season=7)
+    fireside = DropoutListing(url="https://x", title="Fireside", dropout_episode=18)
+    assert layout_origin(url_only, fireside, 7, 18) is None
+    assert layout_origin(url_only, fireside, 0, 70) == "E18"
+
+
+def test_layout_series_groups_by_name_or_path() -> None:
+    shared_path = DropoutSeries(
+        name="Dimension 20 Main",
+        path="Dimension 20 [tvdbid=354216]",
+        sources=(DropoutSource(url="https://watch.dropout.tv/main", seasons=()),),
+    )
+    shared_name = DropoutSeries(
+        name="Dimension 20",
+        path="Dimension 20 [tvdbid=354216]",
+        sources=(DropoutSource(url="https://watch.dropout.tv/main", seasons=()),),
+    )
+    other_path = DropoutSeries(
+        name="Dimension 20",
+        path="Dimension 20 Alt [tvdbid=354216]",
+        sources=(DropoutSource(url="https://watch.dropout.tv/alt", seasons=()),),
+    )
+    separate = DropoutSeries(
+        name="Other Show",
+        path="Other Show [tvdbid=1]",
+        sources=(DropoutSource(url="https://watch.dropout.tv/other", seasons=()),),
+    )
+    by_path = layout_series_groups((shared_path, shared_name))
+    assert by_path[(shared_path.name, shared_path.path)][0] == by_path[
+        (shared_name.name, shared_name.path)
+    ][0]
+    assert by_path[(shared_path.name, shared_path.path)][1] == "Dimension 20 [tvdbid=354216]"
+
+    by_name = layout_series_groups((shared_name, other_path))
+    assert by_name[(shared_name.name, shared_name.path)][0] == by_name[
+        (other_path.name, other_path.path)
+    ][0]
+    assert by_name[(shared_name.name, shared_name.path)][1] == "Dimension 20"
+
+    mixed = layout_series_groups((shared_path, shared_name, other_path, separate))
+    assert mixed[(shared_path.name, shared_path.path)][0] == mixed[
+        (shared_name.name, shared_name.path)
+    ][0]
+    assert mixed[(shared_name.name, shared_name.path)][0] == mixed[
+        (other_path.name, other_path.path)
+    ][0]
+    assert mixed[(separate.name, separate.path)][0] != mixed[
+        (shared_path.name, shared_path.path)
+    ][0]
+
+
+def test_load_manifest_remap_skip(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 29
+        remap:
+          - dropout_episode: 2
+            skip: true
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    remap = load_dropout_manifest(path).series[0].sources[0].seasons[0].remap[0]
+    assert remap.dropout_episode == 2
+    assert remap.skip is True
+    assert remap.to_season is None
+    assert remap.to_episode is None
+
+
+def test_dropout_remap_skip_omits_episode(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 29
+        to_season: 29
+        remap:
+          - dropout_episode: 2
+            skip: true
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/main-ep",
+                title="Main Episode",
+                dropout_episode=1,
+            ),
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/bonus",
+                title="Bonus Episode",
+                dropout_episode=2,
+            ),
+        ]
+
+    def fake_download(url: str, dest_stem: Path, _settings: object, **_kwargs: object) -> dict:
+        calls.append(url)
+        dest_stem.parent.mkdir(parents=True, exist_ok=True)
+        dest_stem.with_suffix(".mkv").write_bytes(b"new")
+        return {"id": "ep"}
+
+    assert (
+        run_dropout(
+            load_dropout_manifest(path),
+            _settings(tmp_path),
+            create=True,
+            extract_fn=fake_extract,
+            download_fn=fake_download,
+        )
+        == 0
+    )
+    assert calls == ["https://watch.dropout.tv/x/videos/main-ep"]
+    assert (
+        tmp_path
+        / "lib"
+        / "Dimension 20 [tvdbid=354216]"
+        / "Season 29"
+        / "Dimension 20 - S29E02 - Bonus Episode.mkv"
+    ).exists() is False
 
 
 def test_dropout_skips_existing_and_force_redownloads(tmp_path: Path) -> None:
@@ -342,6 +508,80 @@ series:
         / "Season 7"
         / "Dimension 20 - S07E01 - Main Episode.mkv"
     ).exists()
+
+
+def test_dropout_urls_download_into_same_path(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    urls:
+      - url: https://watch.dropout.tv/dimension-20-the-complete-series
+        seasons:
+          - dropout: 1
+            to_season: 1
+      - url: https://watch.dropout.tv/dimension-20-live-complete-collection
+        seasons:
+          - dropout: 1
+            remap:
+              - dropout_episode: 1
+                to_season: 0
+                to_episode: 48
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
+        if "complete-series" in url:
+            return [
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/welcome",
+                    title="Welcome",
+                    dropout_episode=1,
+                )
+            ]
+        if "live-complete" in url:
+            return [
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/live-show",
+                    title="Live Show",
+                    dropout_episode=1,
+                )
+            ]
+        raise AssertionError(url)
+
+    def fake_download(url: str, dest_stem: Path, _settings: object, **_kwargs: object) -> dict:
+        calls.append(url)
+        dest_stem.parent.mkdir(parents=True, exist_ok=True)
+        dest_stem.with_suffix(".mkv").write_bytes(b"new")
+        return {"id": "ep"}
+
+    assert (
+        run_dropout(
+            load_dropout_manifest(path),
+            _settings(tmp_path),
+            create=True,
+            extract_fn=fake_extract,
+            download_fn=fake_download,
+        )
+        == 0
+    )
+    series_dir = tmp_path / "lib" / "Dimension 20 [tvdbid=354216]"
+    assert (
+        series_dir / "Season 1" / "Dimension 20 - S01E01 - Welcome.mkv"
+    ).is_file()
+    assert (
+        series_dir / "Specials" / "Dimension 20 - S00E48 - Live Show.mkv"
+    ).is_file()
+    assert calls == [
+        "https://watch.dropout.tv/x/videos/welcome",
+        "https://watch.dropout.tv/x/videos/live-show",
+    ]
 
 
 def test_dropout_dry_run_does_not_download(tmp_path: Path) -> None:
@@ -540,6 +780,11 @@ def test_format_season_plan_and_dry_run_row() -> None:
     assert strip_ansi(row).startswith("download")
     assert "S27E01" in row
     assert "Season 27/" in row
+    origin_row = format_dry_run_row(
+        "download", "S00E28", "Behind the Scenes: How It Began", "", origin="season 17 E07"
+    )
+    assert "Season 17/" not in strip_ansi(origin_row)
+    assert "(season 17 E07)" in strip_ansi(origin_row)
 
 
 def test_dropout_dry_run_prints_table(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -585,6 +830,201 @@ def test_dropout_dry_run_prints_table(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "Listing 1/2" not in out
     assert "Listing 2/2" not in out
     assert "Done  dry-run  download=2  skip=0" in out
+
+
+def test_dropout_layout_groups_by_destination(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 17
+        to_season: 17
+        remap:
+          - dropout_episode: 7
+            to_season: 0
+            to_episode: 28
+          - dropout_episode: 8
+            skip: true
+      - url: https://watch.dropout.tv/extra
+        remap:
+          - dropout_episode: 1
+            to_season: 0
+            to_episode: 29
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+
+    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
+        if "extra" in url:
+            return [
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/bts-cast",
+                    title="Behind the Scenes: The Cast",
+                    dropout_episode=1,
+                ),
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/unmapped",
+                    title="Unmapped Extra",
+                    dropout_episode=2,
+                ),
+            ]
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/seeds",
+                title="The Seeds of Conflict",
+                dropout_episode=1,
+            ),
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/bts-began",
+                title="Behind the Scenes: How It Began",
+                dropout_episode=7,
+            ),
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/skip-me",
+                title="Skip This",
+                dropout_episode=8,
+            ),
+        ]
+
+    assert (
+        run_dropout(
+            load_dropout_manifest(path),
+            _settings(tmp_path, layout=True, quiet=False),
+            extract_fn=fake_extract,
+            download_fn=lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("layout downloaded")
+            ),
+        )
+        == 0
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert "Dimension 20" in out
+    assert "season 17 →" not in out
+    assert "Season 17/" not in out
+    assert "Specials/" not in out
+    assert "  Season 17" in out
+    assert "  Specials" in out
+    assert "  unmapped" in out
+    assert "S17E01" in out
+    assert "The Seeds of Conflict" in out
+    assert "(season 17 E01)" not in out
+    assert "S00E28" in out
+    assert "(season 17 E07)" in out
+    assert "S00E29" in out
+    assert "Skip This" not in out
+    assert "Unmapped Extra" in out
+    assert out.index("Season 17") < out.index("Specials")
+    assert out.index("Specials") < out.index("unmapped")
+    assert out.index("S00E28") < out.index("S00E29")
+    assert "Done  dry-run  download=3  skip=0" in out
+
+
+def test_dropout_layout_combines_same_path_or_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20 Main
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-main
+    seasons:
+      - dropout: 17
+        to_season: 17
+  - name: Dimension 20 Extras
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-extras
+    seasons:
+      - url: https://watch.dropout.tv/extra
+        remap:
+          - dropout_episode: 1
+            to_season: 0
+            to_episode: 29
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+
+    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
+        if "extra" in url:
+            return [
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/bts-cast",
+                    title="Behind the Scenes: The Cast",
+                    dropout_episode=1,
+                )
+            ]
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/seeds",
+                title="The Seeds of Conflict",
+                dropout_episode=1,
+            )
+        ]
+
+    run_dropout(
+        load_dropout_manifest(path),
+        _settings(tmp_path, layout=True, quiet=False),
+        extract_fn=fake_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert out.count("Dimension 20 [tvdbid=354216]") == 1
+    assert "Dimension 20 Main" not in out
+    assert "Dimension 20 Extras" not in out
+    assert "  Season 17" in out
+    assert "  Specials" in out
+    assert "S17E01" in out
+    assert "S00E29" in out
+    assert out.index("Season 17") < out.index("Specials")
+
+
+def test_dropout_layout_debug_keeps_source_plans(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = load_dropout_manifest(_write_manifest(tmp_path))
+
+    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
+        if url.endswith("/season:28"):
+            return [
+                DropoutListing(
+                    url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
+                    title="Welcome to the Wastes",
+                    dropout_episode=1,
+                )
+            ]
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/x/videos/special",
+                title="Special",
+                dropout_episode=1,
+            )
+        ]
+
+    run_dropout(
+        manifest,
+        _settings(tmp_path, layout=True, quiet=False, debug=True),
+        extract_fn=fake_extract,
+        download_fn=lambda *_a, **_k: {"id": "nope"},
+    )
+    out = strip_ansi(capsys.readouterr().out)
+    assert "season 28 → Season 27" in out
+    assert "season 29 → remap" in out
+    assert "  Season 27" in out
+    assert "  Specials" in out
+    assert "(season 28 E01)" in out
+    assert "(season 29 E01)" in out
+    assert "Season 27/" not in out
 
 
 def test_dropout_quiet_prints_summary_not_table(
@@ -906,7 +1346,11 @@ def test_filter_manifest_series_and_season(tmp_path: Path) -> None:
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     filtered = filter_dropout_manifest(manifest, dropout_seasons=[28])
     assert len(filtered.series) == 1
-    assert [season.dropout for season in filtered.series[0].seasons] == [28]
+    assert [
+        season.dropout
+        for source in filtered.series[0].sources
+        for season in source.seasons
+    ] == [28]
     named = filter_dropout_manifest(manifest, series_names=["dimension 20"])
     assert named.series[0].name == "Dimension 20"
     with pytest.raises(ConfigError, match="No series/seasons matched"):
@@ -1122,10 +1566,11 @@ def test_dropout_migrates_library_listing_cache(
     library.mkdir()
     series = manifest.series[0]
     seasons = {
-        season_page_url(series, season): dropout_listings_to_cache(
-            _welcome_extract(season_page_url(series, season))
+        season_page_url(source, season): dropout_listings_to_cache(
+            _welcome_extract(season_page_url(source, season))
         )
-        for season in series.seasons
+        for source in series.sources
+        for season in source.seasons
     }
     save_dropout_season_cache(library / LEGACY_DROPOUT_CACHE_FILENAME, seasons)
     calls: list[str] = []

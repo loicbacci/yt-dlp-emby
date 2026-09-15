@@ -282,3 +282,46 @@ def test_empty_cookiefile_raises(tmp_path: Path) -> None:
             cwd=tmp_path,
             auto_cookies=False,
         )
+
+
+def test_sonarr_url_from_cli_env_config(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'library = "/from/file/lib"\nold_dir = "/from/file/old"\n'
+        'sonarr_url = "http://from-file:8989"\n'
+        'sonarr_api_key = "file-key"\n',
+        encoding="utf-8",
+    )
+    from_file = resolve_settings(
+        config_path=str(config),
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert from_file.sonarr_url == "http://from-file:8989"
+    assert from_file.sonarr_api_key == "file-key"
+    env = {
+        "YT_DLP_EMBY_SONARR_URL": "http://from-env:8989",
+        "YT_DLP_EMBY_SONARR_API_KEY": "env-key",
+    }
+    from_env = resolve_settings(
+        config_path=str(config),
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ=env,
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert from_env.sonarr_url == "http://from-env:8989"
+    assert from_env.sonarr_api_key == "env-key"
+    from_cli = resolve_settings(
+        config_path=str(config),
+        ffmpeg_location="/usr/bin/ffmpeg",
+        sonarr_url="http://from-cli:8989",
+        sonarr_api_key="cli-key",
+        environ=env,
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert from_cli.sonarr_url == "http://from-cli:8989"
+    assert from_cli.sonarr_api_key == "cli-key"

@@ -108,10 +108,21 @@ def format_elapsed(seconds: float) -> str:
     return f"{int(elapsed)}s"
 
 
-def format_dry_run_row(action: str, code: str, title: str, folder: str) -> str:
+def format_dry_run_row(
+    action: str,
+    code: str,
+    title: str,
+    folder: str,
+    origin: str | None = None,
+) -> str:
     short = title if len(title) <= 40 else f"{title[:37]}..."
     styled = _ACTION_STYLE.get(action, lambda text: text)(action)
-    return f"{pad_visible(styled, 8)}  {code}  {short:<40}  {folder}"
+    line = f"{pad_visible(styled, 8)}  {code}  {short:<40}"
+    if folder:
+        line += f"  {folder}"
+    if origin:
+        line += f"  {dim(f'({origin})')}"
+    return line
 
 
 def format_run_summary(

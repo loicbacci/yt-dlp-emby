@@ -53,6 +53,7 @@ class Settings:
     cookies_from_browser: str | None = None
     cookiefile: Path | None = None
     dry_run: bool = False
+    layout: bool = False
     ffmpeg_location: str | None = None
     quiet: bool = False
     silent: bool = False
@@ -61,6 +62,8 @@ class Settings:
     staging: Path | None = None
     force_refetch: bool = False
     bench_dest: Path | None = None
+    sonarr_url: str | None = None
+    sonarr_api_key: str | None = None
 
     @property
     def show_progress(self) -> bool:
@@ -82,7 +85,7 @@ class Settings:
 def _load_toml(path: Path) -> dict[str, str]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     result: dict[str, str] = {}
-    for key in ("library", "old_dir", "staging", "cookies", "bench_dest"):
+    for key in ("library", "old_dir", "staging", "cookies", "bench_dest", "sonarr_url", "sonarr_api_key"):
         value = data.get(key)
         if value is not None:
             result[key] = str(value)
@@ -132,6 +135,7 @@ def resolve_settings(
     cookies_from_browser: str | None = None,
     cookiefile: str | None = None,
     dry_run: bool = False,
+    layout: bool = False,
     quiet: bool = False,
     silent: bool = False,
     verbose: bool = False,
@@ -139,6 +143,8 @@ def resolve_settings(
     staging: str | None = None,
     force_refetch: bool = False,
     bench_dest: str | None = None,
+    sonarr_url: str | None = None,
+    sonarr_api_key: str | None = None,
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     use_default_config: bool = True,
@@ -176,6 +182,12 @@ def resolve_settings(
     resolved_bench = _pick(
         bench_dest, env_value(environ, "BENCH_DEST"), file_values.get("bench_dest")
     )
+    resolved_sonarr_url = _pick(
+        sonarr_url, env_value(environ, "SONARR_URL"), file_values.get("sonarr_url")
+    )
+    resolved_sonarr_key = _pick(
+        sonarr_api_key, env_value(environ, "SONARR_API_KEY"), file_values.get("sonarr_api_key")
+    )
     resolved_cookies = _pick(cookiefile, env_value(environ, "COOKIES"), file_values.get("cookies"))
     if auto_cookies and not resolved_cookies:
         default_cookies = cwd / "cookies.txt"
@@ -211,7 +223,8 @@ def resolve_settings(
         season=season,
         cookies_from_browser=cookies_from_browser,
         cookiefile=cookie_path,
-        dry_run=dry_run,
+        dry_run=dry_run or layout,
+        layout=layout,
         ffmpeg_location=ffmpeg_location,
         quiet=quiet,
         silent=silent,
@@ -220,4 +233,6 @@ def resolve_settings(
         staging=Path(resolved_staging) if resolved_staging else None,
         force_refetch=force_refetch,
         bench_dest=Path(resolved_bench) if resolved_bench else None,
+        sonarr_url=resolved_sonarr_url.rstrip("/") if resolved_sonarr_url else None,
+        sonarr_api_key=resolved_sonarr_key,
     )

@@ -143,29 +143,55 @@ NFO files include `<lockdata>true</lockdata>` and YouTube IDs only. Do not add T
 
 ## Dropout
 
-Dropout shows already have TVDB/TMDB entries, so this command does **not** write NFO or artwork. Copy [`dropout.yaml.example`](dropout.yaml.example) to `dropout.yaml` (gitignored). List each Dropout season you want; yt-dlp lists the episodes. A series URL is only a base slug — yt-dlp treats it as season 1 if you omit `/season:N`.
+Dropout shows already have TVDB/TMDB entries, so this command does **not** write NFO or artwork. Copy [`dropout.yaml.example`](dropout.yaml.example) to `dropout.yaml` (gitignored). A `# yaml-language-server: $schema=schemas/dropout.schema.json` comment at the top of the file enables IDE errors if you have the YAML extension in Cursor/VS Code.
+
+`dropout` requires a verb: `download`, `layout`, or `check`. Bare `yt-dlp-emby dropout` prints help and exits.
+
+List each Dropout season you want; yt-dlp lists the episodes. A series URL is only a base slug — yt-dlp treats it as season 1 if you omit `/season:N`. The existing `url` + `seasons` shorthand is still valid. Use `urls` when several Dropout catalog pages belong in one Emby/Sonarr folder:
 
 ```yaml
+# yaml-language-server: $schema=schemas/dropout.schema.json
 library: /path/to/dropout-library
 old_dir: /path/to/old
 cookies: dropout-cookies.txt
+imports:
+  - shows/dimension-20.yaml
 
+series:
+  - name: Game Changer
+    path: Game Changer [tvdbid=361151]
+    tvdb_id: 361151
+    url: https://watch.dropout.tv/game-changer
+    seasons:
+      - dropout: 1
+    tvdb_skip:
+      - season: 0
+        episodes: [12, 13, 14]
+```
+
+`imports` is optional. Keep a single file if you prefer. When you split, put **one file per TVDB/Emby series**; imported files contain only `series:` (no `library` / `cookies` / nested `imports`). Same `path` across files is merged (catalogs are appended). Schema for fragments: [`schemas/dropout-series.schema.json`](schemas/dropout-series.schema.json).
+
+```yaml
+# yaml-language-server: $schema=../schemas/dropout-series.schema.json
 series:
   - name: Dimension 20
     path: Dimension 20 [tvdbid=354216]
-    url: https://watch.dropout.tv/dimension-20-the-complete-series
-    seasons:
-      - dropout: 28
-        to_season: 27
-      - dropout: 29
-        remap:
-          - dropout_episode: 1
-            to_season: 0
-            to_episode: 70
-            title: D20 on a Bus
+    tvdb_id: 354216
+    urls:
+      - url: https://watch.dropout.tv/dimension-20-the-complete-series
+        seasons:
+          - dropout: 28
+            to_season: 27
+      - url: https://watch.dropout.tv/dimension-20-live-complete-collection
+        seasons:
+          - dropout: 1
+            remap:
+              - dropout_episode: 1
+                to_season: 0
+                to_episode: 48
 ```
 
-If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`). Optional `title` on a remap sets the Emby filename title (and is what “title differs” compares against). `only_episodes` limits a season to those Dropout episode numbers (the rest of the page is ignored); omit it to keep downloading every episode on the page.
+If `to_season` is omitted, remaining episodes keep the Dropout season number (`dropout: 26` → Emby `Season 26`). `remap` still overrides listed episodes (for example a finale into `Specials/`). Optional `title` on a remap sets the Emby filename title (and is what “title differs” compares against). Set `skip: true` on a remap entry to ignore that Dropout episode number entirely (`tvdb_skip` is separate: it only affects `check`). `only_episodes` limits a season to those Dropout episode numbers (the rest of the page is ignored); omit it to keep downloading every episode on the page.
 
 ```yaml
       - url: https://watch.dropout.tv/dimension-20-fantasy-high/season:2
@@ -176,17 +202,20 @@ If `to_season` is omitted, remaining episodes keep the Dropout season number (`d
 Use a **Dropout** Netscape cookies file (`_session` on watch.dropout.tv), not the YouTube cookies file. yt-dlp is given a temp copy and that jar is never written back, so a failed or logged-out request cannot empty your file. `to_season: 0` writes to `Specials/` with `S00E70` in the filename.
 
 ```bash
-uv run yt-dlp-emby dropout
-uv run yt-dlp-emby dropout --manifest dropout.yaml --dry-run
-uv run yt-dlp-emby dropout --force
-uv run yt-dlp-emby dropout --series "Dimension 20" --season 28
-uv run yt-dlp-emby dropout --create
-uv run yt-dlp-emby dropout --quiet
-uv run yt-dlp-emby dropout --debug
-uv run yt-dlp-emby dropout --force-refetch
+uv run yt-dlp-emby dropout download --manifest dropout.yaml --dry-run
+uv run yt-dlp-emby dropout layout
+uv run yt-dlp-emby dropout check
+uv run yt-dlp-emby dropout download --force
+uv run yt-dlp-emby dropout download --series "Dimension 20" --season 28
+uv run yt-dlp-emby dropout download --create
+uv run yt-dlp-emby dropout download --quiet
+uv run yt-dlp-emby dropout download --debug
+uv run yt-dlp-emby dropout download --force-refetch
 ```
 
-Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{manifest}/cache/dropout.json` (next to `dropout.yaml`, not on the library share) so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_DLP_EMBY_FORCE_REFETCH=1`) to list again. A leftover `{library}/.yt-emby-dropout.json` is moved there on the next run. Listing prints the series name, per-season skip/download counts, a dim `cached`/`fetch` timing (listing plus one folder scan), and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. `-vv` / `--debug` (or `YT_DLP_EMBY_DEBUG=1`) adds the listing-cache path and splits those times (`cached 4ms  disk 1.4s`); it does not dump yt-dlp HTTP and does not hide progress bars. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
+`layout` is a dry-run that regroups planned files by Emby folder (`Season 17`, then `Specials`) so you can verify remaps. It does not download. `check` compares local `.mkv` files to Sonarr for series that set `tvdb_id`: **missing** Sonarr episodes that the yaml never maps (not planned downloads), with suggestions when a cached Dropout listing title matches (including other series in the same manifest) or another Sonarr episode looks like a duplicate (exact title and air date; if that copy is already on disk the hint is **add to skip list**). Weaker title or date-only hits are prefixed **maybe** and shown in yellow.; **warning** yaml dests that are not in Sonarr, or remap titles that do not match; and filename titles that do not match. Planned `SxxExx` destinations are left to `download` / `layout`. It does not download and does not need Dropout cookies (Dropout suggestions use `{manifest}/cache/dropout.json` from a previous listing). Point it at Sonarr with `sonarr_url` / `sonarr_api_key` in gitignored `config.toml` (or `--sonarr-url` / `--sonarr-api-key` / `YT_DLP_EMBY_SONARR_URL` / `YT_DLP_EMBY_SONARR_API_KEY`). Do not put the API key in `dropout.yaml`. `tvdb_skip` blacklists Sonarr slots (for example Game Changer cut-for-time specials). `--force-refetch` on `check` refreshes the Sonarr cache in `{manifest}/cache/sonarr.json`.
+
+Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{manifest}/cache/dropout.json` (next to `dropout.yaml`, not on the library share) so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_DLP_EMBY_FORCE_REFETCH=1`) to list again. A leftover `{library}/.yt-emby-dropout.json` is moved there on the next run. Listing prints the series name, per-season skip/download counts, a dim `cached`/`fetch` timing (listing plus one folder scan), and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. Origin is shown in parentheses only when it differs. Manifest series entries with the same name or path are combined into one layout block. `-vv` / `--debug` (or `YT_DLP_EMBY_DEBUG=1`) adds the listing-cache path and splits those times (`cached 4ms  disk 1.4s`); it does not dump yt-dlp HTTP and does not hide progress bars. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
 
 Missing Emby series folders are refused unless you pass `--create` (dry-run warns instead). `--series` / `--season` limit the manifest. Expired Dropout cookies abort the run instead of failing every episode.
 
@@ -234,7 +263,7 @@ cp compose.yaml.example compose.yaml
 docker compose up --build
 ```
 
-Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, start/stop runs, and watch logs. Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
+Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, start/stop runs, and watch logs. Dropout has an action picker (Download, Preview remaps by folder, Check unmapped episodes vs Sonarr). Dry run and Redownload stay on Download only. If `dropout.yaml` lists `imports:`, the editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
 
 | Variable | Role |
 | --- | --- |

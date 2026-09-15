@@ -30,6 +30,7 @@ compose.override.yml
 data/
 .env
 backup/
+shows/
 
 # Media and caches
 cache/
