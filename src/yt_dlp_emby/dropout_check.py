@@ -14,6 +14,7 @@ from yt_dlp_emby.dropout_manifest import DropoutManifest, DropoutSeason, Dropout
 from yt_dlp_emby.extract import DropoutListing
 from yt_dlp_emby.library import emby_code, episode_title_from_filename, index_series_mkvs, title_key, titles_match
 from yt_dlp_emby.sonarr import SonarrEpisode, fetch_episodes_cached, sonarr_cache_path
+from yt_dlp_emby.series_ids import slugify
 from yt_dlp_emby.style import bold, cyan, dim, green, red, yellow
 
 FetchFn = Callable[[int], tuple[str, list[SonarrEpisode]]]
@@ -440,3 +441,93 @@ def _run_dropout_check(
     if skipped:
         print(dim(f"skipped {len(skipped)} series without tvdb_id"))
     return 1 if failed else 0
+
+
+def _hint_to_dict(hint: Hint) -> dict[str, object]:
+    return {"text": hint.text, "kind": hint.kind, "sure": hint.sure}
+
+
+def check_series_report(
+    manifest: DropoutManifest,
+    settings: Settings,
+    slug: str,
+    *,
+    fetch_fn: FetchFn | None = None,
+) -> dict[str, object]:
+    series = next(
+        (item for item in manifest.series if slugify(item.name) == slug),
+        None,
+    )
+    if series is None:
+        raise ConfigError("series not found")
+    if series.tvdb_id is None:
+        raise ConfigError("tvdb_id not set")
+    if not _cached_listings(manifest, series):
+        raise ConfigError("List seasons first")
+    fetch = fetch_fn or _default_fetch(manifest, settings)
+    sonarr_title, episodes = fetch(series.tvdb_id)
+    catalog: list[SonarrRef] = [(series.name, episode) for episode in episodes]
+    listings = _cached_listings(manifest, series)
+    on_disk = index_series_mkvs(settings.library / series.path)
+    disk_files = {series.name: set(on_disk)}
+    planned_slots, planned_seasons, planned_titles = _collect_planned(series)
+    missing: list[dict[str, object]] = []
+    title_mismatches: list[dict[str, object]] = []
+    for episode in sorted(episodes, key=lambda item: (item.season, item.episode)):
+        if (episode.season, episode.episode) in series.tvdb_skip:
+            continue
+        path = on_disk.get((episode.season, episode.episode))
+        if path is None:
+            if not _is_planned(
+                episode.season, episode.episode, planned_slots, planned_seasons
+            ):
+                hints = _missing_suggestions(
+                    episode, series.name, catalog, listings, disk_files
+                )
+                missing.append(
+                    {
+                        "season": episode.season,
+                        "episode": episode.episode,
+                        "title": episode.title,
+                        "code": _slot_code(episode.season, episode.episode),
+                        "hints": [_hint_to_dict(h) for h in hints],
+                    }
+                )
+            continue
+        file_title = episode_title_from_filename(path.name)
+        if not titles_match(file_title, episode.title):
+            title_mismatches.append(
+                {
+                    "season": episode.season,
+                    "episode": episode.episode,
+                    "sonarr_title": episode.title,
+                    "file_title": file_title,
+                    "code": _slot_code(episode.season, episode.episode),
+                }
+            )
+    warnings = [
+        {
+            "season": season,
+            "episode": episode,
+            "detail": detail,
+            "code": _slot_code(season, episode),
+        }
+        for season, episode, detail in _mapping_warnings(
+            episodes, planned_slots, planned_seasons, planned_titles
+        )
+    ]
+    series_name_mismatch = not titles_match(series.name, sonarr_title)
+    ok = (
+        not missing
+        and not title_mismatches
+        and not warnings
+        and not series_name_mismatch
+    )
+    return {
+        "ok": ok,
+        "series_name_mismatch": series_name_mismatch,
+        "sonarr_title": sonarr_title,
+        "missing": missing,
+        "warnings": warnings,
+        "title_mismatches": title_mismatches,
+    }

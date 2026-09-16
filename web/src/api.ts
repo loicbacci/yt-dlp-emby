@@ -1,7 +1,7 @@
 import type { SeriesSummary } from "./seriesView";
 
 export type Source = "youtube" | "dropout";
-export type DropoutAction = "download" | "layout" | "check";
+export type RunPhase = "idle" | "planning" | "downloading" | "stopping" | "exited";
 export type RunStatus = "idle" | "running" | "stopping" | "exited";
 export type Session = { setup_required: boolean; authenticated: boolean };
 export type ManifestImport = { path: string; text: string; exists: boolean };
@@ -28,8 +28,22 @@ export type ManifestValidate = {
   ok: boolean;
   paths?: ManifestPaths | null;
 };
+export type PlanSourceBlock = {
+  ok: boolean;
+  error: string | null;
+  seasons: Record<string, unknown>[];
+  items: Record<string, unknown>[];
+};
+
+export type PlanFile = {
+  generated_at: string | null;
+  force: boolean;
+  sources: Record<string, PlanSourceBlock>;
+};
+
 export type Run = {
   status: RunStatus;
+  phase: RunPhase;
   source: Source | null;
   dry_run: boolean;
   verbose: boolean;
@@ -37,14 +51,39 @@ export type Run = {
   started_at: string | null;
   finished_at: string | null;
   exit_code: number | null;
+  plan: { generated_at: string | null; force: boolean; pending: number } | null;
 };
 
-export type StartOptions = {
-  source: Source;
-  dry_run: boolean;
-  verbose: boolean;
-  force: boolean;
-  action: DropoutAction;
+export type DownloadOptions = {
+  ids: string[] | null;
+  force?: boolean;
+};
+
+export type DropoutCheck = {
+  ok: boolean;
+  missing: {
+    season: number;
+    episode: number;
+    code: string;
+    title: string;
+    hints: { text: string; kind: string }[];
+  }[];
+  warnings: { code: string; detail: string }[];
+  title_mismatches: { code: string; file_title: string; sonarr_title: string }[];
+};
+
+export type DropoutLayout = {
+  folders: {
+    dest_season: number | null;
+    label: string;
+    folder?: string;
+    episodes: {
+      code: string | null;
+      title: string;
+      status: string;
+      origin: string | null;
+    }[];
+  }[];
 };
 
 export type ConfigField = {
@@ -107,6 +146,7 @@ export type SeriesSeason = {
   skip_ids: string[];
   label: string;
   sublabel: string;
+  title: string | null;
 };
 
 export type SeriesSource = {
@@ -181,16 +221,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function startPayload(options: StartOptions): StartOptions {
-  if (options.source === "youtube") {
-    return { ...options, force: false, action: "download" };
-  }
-  if (options.action === "layout" || options.action === "check") {
-    return { ...options, force: false, dry_run: false };
-  }
-  return options;
-}
-
 export function routeForSession(session: Session, path: string): string {
   if (session.setup_required) return "/setup";
   if (!session.authenticated) return "/login";
@@ -208,12 +238,6 @@ export function confirmDirtyConfig(): boolean {
 
 export function confirmDirtyCookies(): boolean {
   return window.confirm("Discard unsaved cookie paste?");
-}
-
-export function confirmDirtyStart(): boolean {
-  return window.confirm(
-    "Start uses the last saved file, not the editor. Continue?",
-  );
 }
 
 export function runKeyFor(run: Run): string {
@@ -303,10 +327,16 @@ export const apiClient = {
       body: JSON.stringify({ text }),
     }),
   getRun: () => api<Run>("/api/runs"),
-  startRun: (options: StartOptions) =>
+  getPlan: () => api<PlanFile>("/api/runs/plan"),
+  startPlan: (force = false) =>
+    api<Run>("/api/runs/plan", {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    }),
+  startDownload: (options: DownloadOptions) =>
     api<Run>("/api/runs", {
       method: "POST",
-      body: JSON.stringify(startPayload(options)),
+      body: JSON.stringify({ ids: options.ids, force: options.force ?? false }),
     }),
   stopRun: () => api<Run>("/api/runs/stop", { method: "POST" }),
   getPlatform: (kind: Source) => api<PlatformSettings>(`/api/platform/${kind}`),
@@ -324,6 +354,10 @@ export const apiClient = {
   }) => api<SeriesDetail>("/api/series", { method: "POST", body: JSON.stringify(body) }),
   getSeries: (platform: Source, slug: string) =>
     api<SeriesDetail>(`/api/series/${platform}/${slug}`),
+  getDropoutCheck: (slug: string) =>
+    api<DropoutCheck>(`/api/series/dropout/${slug}/check`),
+  getDropoutLayout: (slug: string) =>
+    api<DropoutLayout>(`/api/series/dropout/${slug}/layout`),
   putSeries: (platform: Source, slug: string, body: SeriesDetail) =>
     api<SeriesDetail>(`/api/series/${platform}/${slug}`, {
       method: "PUT",

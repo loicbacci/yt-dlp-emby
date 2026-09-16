@@ -271,6 +271,53 @@ def test_env_scrub_on_child(monkeypatch, tmp_path) -> None:
     assert "--verbose" not in captured["argv"]
 
 
+def test_download_passes_only_file(tmp_path) -> None:
+    _write_youtube_manifest(tmp_path)
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        '{"generated_at":"x","force":false,"sources":{"youtube":{"ok":true,"error":null,'
+        '"seasons":[],"items":[{"id":"youtube|example-channel|S01E01","action":"download",'
+        '"code":"S01E01","title":"A","dest_season":1,"season_title":null,"folder":"Season 1",'
+        '"size":null,"series":"Example Channel","slug":"example-channel","platform":"youtube"}]}}}',
+        encoding="utf-8",
+    )
+    def factory(source, manifest_path, **kwargs):
+        return [sys.executable, "-c", "pass"]
+
+    async def run() -> None:
+        runner = RunManager(tmp_path, command_factory=factory)
+        await runner.start_download(["youtube|example-channel|S01E01"])
+        await _wait_exited(runner)
+        only = tmp_path / "download-only.json"
+        assert only.is_file()
+        assert "youtube|example-channel|S01E01" in only.read_text(encoding="utf-8")
+
+    asyncio.run(run())
+
+
+def test_plan_runs_sequential_sources(tmp_path) -> None:
+    _write_youtube_manifest(tmp_path)
+    (tmp_path / "dropout.yaml").write_text(
+        "library: /lib\nold_dir: /old\nseries:\n"
+        "  - name: X\n    path: X\n    url: https://watch.dropout.tv/x\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def factory(source, manifest_path, **kwargs):
+        calls.append(source)
+        return [sys.executable, "-c", "print('ok')"]
+
+    async def run() -> None:
+        runner = RunManager(tmp_path, command_factory=factory)
+        await runner.start_plan()
+        await _wait_exited(runner)
+        assert calls == ["dropout", "youtube"]
+
+    asyncio.run(run())
+
+
 def test_web_run_enables_color(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     captured: dict = {}

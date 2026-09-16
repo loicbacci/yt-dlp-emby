@@ -53,11 +53,11 @@ export function CreateSeriesModal({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !saving) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, saving]);
 
   const ready =
     title.trim() &&
@@ -85,13 +85,23 @@ export function CreateSeriesModal({
   };
 
   return (
-    <div class="modal-backdrop" role="presentation" onClick={onClose}>
-      <div
+    <div
+      class="modal-backdrop"
+      role="presentation"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+    >
+      <form
         class="modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-series-title"
         onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
       >
         <h2 id="create-series-title" class="modal-title">
           {mode === "edit" ? "Edit details" : "Add series"}
@@ -114,6 +124,8 @@ export function CreateSeriesModal({
                 key={item}
                 type="button"
                 class={platform === item ? "filter-chip active" : "filter-chip"}
+                role="radio"
+                aria-checked={platform === item}
                 disabled={mode === "edit"}
                 onClick={() => setPlatform(item)}
               >
@@ -151,15 +163,14 @@ export function CreateSeriesModal({
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             class="btn-modal-save"
             disabled={!ready}
-            onClick={() => void submit()}
           >
             {saving ? "Saving…" : mode === "edit" ? "Save" : "Create"}
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applySeasonToEpisode, filterSeries, formatMapsTo, parseSeriesPath, seasonHeading, slugify, suggestFolder, uniqueNameError } from "./seriesView";
+import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, filterSeries, formatMapsTo, parseSeriesPath, seasonDisplayName, seasonHeading, slugify, sonarrBadgeLabel, suggestFolder, uniqueNameError } from "./seriesView";
 
 describe("slugify", () => {
   it("matches python examples", () => {
@@ -52,6 +52,14 @@ describe("seasonHeading", () => {
   });
 });
 
+describe("seasonDisplayName", () => {
+  it("prefers title", () => {
+    expect(seasonDisplayName(21, "Junior Year")).toBe("Junior Year");
+    expect(seasonDisplayName(0, null)).toBe("Specials");
+    expect(seasonDisplayName(5, "  ")).toBe("Season 5");
+  });
+});
+
 describe("filterSeries", () => {
   const rows = [
     {
@@ -81,6 +89,22 @@ describe("filterSeries", () => {
   it("filters by platform and query", () => {
     expect(filterSeries(rows, { platform: "youtube" })).toHaveLength(1);
     expect(filterSeries(rows, { query: "alpha" })[0].slug).toBe("a");
+  });
+});
+
+describe("countLabel", () => {
+  it("pluralizes", () => {
+    expect(countLabel(1, "url", "urls")).toBe("1 url");
+    expect(countLabel(2, "url", "urls")).toBe("2 urls");
+    expect(countLabel(0, "season", "seasons")).toBe("0 seasons");
+  });
+});
+
+describe("emptyListMessage", () => {
+  it("distinguishes empty catalog from a failed filter", () => {
+    expect(emptyListMessage(0, 0)).toBe("No series yet.");
+    expect(emptyListMessage(3, 0)).toBe("No matching series.");
+    expect(emptyListMessage(3, 2)).toBe("");
   });
 });
 
@@ -136,5 +160,23 @@ describe("applySeasonToEpisode", () => {
     expect(next.mapped_season).toBe(4);
     expect(next.mapped_episode).toBe(11);
     expect(next.mapped_title).toBe("Cut for Time");
+  });
+});
+
+describe("addTvdbSkip", () => {
+  it("adds a new season block or appends an episode", () => {
+    const first = addTvdbSkip([], 0, 12);
+    expect(first).toEqual([{ season: 0, episodes: [12] }]);
+    const second = addTvdbSkip(first, 0, 3);
+    expect(second[0].episodes).toEqual([3, 12]);
+  });
+});
+
+describe("sonarrBadgeLabel", () => {
+  it("prefers missing counts", () => {
+    expect(sonarrBadgeLabel(null)).toBeNull();
+    expect(sonarrBadgeLabel({ ok: true, missing: [] })).toBe("ok");
+    expect(sonarrBadgeLabel({ ok: false, missing: [1, 2, 3] })).toBe("3 missing");
+    expect(sonarrBadgeLabel({ ok: false, missing: [] })).toBe("warnings");
   });
 });

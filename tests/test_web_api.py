@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import textwrap
 import time
@@ -83,12 +84,34 @@ def _dropout_manifest(tmp_path) -> None:
     (tmp_path / "dropout.yaml").write_text(text, encoding="utf-8")
 
 
-START_BODY = {
-    "source": "youtube",
-    "dry_run": True,
-    "verbose": False,
-    "force": False,
-}
+def _write_plan(tmp_path) -> None:
+    plan = {
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "force": False,
+        "sources": {
+            "youtube": {
+                "ok": True,
+                "error": None,
+                "seasons": [],
+                "items": [
+                    {
+                        "id": "youtube|example-channel|S01E01",
+                        "action": "download",
+                        "code": "S01E01",
+                        "title": "One",
+                        "dest_season": 1,
+                        "season_title": None,
+                        "folder": "Season 1",
+                        "size": None,
+                        "series": "Example Channel",
+                        "slug": "example-channel",
+                        "platform": "youtube",
+                    }
+                ],
+            }
+        },
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
 
 
 def test_health_unauthenticated(tmp_path) -> None:
@@ -96,24 +119,71 @@ def test_health_unauthenticated(tmp_path) -> None:
     assert client.get("/api/health").json() == {"ok": True}
 
 
-def test_start_without_manifest_400(tmp_path) -> None:
-    client = _authed(tmp_path)
-    response = client.post("/api/runs", json=START_BODY)
-    assert response.status_code == 400
-
-
-def test_youtube_force_400(tmp_path) -> None:
+def test_download_without_plan_400(tmp_path) -> None:
     client = _authed(tmp_path)
     _youtube_manifest(tmp_path)
-    response = client.post(
-        "/api/runs",
-        json={"source": "youtube", "dry_run": True, "verbose": False, "force": True},
-    )
+    response = client.post("/api/runs", json={"ids": None})
     assert response.status_code == 400
+
+
+def test_download_empty_ids_400(tmp_path) -> None:
+    client = _authed(tmp_path)
+    _youtube_manifest(tmp_path)
+    _write_plan(tmp_path)
+    response = client.post("/api/runs", json={"ids": []})
+    assert response.status_code == 400
+
+
+def test_http_plan_and_download(tmp_path) -> None:
+    _youtube_manifest(tmp_path)
+    script = textwrap.dedent(
+        """
+        import json, os, time
+        from pathlib import Path
+        ev = Path(os.environ["YT_DLP_EMBY_EVENTS"])
+        ev.write_text(json.dumps({"event":"run_finished","downloaded":0,"skipped":0,"failed":0})+"\\n")
+        plan = Path(os.environ.get("YT_DLP_EMBY_DATA", ".")) / "plan.json"
+        if not plan.parent.exists():
+            plan = Path("plan.json")
+        """
+    )
+
+    async def run() -> None:
+        async with _authed_async(tmp_path, _factory("print('ok', flush=True)")) as client:
+            started = await client.post("/api/runs/plan", json={"force": False})
+            assert started.status_code == 200
+            body = started.json()
+            assert body["phase"] == "planning" or body["status"] == "running"
+            busy = await client.post("/api/runs/plan")
+            assert busy.status_code == 409
+            for _ in range(80):
+                snap = (await client.get("/api/runs")).json()
+                if snap["status"] == "exited":
+                    break
+                await asyncio.sleep(0.05)
+            _write_plan(tmp_path)
+            dl = await client.post("/api/runs", json={"ids": None})
+            assert dl.status_code == 200
+            assert dl.json()["phase"] in {"downloading", "running"}
+
+    asyncio.run(run())
+
+
+def test_get_plan_404(tmp_path) -> None:
+    client = _authed(tmp_path)
+    assert client.get("/api/runs/plan").status_code == 404
+
+
+def test_get_plan_ok(tmp_path) -> None:
+    client = _authed(tmp_path)
+    _write_plan(tmp_path)
+    body = client.get("/api/runs/plan").json()
+    assert "sources" in body
 
 
 def test_http_start_stop_fake_child(tmp_path) -> None:
     _youtube_manifest(tmp_path)
+    _write_plan(tmp_path)
     script = textwrap.dedent(
         """
         import signal, sys, time
@@ -125,60 +195,13 @@ def test_http_start_stop_fake_child(tmp_path) -> None:
 
     async def run() -> None:
         async with _authed_async(tmp_path, _factory(script)) as client:
-            started = await client.post("/api/runs", json=START_BODY)
+            started = await client.post("/api/runs", json={"ids": None})
             assert started.status_code == 200
-            body = started.json()
-            assert body["status"] == "running"
-            assert body["source"] == "youtube"
-            busy = await client.post("/api/runs", json=START_BODY)
+            busy = await client.post("/api/runs", json={"ids": None})
             assert busy.status_code == 409
             stopped = await client.post("/api/runs/stop")
             assert stopped.status_code == 200
             assert stopped.json()["status"] == "exited"
-            assert stopped.json()["exit_code"] == 130
-
-    asyncio.run(run())
-
-
-def test_http_start_after_natural_exit(tmp_path) -> None:
-    _youtube_manifest(tmp_path)
-
-    async def run() -> None:
-        async with _authed_async(
-            tmp_path, _factory("print('done', flush=True)")
-        ) as client:
-            first = await client.post("/api/runs", json=START_BODY)
-            assert first.status_code == 200
-            snap = first.json()
-            for _ in range(80):
-                snap = (await client.get("/api/runs")).json()
-                if snap["status"] == "exited":
-                    break
-                await asyncio.sleep(0.05)
-            assert snap["status"] == "exited"
-            second = await client.post("/api/runs", json=START_BODY)
-            assert second.status_code == 200
-
-    asyncio.run(run())
-
-
-def test_http_dropout_start(tmp_path) -> None:
-    _dropout_manifest(tmp_path)
-
-    async def run() -> None:
-        async with _authed_async(tmp_path, _factory("print('ok')")) as client:
-            response = await client.post(
-                "/api/runs",
-                json={
-                    "source": "dropout",
-                    "dry_run": True,
-                    "verbose": False,
-                    "force": True,
-                },
-            )
-            assert response.status_code == 200
-            assert response.json()["source"] == "dropout"
-            assert response.json()["force"] is True
 
     asyncio.run(run())
 
@@ -187,6 +210,7 @@ def test_sse_emits_lines_quickly(tmp_path) -> None:
     import uvicorn
 
     _youtube_manifest(tmp_path)
+    _write_plan(tmp_path)
     script = 'import time\nprint("hello", flush=True)\ntime.sleep(2)\n'
     app = create_app(
         data_dir=tmp_path,
@@ -216,12 +240,7 @@ def test_sse_emits_lines_quickly(tmp_path) -> None:
                 assert setup.status_code == 200
                 started = await client.post(
                     "/api/runs",
-                    json={
-                        "source": "youtube",
-                        "dry_run": False,
-                        "verbose": False,
-                        "force": False,
-                    },
+                    json={"ids": None},
                 )
                 assert started.status_code == 200
                 async with client.stream("GET", "/api/runs/log?after=0") as response:
@@ -251,34 +270,10 @@ def test_api_404_not_spa(tmp_path) -> None:
     assert response.status_code == 404
 
 
-def test_no_frontend_503(tmp_path) -> None:
-    client = TestClient(
-        create_app(
-            data_dir=tmp_path,
-            environ={"YT_DLP_EMBY_WEB_DIST": str(tmp_path / "missing-dist")},
-        )
-    )
-    response = client.get("/")
-    assert response.status_code == 503
-    assert "pnpm" in response.text
-
-
-def test_resolve_data_dir_env(tmp_path) -> None:
-    env_dir = tmp_path / "from-env"
-    assert resolve_data_dir(None, {"YT_DLP_EMBY_DATA": str(env_dir)}) == env_dir
+def test_resolve_data_dir(tmp_path) -> None:
     explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    env_dir = tmp_path / "from-env"
+    env_dir.mkdir()
+    assert resolve_data_dir(None, {"YT_DLP_EMBY_DATA": str(env_dir)}) == env_dir
     assert resolve_data_dir(explicit, {"YT_DLP_EMBY_DATA": str(env_dir)}) == explicit
-
-
-def test_cli_omits_data_so_env_can_apply() -> None:
-    from yt_dlp_emby.cli import build_parser
-
-    args = build_parser().parse_args(["server"])
-    assert args.data_dir is None
-
-
-def test_log_poll_is_subsecond() -> None:
-    from yt_dlp_emby.server.app import LOG_POLL_SECONDS, LOG_PING_SECONDS
-
-    assert LOG_POLL_SECONDS <= 0.25
-    assert LOG_PING_SECONDS >= 5

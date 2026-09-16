@@ -1,13 +1,14 @@
 import { useEffect, useState } from "preact/hooks";
-import { ApiError, type Run, apiClient } from "../api";
+import { ApiError, type DropoutCheck, type Run, apiClient } from "../api";
 import { Header } from "../components/Header";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
 import { go } from "../nav";
 import type { SeriesPlatform, SeriesSummary } from "../seriesView";
-import { filterSeries } from "../seriesView";
+import { countLabel, emptyListMessage, filterSeries, sonarrBadgeLabel } from "../seriesView";
 
 const idleRun: Run = {
   status: "idle",
+  phase: "idle",
   source: null,
   dry_run: false,
   verbose: false,
@@ -15,6 +16,7 @@ const idleRun: Run = {
   started_at: null,
   finished_at: null,
   exit_code: null,
+  plan: null,
 };
 
 export function SeriesList() {
@@ -24,14 +26,18 @@ export function SeriesList() {
   const [platform, setPlatform] = useState<SeriesPlatform | "all">("all");
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [sonarr, setSonarr] = useState<Record<string, DropoutCheck>>({});
 
   const load = async () => {
     const body = await apiClient.listSeries();
     setRows(body.series);
+    setLoading(false);
   };
 
   useEffect(() => {
     load().catch((err) => {
+      setLoading(false);
       if (err instanceof ApiError && err.status === 401) go("/login");
       else setError(err instanceof Error ? err.message : "Failed to load");
     });
@@ -40,6 +46,32 @@ export function SeriesList() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const targets = rows.filter(
+      (row) => row.platform === "dropout" && row.tvdb_id != null,
+    );
+    if (!targets.length) return;
+    let cancelled = false;
+    Promise.all(
+      targets.map((row) =>
+        apiClient
+          .getDropoutCheck(row.slug)
+          .then((body) => ({ slug: row.slug, body }))
+          .catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const next: Record<string, DropoutCheck> = {};
+      for (const item of results) {
+        if (item) next[item.slug] = item.body;
+      }
+      setSonarr(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
 
   const filtered = filterSeries(rows, { query, platform });
 
@@ -90,6 +122,7 @@ export function SeriesList() {
               key={chip}
               type="button"
               class={platform === chip ? "filter-chip active" : "filter-chip"}
+              aria-pressed={platform === chip}
               onClick={() => setPlatform(chip)}
             >
               {chip === "all"
@@ -101,8 +134,10 @@ export function SeriesList() {
           ))}
         </div>
         {error && <div class="validation-error">{error}</div>}
-        {!filtered.length ? (
-          <div class="empty-state">No series yet.</div>
+        {loading ? (
+          <div class="empty-state">Loading…</div>
+        ) : !filtered.length ? (
+          <div class="empty-state">{emptyListMessage(rows.length, filtered.length)}</div>
         ) : (
           filtered.map((row) => (
             <a
@@ -125,22 +160,50 @@ export function SeriesList() {
                 go(`/series/${row.platform}/${row.slug}`);
               }}
             >
-              <div style={{ flex: 1 }}>
+              <div class="series-row-main">
                 <div>{row.name}</div>
                 <div class="series-row-meta">
                   <span>{row.path}</span>
                   {row.tvdb_id != null && <span>tvdb {row.tvdb_id}</span>}
-                  <span>{row.source_count} urls</span>
-                  <span>{row.season_count} seasons</span>
+                  <span>
+                    {countLabel(
+                      row.source_count,
+                      row.platform === "youtube" ? "playlist" : "url",
+                      row.platform === "youtube" ? "playlists" : "urls",
+                    )}
+                  </span>
+                  <span>{countLabel(row.season_count, "season", "seasons")}</span>
+                  {row.inline && <span>inline</span>}
                 </div>
               </div>
-              <span
-                class={
-                  row.platform === "youtube" ? "badge-youtube" : "badge-dropout"
-                }
-              >
-                {row.platform === "youtube" ? "YouTube" : "Dropout.tv"}
-              </span>
+              <div class="series-row-badges">
+                {row.platform === "dropout" && row.tvdb_id != null && (
+                  <a
+                    class={`badge-sonarr${
+                      sonarrBadgeLabel(sonarr[row.slug]) === "ok"
+                        ? " is-ok"
+                        : sonarr[row.slug]?.missing.length
+                          ? " is-missing"
+                          : ""
+                    }`}
+                    href={`/series/dropout/${row.slug}#sonarr-check`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      go(`/series/dropout/${row.slug}#sonarr-check`);
+                    }}
+                  >
+                    {sonarrBadgeLabel(sonarr[row.slug]) ?? "Sonarr"}
+                  </a>
+                )}
+                <span
+                  class={
+                    row.platform === "youtube" ? "badge-youtube" : "badge-dropout"
+                  }
+                >
+                  {row.platform === "youtube" ? "YouTube" : "Dropout.tv"}
+                </span>
+              </div>
             </a>
           ))
         )}

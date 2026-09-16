@@ -138,6 +138,27 @@ series:
         load_dropout_manifest(path)
 
 
+def test_load_manifest_season_display_title(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+library: {lib}
+old_dir: {old}
+series:
+  - name: Dimension 20
+    path: Dimension 20 [tvdbid=354216]
+    url: https://watch.dropout.tv/dimension-20-the-complete-series
+    seasons:
+      - dropout: 21
+        to_season: 21
+        title: Fantasy High Junior Year
+""".format(lib=tmp_path / "lib", old=tmp_path / "old"),
+        encoding="utf-8",
+    )
+    season = load_dropout_manifest(path).series[0].sources[0].seasons[0]
+    assert season.title == "Fantasy High Junior Year"
+
+
 def test_load_manifest_remap_title(tmp_path: Path) -> None:
     path = tmp_path / "dropout.yaml"
     path.write_text(

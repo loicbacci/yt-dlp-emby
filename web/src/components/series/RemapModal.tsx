@@ -30,6 +30,14 @@ export function RemapModal({
     loadSuggest(episode.title);
   }, [tvdbId, episode.title]);
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const ready =
     toSeason.trim() !== "" &&
     toEpisode.trim() !== "" &&
@@ -38,8 +46,25 @@ export function RemapModal({
 
   return (
     <div class="modal-backdrop" role="presentation" onClick={onClose}>
-      <div class="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 class="modal-title">Remap episode</h2>
+      <form
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="remap-title"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!ready) return;
+          onSave({
+            to_season: Number.parseInt(toSeason, 10),
+            to_episode: Number.parseInt(toEpisode, 10),
+            title,
+          });
+        }}
+      >
+        <h2 id="remap-title" class="modal-title">
+          Remap episode
+        </h2>
         <p>
           Dropout E{episode.source_episode} {episode.title}
         </p>
@@ -98,21 +123,14 @@ export function RemapModal({
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             class="btn-modal-save"
             disabled={!ready}
-            onClick={() =>
-              onSave({
-                to_season: Number.parseInt(toSeason, 10),
-                to_episode: Number.parseInt(toEpisode, 10),
-                title,
-              })
-            }
           >
             Save remap
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

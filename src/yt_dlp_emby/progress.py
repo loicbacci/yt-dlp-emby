@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
+from yt_dlp_emby.events import current_item_id, emit_progress
 from yt_dlp_emby.style import color_enabled, green, strip_ansi, visible_len
 
 _ITEM = re.compile(r"Downloading item (\d+) of (\d+)")
@@ -325,6 +326,21 @@ class DownloadProgress(ProgressDisplay):
                     data, width=self.width, label=label, **self._bar_style()
                 )
             )
+            item = current_item_id()
+            if item:
+                total = data.get("total_bytes") or data.get("total_bytes_estimate")
+                emit_progress(
+                    {
+                        "event": "progress",
+                        "phase": label,
+                        "id": item,
+                        "percent": data.get("_percent_str"),
+                        "speed": data.get("speed"),
+                        "eta": data.get("eta"),
+                        "bytes": data.get("downloaded_bytes"),
+                        "total": total,
+                    }
+                )
         elif status == "finished":
             self._draw(f"{stream_label(data)}  complete")
 

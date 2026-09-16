@@ -11,6 +11,7 @@ import {
   apiClient,
   confirmDirtyConfig,
   confirmDirtyCookies,
+  confirmDirtySwitch,
   valuesFromConfig,
 } from "../api";
 import { go } from "../nav";
@@ -21,9 +22,11 @@ import {
   platformDraftFromApi,
   type PlatformDraft,
 } from "../components/PlatformFields";
+import { AdvancedYamlPanel } from "../components/AdvancedYamlPanel";
 
 const idleRun: Run = {
   status: "idle",
+  phase: "idle",
   source: null,
   dry_run: false,
   verbose: false,
@@ -31,6 +34,7 @@ const idleRun: Run = {
   started_at: null,
   finished_at: null,
   exit_code: null,
+  plan: null,
 };
 
 const emptyValues: ConfigValues = {
@@ -43,7 +47,7 @@ const emptyValues: ConfigValues = {
   sonarr_api_key: "",
 };
 
-type SettingsTab = "config" | "youtube" | "dropout";
+type SettingsTab = "config" | "youtube" | "dropout" | "advanced";
 
 const emptyPlatform: PlatformDraft = { library: "", old_dir: "", cookies: "" };
 
@@ -119,6 +123,7 @@ export function Settings() {
   const [cookieDraft, setCookieDraft] = useState("");
   const [cookieSaving, setCookieSaving] = useState(false);
   const [tab, setTab] = useState<SettingsTab>("config");
+  const [yamlDirty, setYamlDirty] = useState(false);
   const [platformDraft, setPlatformDraft] = useState<{
     youtube: PlatformDraft;
     dropout: PlatformDraft;
@@ -139,7 +144,9 @@ export function Settings() {
   const dirty =
     tab === "config"
       ? JSON.stringify(draft) !== JSON.stringify(saved)
-      : JSON.stringify(platformDraft[tab]) !== JSON.stringify(platformSaved[tab]);
+      : tab === "youtube" || tab === "dropout"
+        ? JSON.stringify(platformDraft[tab]) !== JSON.stringify(platformSaved[tab])
+        : false;
   const dirtyCookies = Boolean(cookieModal && cookieDraft.trim());
 
   const refreshRun = async () => {
@@ -200,6 +207,7 @@ export function Settings() {
   const navigate = (url: string) => {
     if (url === "/settings") return;
     if (dirty && !confirmDirtyConfig()) return;
+    if (yamlDirty && !confirmDirtySwitch()) return;
     if (dirtyCookies && !confirmDirtyCookies()) return;
     go(url);
   };
@@ -207,6 +215,7 @@ export function Settings() {
   const switchTab = (next: SettingsTab) => {
     if (next === tab) return;
     if (dirty && !confirmDirtyConfig()) return;
+    if (yamlDirty && !confirmDirtySwitch()) return;
     setTab(next);
     setError(null);
   };
@@ -222,6 +231,7 @@ export function Settings() {
         setDraft(values);
         return;
       }
+      if (tab !== "youtube" && tab !== "dropout") return;
       const body = await apiClient.putPlatform(tab, platformDraft[tab]);
       const values = platformDraftFromApi(body);
       setPlatformDraft((current) => ({ ...current, [tab]: values }));
@@ -289,6 +299,7 @@ export function Settings() {
 
   const logout = async () => {
     if (dirty && !confirmDirtyConfig()) return;
+    if (yamlDirty && !confirmDirtySwitch()) return;
     if (dirtyCookies && !confirmDirtyCookies()) return;
     await apiClient.logout();
     go("/login");
@@ -300,7 +311,9 @@ export function Settings() {
       ? config?.path ?? "config.toml"
       : tab === "youtube"
         ? "youtube.yaml"
-        : "dropout.yaml";
+        : tab === "dropout"
+          ? "dropout.yaml"
+          : "yaml manifests";
 
   return (
     <div class="settings-shell">
@@ -317,15 +330,17 @@ export function Settings() {
             <div class="editor-filename">{filename}</div>
           </div>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            {dirty && <span class="editor-unsaved">Unsaved</span>}
-            <button
-              type="button"
-              class="btn-secondary"
-              disabled={!dirty}
-              onClick={save}
-            >
-              Save
-            </button>
+            {(dirty || yamlDirty) && <span class="editor-unsaved">Unsaved</span>}
+            {tab !== "advanced" && (
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={!dirty}
+                onClick={save}
+              >
+                Save
+              </button>
+            )}
           </div>
         </div>
         <div class="settings-tabs">
@@ -352,6 +367,14 @@ export function Settings() {
             onClick={() => switchTab("dropout")}
           >
             Dropout.tv
+          </button>
+          <button
+            type="button"
+            class={tab === "advanced" ? "settings-tab active" : "settings-tab"}
+            data-testid="settings-tab-advanced"
+            onClick={() => switchTab("advanced")}
+          >
+            Advanced
           </button>
         </div>
         {tab === "config" && (
@@ -416,6 +439,9 @@ export function Settings() {
             }
             onOpenCookies={() => openCookieModal("dropout")}
           />
+        )}
+        {tab === "advanced" && (
+          <AdvancedYamlPanel onDirtyChange={setYamlDirty} />
         )}
         {cookies?.env_set && cookies.env_name && tab !== "config" && (
           <div class="banner banner-warn">

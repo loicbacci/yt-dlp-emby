@@ -46,6 +46,7 @@ class DropoutSeason:
     remap: tuple[DropoutRemap, ...] = ()
     only_episodes: tuple[int, ...] | None = None
     enabled: bool = True
+    title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,12 @@ def _parse_season(raw: Any, series_name: str, index: int) -> DropoutSeason:
     if enabled_raw is not None and not isinstance(enabled_raw, bool):
         raise ConfigError(f"enabled must be a boolean in {context}")
     enabled = True if enabled_raw is None else bool(enabled_raw)
+    title_raw = raw.get("title")
+    title = None
+    if title_raw is not None:
+        if not isinstance(title_raw, str) or not title_raw.strip():
+            raise ConfigError(f"title must be a non-empty string in {context}")
+        title = title_raw.strip()
     return DropoutSeason(
         dropout=dropout,
         url=url,
@@ -182,6 +189,7 @@ def _parse_season(raw: Any, series_name: str, index: int) -> DropoutSeason:
         remap=parsed,
         only_episodes=only_episodes,
         enabled=enabled,
+        title=title,
     )
 
 

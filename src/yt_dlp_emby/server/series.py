@@ -209,12 +209,27 @@ def _find_locator(data_dir: Path, platform: str, slug: str) -> tuple[SeriesLocat
     return matches[0]
 
 
-def _season_label(to_season: int | None, dropout: int | None) -> tuple[str, str]:
+def _season_label(
+    to_season: int | None,
+    dropout: int | None,
+    title: str | None = None,
+) -> tuple[str, str]:
+    if to_season == 0:
+        sub = "Specials"
+    elif to_season is not None:
+        sub = f"Season {to_season}"
+    else:
+        sub = ""
+    if title:
+        extra = f"Dropout {dropout}" if dropout is not None else ""
+        if extra and sub:
+            return title, f"{sub} · {extra}"
+        return title, sub or extra
     if to_season == 0:
         return "Specials", f"Dropout {dropout}" if dropout is not None else ""
     if to_season is not None:
-        sub = f"Dropout {dropout}" if dropout is not None else ""
-        return f"Season {to_season}", sub
+        extra = f"Dropout {dropout}" if dropout is not None else ""
+        return f"Season {to_season}", extra
     if dropout is not None:
         return f"Dropout season {dropout}", ""
     return "Season", ""
@@ -242,7 +257,7 @@ def _dropout_series_to_detail(
         seasons: list[dict[str, Any]] = []
         for seid, season in enumerate(source.seasons):
             to_season = season.to_season if season.to_season is not None else season.dropout
-            label, sublabel = _season_label(to_season, season.dropout)
+            label, sublabel = _season_label(to_season, season.dropout, season.title)
             seasons.append(
                 {
                     "id": str(seid),
@@ -250,6 +265,7 @@ def _dropout_series_to_detail(
                     "url": season.url,
                     "to_season": to_season,
                     "enabled": season.enabled,
+                    "title": season.title,
                     "only_episodes": list(season.only_episodes)
                     if season.only_episodes
                     else None,
@@ -302,7 +318,7 @@ def _youtube_series_to_detail(
     sources: list[dict[str, Any]] = []
     for sid, pl in enumerate(series.playlists):
         to_season = pl.season or (sid + 1)
-        label, sublabel = _season_label(to_season, None)
+        label, sublabel = _season_label(to_season, None, pl.title)
         sources.append(
             {
                 "id": str(sid),
@@ -315,6 +331,7 @@ def _youtube_series_to_detail(
                         "url": pl.url,
                         "to_season": to_season,
                         "enabled": pl.enabled,
+                        "title": pl.title,
                         "only_episodes": None,
                         "remaps": [],
                         "skip_ids": list(pl.skip),
@@ -492,6 +509,8 @@ def _dropout_season_to_yaml(season: DropoutSeason) -> dict[str, Any]:
         out["only_episodes"] = list(season.only_episodes)
     if season.remap:
         out["remap"] = [_remap_to_dict(r) for r in season.remap]
+    if season.title:
+        out["title"] = season.title
     return out
 
 
@@ -508,6 +527,8 @@ def _youtube_series_to_yaml(series: YoutubeSeries) -> dict[str, Any]:
             item["season"] = pl.season
         if not pl.enabled:
             item["enabled"] = False
+        if pl.title:
+            item["title"] = pl.title
         if pl.skip:
             item["skip"] = list(pl.skip)
         playlists.append(item)
@@ -583,6 +604,10 @@ def _detail_to_dropout(body: dict[str, Any]) -> DropoutSeries:
                 only_t = None
             else:
                 only_t = tuple(int(x) for x in only) if only else ()
+            title_raw = se.get("title")
+            title = None
+            if title_raw is not None:
+                title = str(title_raw).strip() or None
             seasons.append(
                 DropoutSeason(
                     dropout=se.get("dropout"),
@@ -591,6 +616,7 @@ def _detail_to_dropout(body: dict[str, Any]) -> DropoutSeries:
                     remap=tuple(remaps),
                     only_episodes=only_t,
                     enabled=bool(se.get("enabled", True)),
+                    title=title,
                 )
             )
         sources.append(DropoutSource(url=src.get("url") or None, seasons=tuple(seasons)))
@@ -613,6 +639,10 @@ def _detail_to_youtube(body: dict[str, Any]) -> YoutubeSeries:
     playlists: list[YoutubePlaylist] = []
     for src in body.get("sources") or []:
         for se in src.get("seasons") or []:
+            title_raw = se.get("title")
+            title = None
+            if title_raw is not None:
+                title = str(title_raw).strip() or None
             playlists.append(
                 YoutubePlaylist(
                     url=str(src.get("url") or se.get("url")),
@@ -623,6 +653,7 @@ def _detail_to_youtube(body: dict[str, Any]) -> YoutubeSeries:
                     ),
                     enabled=bool(se.get("enabled", True)),
                     skip=tuple(str(x) for x in (se.get("skip_ids") or [])),
+                    title=title,
                 )
             )
     tvdb = body.get("tvdb_id")
@@ -1059,6 +1090,107 @@ def put_platform(
     _dump_yaml(path, data)
     env = environ if environ is not None else {}
     return platform_payload(data_dir, kind, env)
+
+
+def _dropout_manifest_parsed(data_dir: Path):
+    from yt_dlp_emby.dropout_manifest import parse_dropout_manifest
+
+    data, path = _load_root_yaml(data_dir, "dropout")
+    return parse_dropout_manifest(data, path)
+
+
+def _dropout_series_by_slug(manifest, slug: str) -> DropoutSeries:
+    for series in manifest.series:
+        if slugify(series.name) == slug:
+            return series
+    raise KeyError(slug)
+
+
+def dropout_series_check(
+    data_dir: Path, environ: Mapping[str, str], slug: str
+) -> dict[str, Any]:
+    from yt_dlp_emby.config import resolve_settings
+    from yt_dlp_emby.dropout_check import check_series_report
+
+    manifest = _dropout_manifest_parsed(data_dir)
+    settings = resolve_settings(
+        environ=environ,
+        cwd=data_dir,
+        manifest_library=str(manifest.library) if manifest.library else None,
+        manifest_old_dir=str(manifest.old_dir) if manifest.old_dir else None,
+        manifest_staging=str(manifest.staging) if manifest.staging else None,
+    )
+    return check_series_report(manifest, settings, slug)
+
+
+def dropout_series_layout(
+    data_dir: Path, environ: Mapping[str, str], slug: str
+) -> dict[str, Any]:
+    from yt_dlp_emby.config import resolve_settings
+    from yt_dlp_emby.dropout import layout_origin, resolve_emby_target
+    from yt_dlp_emby.dropout_check import _cached_listings
+    from yt_dlp_emby.events import folder_label
+    from yt_dlp_emby.library import emby_code, episode_stem, media_exists
+
+    manifest = _dropout_manifest_parsed(data_dir)
+    series = _dropout_series_by_slug(manifest, slug)
+    if not _cached_listings(manifest, series):
+        raise ConfigError("List seasons first")
+    settings = resolve_settings(
+        environ=environ,
+        cwd=data_dir,
+        manifest_library=str(manifest.library) if manifest.library else None,
+        manifest_old_dir=str(manifest.old_dir) if manifest.old_dir else None,
+        manifest_staging=str(manifest.staging) if manifest.staging else None,
+        dry_run=True,
+        layout=True,
+    )
+    folders: dict[int, list[dict[str, Any]]] = {}
+    titles: dict[int, str | None] = {}
+    for _name, season, listing in _cached_listings(manifest, series):
+        if season.title:
+            titles[season.to_season if season.to_season is not None else season.dropout or 0] = (
+                season.title
+            )
+        target = resolve_emby_target(listing, season)
+        if target == "skip":
+            continue
+        if target is None:
+            dest_key = -1
+            row = {
+                "code": None,
+                "title": listing.title,
+                "origin": None,
+                "status": "unmapped",
+            }
+            folders.setdefault(dest_key, []).append(row)
+            continue
+        to_season, to_episode, title = target
+        dest_dir = settings.library / series.path / folder_label(to_season)
+        stem = episode_stem(to_season, to_episode, title)
+        on_disk = media_exists(dest_dir, stem)
+        row = {
+            "code": emby_code(to_season, to_episode),
+            "title": title,
+            "origin": layout_origin(season, listing, to_season, to_episode),
+            "status": "skip" if on_disk else "download",
+        }
+        folders.setdefault(to_season, []).append(row)
+    ordered: list[dict[str, Any]] = []
+    for dest in sorted(folders, key=lambda d: (d == -1, d == 0, d)):
+        if dest == -1:
+            ordered.append({"dest_season": None, "label": "unmapped", "episodes": folders[dest]})
+            continue
+        label = titles.get(dest) or folder_label(dest)
+        ordered.append(
+            {
+                "dest_season": dest,
+                "label": label,
+                "folder": folder_label(dest),
+                "episodes": sorted(folders[dest], key=lambda r: r.get("code") or ""),
+            }
+        )
+    return {"folders": ordered}
 
 
 def patch_platform_cookies_field(data_dir: Path, kind: str, filename: str) -> None:

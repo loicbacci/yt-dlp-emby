@@ -25,6 +25,15 @@ series:
     return path
 
 
+def test_load_youtube_playlist_display_title(tmp_path: Path) -> None:
+    path = _write_manifest(
+        tmp_path,
+        extra="      - url: https://www.youtube.com/playlist?list=PLcccc\n        season: 2\n        title: CompTIA A+ Core 2\n",
+    )
+    pl = load_youtube_manifest(path).series[0].playlists[2]
+    assert pl.title == "CompTIA A+ Core 2"
+
+
 def test_load_youtube_manifest(tmp_path: Path) -> None:
     manifest = load_youtube_manifest(_write_manifest(tmp_path))
     series = manifest.series[0]

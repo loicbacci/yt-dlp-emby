@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -39,6 +40,18 @@ from yt_dlp_emby.library import (
 from yt_dlp_emby.log import RunStats, error, format_elapsed, format_unit_plan
 from yt_dlp_emby.progress import DownloadProgress, estimate_media_bytes, format_size_estimate
 from yt_dlp_emby.style import dim
+from yt_dlp_emby.events import (
+    allowed_item_id,
+    emit,
+    emit_dropout_unit,
+    item_id,
+    merge_plan_source,
+    parse_events_file,
+    plan_from_events,
+    read_events_path,
+    set_current_item_id,
+)
+from yt_dlp_emby.series_ids import slugify
 from yt_dlp_emby.sync import move_episode_files
 
 DROPOUT_SUBS = ["all"]
@@ -296,6 +309,15 @@ def run_dropout(
     download_fn=None,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
+    read_events_path(os.environ)
+    if settings.dry_run and not settings.layout:
+        emit(
+            {
+                "event": "run_started",
+                "source": "dropout",
+                "dry_run": True,
+            }
+        )
     try:
         return _run_dropout(
             manifest,
@@ -496,8 +518,30 @@ def _run_dropout(
                 layout_rows.extend(work_rows)
                 layout_plans.append(plan)
             else:
+                slug = slugify(series.name)
+                if last_series != series.name:
+                    emit(
+                        {
+                            "event": "series",
+                            "platform": "dropout",
+                            "name": series.name,
+                            "slug": slug,
+                        }
+                    )
                 last_series = note_series(settings, series.name, last_series)
                 note(settings, plan)
+                if settings.dry_run:
+                    replace = sum(1 for row in work_rows if row.action == "replace")
+                    emit_dropout_unit(
+                        series_name=series.name,
+                        slug=slug,
+                        season=season,
+                        work_rows=work_rows,
+                        skip=skip,
+                        download=queued,
+                        unmapped=unmapped,
+                        replace=replace,
+                    )
                 print_work_rows(settings, work_rows)
         if settings.layout:
             flush_layout()
@@ -509,11 +553,36 @@ def _run_dropout(
         stats.failures.append(("listing", str(exc)))
         return finish(settings, stats)
 
-    download_jobs = [job for job in jobs if force or job[6] is None]
+    def _job_allowed(job: tuple) -> bool:
+        series_obj, _listing, to_season, to_episode, *_rest = job
+        code = emby_code(to_season, to_episode)
+        return allowed_item_id(item_id("dropout", slugify(series_obj.name), code))
+
+    download_jobs = [
+        job for job in jobs if (force or job[6] is None) and _job_allowed(job)
+    ]
     stats.skipped = len(jobs) - len(download_jobs)
 
     if settings.dry_run:
         stats.downloaded = len(download_jobs)
+        if manifest.path is not None:
+            events_path = os.environ.get("YT_DLP_EMBY_EVENTS")
+            if events_path:
+                payload = plan_from_events(parse_events_file(Path(events_path)))
+                merge_plan_source(
+                    manifest.path.parent / "plan.json",
+                    "dropout",
+                    payload,
+                    force=force,
+                )
+        emit(
+            {
+                "event": "run_finished",
+                "downloaded": stats.downloaded,
+                "skipped": stats.skipped,
+                "failed": stats.failed,
+            }
+        )
         return finish(settings, stats)
 
     if download_jobs:
@@ -551,6 +620,10 @@ def _run_dropout(
             extra = f"  ETA {eta}" if eta else ""
             local_stem = work_dir / stem
             dest_stem = dest_dir / stem
+            slug = slugify(series.name)
+            code = emby_code(to_season, to_episode)
+            event_id = item_id("dropout", slug, code)
+            set_current_item_id(event_id)
             log_step(settings, f"[{i}/{len(download_jobs)}] Downloading {stem}{extra}")
             started = time.monotonic()
             try:
@@ -573,18 +646,42 @@ def _run_dropout(
                     error(str(auth))
                     stats.failed += 1
                     stats.failures.append((stem, str(auth)))
+                    emit(
+                        {
+                            "event": "item_done",
+                            "id": event_id,
+                            "action": "failed",
+                            "seconds": time.monotonic() - started,
+                        }
+                    )
                     stats.remaining = len(download_jobs) - i
                     return finish(settings, stats)
                 message = str(exc)
                 error(f"download failed for {stem}: {message}")
                 stats.failed += 1
                 stats.failures.append((stem, message))
+                emit(
+                    {
+                        "event": "item_done",
+                        "id": event_id,
+                        "action": "failed",
+                        "seconds": time.monotonic() - started,
+                    }
+                )
                 continue
             if not info_dict or not info_dict.get("id"):
                 message = "download returned no metadata"
                 error(f"{message} for {stem}")
                 stats.failed += 1
                 stats.failures.append((stem, message))
+                emit(
+                    {
+                        "event": "item_done",
+                        "id": event_id,
+                        "action": "failed",
+                        "seconds": time.monotonic() - started,
+                    }
+                )
                 continue
             log_step(settings, f"[{i}/{len(download_jobs)}] Copying to library")
             copy_progress = DownloadProgress(enabled=settings.show_progress)
@@ -593,8 +690,26 @@ def _run_dropout(
                 old_dest = settings.old_dir / series.name / stamp
                 move_episode_files(dest_dir, existing.stem, old_dest)
                 log_step(settings, f"Moved previous title to {old_dest}")
-            stats.mark_download(time.monotonic() - started)
+            elapsed = time.monotonic() - started
+            stats.mark_download(elapsed)
             stats.downloaded += 1
             stats.remaining = len(download_jobs) - i
+            emit(
+                {
+                    "event": "item_done",
+                    "id": event_id,
+                    "action": "downloaded",
+                    "seconds": elapsed,
+                }
+            )
+            set_current_item_id(None)
 
+    emit(
+        {
+            "event": "run_finished",
+            "downloaded": stats.downloaded,
+            "skipped": stats.skipped,
+            "failed": stats.failed,
+        }
+    )
     return finish(settings, stats)

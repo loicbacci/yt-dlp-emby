@@ -143,6 +143,27 @@ series:
     assert remap["to_season"] == 1
 
 
+def test_put_season_display_title(tmp_path) -> None:
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "show.yaml").write_text(
+        "series:\n  - name: Show\n    path: Show\n    url: https://watch.dropout.tv/x\n    seasons:\n      - dropout: 1\n        to_season: 21\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        "imports:\n  - shows/show.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    client = _authed(tmp_path)
+    detail = client.get("/api/series/dropout/show").json()
+    detail["sources"][0]["seasons"][0]["title"] = "Fantasy High Junior Year"
+    saved = client.put("/api/series/dropout/show", json=detail).json()
+    assert saved["sources"][0]["seasons"][0]["title"] == "Fantasy High Junior Year"
+    assert saved["sources"][0]["seasons"][0]["label"] == "Fantasy High Junior Year"
+    text = (shows / "show.yaml").read_text(encoding="utf-8")
+    assert "Fantasy High Junior Year" in text
+
+
 def test_put_remaps_and_delete_import(tmp_path) -> None:
     shows = tmp_path / "shows"
     shows.mkdir()

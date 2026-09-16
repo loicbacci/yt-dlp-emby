@@ -36,7 +36,7 @@ from yt_dlp_emby.server.manifests import (
     write_import,
     write_manifest,
 )
-from yt_dlp_emby.server.runner import CommandFactory, RunManager
+from yt_dlp_emby.server.runner import CommandFactory, RunManager, load_plan_file
 from yt_dlp_emby.server.series import (
     add_series_source,
     create_series,
@@ -49,6 +49,8 @@ from yt_dlp_emby.server.series import (
     platform_payload,
     put_platform,
     put_series,
+    dropout_series_check,
+    dropout_series_layout,
     refresh_series_source,
 )
 from yt_dlp_emby.library import titles_match
@@ -73,12 +75,13 @@ class ManifestBody(BaseModel):
     text: str
 
 
-class StartRunBody(BaseModel):
-    source: str
-    dry_run: bool = False
-    verbose: bool = False
+class PlanRunBody(BaseModel):
     force: bool = False
-    action: str = "download"
+
+
+class DownloadRunBody(BaseModel):
+    ids: list[str] | None = None
+    force: bool = False
 
 
 class ImportManifestBody(BaseModel):
@@ -482,6 +485,36 @@ def create_app(
                 status_code=_series_value_status(exc), detail={"error": str(exc)}
             ) from exc
 
+    @app.get("/api/series/dropout/{slug}/layout")
+    async def get_dropout_layout(slug: str, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                dropout_series_layout,
+                request.app.state.data_dir,
+                request.app.state.environ,
+                slug,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @app.get("/api/series/dropout/{slug}/check")
+    async def get_dropout_check(slug: str, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                dropout_series_check,
+                request.app.state.data_dir,
+                request.app.state.environ,
+                slug,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
     @app.get("/api/series/{platform}/{slug}")
     async def get_series_detail(
         platform: str, slug: str, request: Request
@@ -715,30 +748,39 @@ def create_app(
         require_auth(request)
         return get_runner(request).snapshot()
 
-    @app.post("/api/runs")
-    async def post_runs(body: StartRunBody, request: Request) -> dict[str, Any]:
+    @app.get("/api/runs/plan")
+    async def get_runs_plan(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        plan = load_plan_file(request.app.state.data_dir)
+        if plan is None:
+            raise HTTPException(status_code=404, detail={"error": "no plan"})
+        return plan
+
+    @app.post("/api/runs/plan")
+    async def post_runs_plan(
+        request: Request, body: PlanRunBody | None = None
+    ) -> dict[str, Any]:
         require_auth(request)
         runner = get_runner(request)
-        if body.source not in ALLOWED:
-            raise HTTPException(status_code=400, detail={"error": "unknown source"})
-        if body.source == "youtube" and body.force:
-            raise HTTPException(status_code=400, detail={"error": "force invalid for youtube"})
-        action = body.action or "download"
-        if body.source == "youtube" and action != "download":
-            raise HTTPException(status_code=400, detail={"error": "action invalid for youtube"})
-        if body.force and action != "download":
-            raise HTTPException(status_code=400, detail={"error": "force invalid for layout or check"})
-        manifest = request.app.state.data_dir / ALLOWED[body.source]
-        if not manifest.is_file():
-            raise HTTPException(status_code=400, detail={"error": "manifest not on disk"})
+        force = body.force if body is not None else False
         try:
-            await runner.start(
-                body.source,
-                dry_run=body.dry_run,
-                verbose=body.verbose,
-                force=body.force,
-                action=action,
+            await runner.start_plan(force=force)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return runner.snapshot()
+
+    @app.post("/api/runs")
+    async def post_runs(body: DownloadRunBody, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        if body.ids is not None and len(body.ids) == 0:
+            raise HTTPException(
+                status_code=400, detail={"error": "empty download selection"}
             )
+        runner = get_runner(request)
+        try:
+            await runner.start_download(body.ids, force=body.force)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
         except FileNotFoundError as exc:
@@ -775,6 +817,46 @@ def create_app(
                         break
                     for item in runner.lines_after(last):
                         payload = json.dumps({"n": item.n, "line": item.line})
+                        yield f"data: {payload}\n\n"
+                        last = item.n
+                    now = asyncio.get_running_loop().time()
+                    if now - last_ping >= LOG_PING_SECONDS:
+                        yield ": ping\n\n"
+                        last_ping = now
+                    await asyncio.sleep(LOG_POLL_SECONDS)
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/runs/events")
+    async def runs_events(request: Request, after: int = 0) -> StreamingResponse:
+        require_auth(request)
+        runner = get_runner(request)
+
+        async def event_stream() -> AsyncIterator[str]:
+            last = after
+            last_ping = asyncio.get_running_loop().time()
+            yield ": connected\n\n"
+            try:
+                while True:
+                    try:
+                        disconnected = await asyncio.wait_for(
+                            request.is_disconnected(), timeout=0.05
+                        )
+                    except TimeoutError:
+                        disconnected = False
+                    if disconnected:
+                        break
+                    for item in runner.events_after(last):
+                        payload = json.dumps({"n": item.n, "event": item.event})
                         yield f"data: {payload}\n\n"
                         last = item.n
                     now = asyncio.get_running_loop().time()

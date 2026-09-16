@@ -266,7 +266,7 @@ cp compose.yaml.example compose.yaml
 docker compose up --build
 ```
 
-Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, set path fallbacks and Sonarr under **Settings**, start/stop runs, and watch logs. Dropout has an action picker (Download, Preview remaps by folder, Check unmapped episodes vs Sonarr). Dry run and Redownload stay on Download only. If `dropout.yaml` lists `imports:`, the editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
+Open `http://localhost:8080`, set an admin password on first visit, then use **Run** to refresh the download queue and start Dropout then YouTube jobs, **Series** to add shows and remap seasons, and **Settings** for path fallbacks, cookies, and the Advanced yaml editor. Layout and Sonarr check live on Dropout series detail, not on Run. If a manifest lists `imports:`, the Advanced editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
 
 | Variable | Role |
 | --- | --- |

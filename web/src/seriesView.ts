@@ -58,6 +58,14 @@ export function seasonHeading(toSeason: number): string {
   return `Season ${toSeason}`;
 }
 
+export function seasonDisplayName(
+  toSeason: number,
+  title: string | null | undefined,
+): string {
+  if (title && title.trim()) return title.trim();
+  return seasonHeading(toSeason);
+}
+
 export function filterSeries(
   list: SeriesSummary[],
   options: { query?: string; platform?: SeriesPlatform | "all" },
@@ -75,6 +83,16 @@ export function filterSeries(
       );
     })
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+export function countLabel(n: number, singular: string, plural: string): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
+
+export function emptyListMessage(total: number, filtered: number): string {
+  if (total === 0) return "No series yet.";
+  if (filtered === 0) return "No matching series.";
+  return "";
 }
 
 export function applySeasonToEpisode(
@@ -125,4 +143,40 @@ export function applySeasonToEpisode(
     };
   }
   return { ...episode, skipped };
+}
+
+export type TvdbSkipBlock = { season: number; episodes: number[] };
+
+export function addTvdbSkip(
+  skip: TvdbSkipBlock[],
+  season: number,
+  episode: number,
+): TvdbSkipBlock[] {
+  const next = skip.map((block) => ({
+    ...block,
+    episodes: [...block.episodes],
+  }));
+  const block = next.find((item) => item.season === season);
+  if (block) {
+    if (!block.episodes.includes(episode)) {
+      block.episodes.push(episode);
+      block.episodes.sort((a, b) => a - b);
+    }
+    return next;
+  }
+  next.push({ season, episodes: [episode] });
+  return next;
+}
+
+export function sonarrBadgeLabel(check: {
+  ok: boolean;
+  missing: unknown[];
+} | null | undefined): string | null {
+  if (!check) return null;
+  if (check.missing.length > 0) {
+    const n = check.missing.length;
+    return `${n} missing`;
+  }
+  if (check.ok) return "ok";
+  return "warnings";
 }

@@ -10,6 +10,7 @@ export function SeasonAccordion({
   seasonId,
   season,
   onToggleEnabled,
+  onTitleChange,
   onSkip,
   onRemap,
 }: {
@@ -19,12 +20,18 @@ export function SeasonAccordion({
   seasonId: number;
   season: SeriesSeason;
   onToggleEnabled: () => void;
+  onTitleChange: (value: string) => void;
   onSkip: (episode: SeriesEpisode) => void;
   onRemap: (episode: SeriesEpisode) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [episodes, setEpisodes] = useState<SeriesEpisode[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(season.title ?? "");
+
+  useEffect(() => {
+    setTitleDraft(season.title ?? "");
+  }, [season.title]);
 
   useEffect(() => {
     if (!open || episodes) return;
@@ -66,14 +73,30 @@ export function SeasonAccordion({
           {season.enabled ? "Disable" : "Enable"}
         </button>
       </div>
-      {open && shown && (
+      {open && (
         <div class="accordion-body">
+          <label class="settings-field">
+            <span class="settings-label">Display title</span>
+            <span class="settings-hint">
+              Shown in the app. Files still use Season {season.to_season}.
+            </span>
+            <input
+              value={titleDraft}
+              placeholder={season.label}
+              onInput={(e) =>
+                setTitleDraft((e.currentTarget as HTMLInputElement).value)
+              }
+              onBlur={() => onTitleChange(titleDraft)}
+            />
+          </label>
+          {shown && (
           <EpisodeTable
             platform={platform}
             episodes={shown}
             onSkip={onSkip}
             onRemap={onRemap}
           />
+          )}
         </div>
       )}
     </div>

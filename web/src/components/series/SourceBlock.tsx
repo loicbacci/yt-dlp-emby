@@ -11,6 +11,7 @@ export function SourceBlock({
   onRefresh,
   onRemove,
   onToggleEnabled,
+  onTitleChange,
   onSkip,
   onRemap,
 }: {
@@ -22,6 +23,7 @@ export function SourceBlock({
   onRefresh: () => void;
   onRemove: () => void;
   onToggleEnabled: (seasonId: number) => void;
+  onTitleChange: (seasonId: number, value: string) => void;
   onSkip: (seasonId: number, episode: SeriesEpisode) => void;
   onRemap: (seasonId: number, episode: SeriesEpisode) => void;
 }) {
@@ -54,6 +56,7 @@ export function SourceBlock({
           seasonId={seasonId}
           season={season}
           onToggleEnabled={() => onToggleEnabled(seasonId)}
+          onTitleChange={(value) => onTitleChange(seasonId, value)}
           onSkip={(ep) => onSkip(seasonId, ep)}
           onRemap={(ep) => onRemap(seasonId, ep)}
         />

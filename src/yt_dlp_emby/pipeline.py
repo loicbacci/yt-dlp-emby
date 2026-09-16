@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -51,7 +52,19 @@ from yt_dlp_emby.library import (
     season_dir,
     series_dir,
 )
+from yt_dlp_emby.events import (
+    allowed_item_id,
+    emit,
+    folder_label,
+    item_id,
+    merge_plan_source,
+    parse_events_file,
+    plan_from_events,
+    read_events_path,
+    set_current_item_id,
+)
 from yt_dlp_emby.log import RunStats, error, format_unit_plan
+from yt_dlp_emby.series_ids import slugify
 from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
 from yt_dlp_emby.progress import DownloadProgress, estimate_media_bytes, format_size_estimate
 from yt_dlp_emby.sync import (
@@ -323,6 +336,7 @@ def _print_youtube_unit(job: YoutubePlaylistJob, settings: Settings) -> None:
                 emby_code(action.season, action.episode or 0),
                 _action_title(action),
                 f"{job.season_path.name}/",
+                dest_season=action.season,
                 size=(
                     estimate_media_bytes(
                         filesize=action.live.filesize, duration=action.live.duration
@@ -490,6 +504,9 @@ def run_youtube_manifest(
     format_selector: str | None = None,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
+    read_events_path(os.environ)
+    if settings.dry_run:
+        emit({"event": "run_started", "source": "youtube", "dry_run": True})
     try:
         _cleanup_start(settings)
         jobs: list[YoutubePlaylistJob] = []
@@ -510,16 +527,100 @@ def run_youtube_manifest(
                         job,
                         actions=[a for a in job.actions if a.video_id not in skip_ids],
                     )
+                slug = slugify(series.name)
+                if last_series != series.name:
+                    emit(
+                        {
+                            "event": "series",
+                            "platform": "youtube",
+                            "name": series.name,
+                            "slug": slug,
+                        }
+                    )
                 last_series = note_series(settings, series.name, last_series)
+                if settings.dry_run:
+                    skip, download, extras = _youtube_plan_counts(job.actions)
+                    emit(
+                        {
+                            "event": "season",
+                            "platform": "youtube",
+                            "slug": slug,
+                            "series": series.name,
+                            "dest_season": job.season_number,
+                            "season_title": item.title,
+                            "folder": folder_label(job.season_number),
+                            "download": download,
+                            "skip": skip,
+                            "unmapped": 0,
+                            "replace": extras.get("replace", 0),
+                        }
+                    )
+                    for action in job.actions:
+                        kind = _ROW_ACTION.get(action.kind, action.kind.value)
+                        if kind == "skip":
+                            continue
+                        if kind not in {"download", "replace", "add"}:
+                            continue
+                        code = emby_code(action.season, action.episode or 0)
+                        emit(
+                            {
+                                "event": "item",
+                                "id": item_id("youtube", slug, code),
+                                "action": "download" if kind == "add" else kind,
+                                "code": code,
+                                "title": _action_title(action),
+                                "dest_season": action.season,
+                                "season_title": item.title,
+                                "folder": folder_label(job.season_number),
+                                "size": None,
+                                "series": series.name,
+                                "slug": slug,
+                                "platform": "youtube",
+                            }
+                        )
                 _print_youtube_unit(job, settings)
                 jobs.append(job)
         if settings.dry_run:
             for job in jobs:
                 _tally_youtube_plan(job, stats)
+            if manifest.path is not None:
+                events_path = os.environ.get("YT_DLP_EMBY_EVENTS")
+                if events_path:
+                    payload = plan_from_events(parse_events_file(Path(events_path)))
+                    merge_plan_source(
+                        manifest.path.parent / "plan.json",
+                        "youtube",
+                        payload,
+                        force=False,
+                    )
+            emit(
+                {
+                    "event": "run_finished",
+                    "downloaded": stats.downloaded,
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                }
+            )
             return finish(settings, stats)
         for job in jobs:
             if not _apply_youtube_job(job, settings, stats, format_selector):
+                emit(
+                    {
+                        "event": "run_finished",
+                        "downloaded": stats.downloaded,
+                        "skipped": stats.skipped,
+                        "failed": stats.failed,
+                    }
+                )
                 return finish(settings, stats)
+        emit(
+            {
+                "event": "run_finished",
+                "downloaded": stats.downloaded,
+                "skipped": stats.skipped,
+                "failed": stats.failed,
+            }
+        )
         return finish(settings, stats)
     except YoutubeAuthError as exc:
         return _listing_failed(settings, stats, exc)
@@ -590,10 +691,18 @@ def _apply_youtube_job(
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     write_series_artwork(series, season_path, season_number, playlist, art)
 
+    yt_slug = slugify(job.series_name)
     downloads = [
         action
         for action in actions
         if action.kind in {ActionKind.ADD, ActionKind.REPLACE} and action.live and action.new_basename
+    ]
+    downloads = [
+        action
+        for action in downloads
+        if allowed_item_id(
+            item_id("youtube", yt_slug, emby_code(action.season, action.episode or 0))
+        )
     ]
     sidecars = [
         action
@@ -620,6 +729,10 @@ def _apply_youtube_job(
             mark_live_staging(work)
             for i, action in enumerate(downloads, start=1):
                 assert action.live is not None and action.new_basename is not None
+                event_id = item_id(
+                    "youtube", yt_slug, emby_code(action.season, action.episode or 0)
+                )
+                set_current_item_id(event_id)
                 video_url = _video_url(action.live)
                 local_stem = work / action.new_basename
                 dest = season_path / action.new_basename
@@ -665,17 +778,42 @@ def _apply_youtube_job(
                     error(str(exc))
                     stats.failed += 1
                     stats.failures.append((action.new_basename, str(exc)))
+                    emit(
+                        {
+                            "event": "item_done",
+                            "id": event_id,
+                            "action": "failed",
+                            "seconds": time.monotonic() - started,
+                        }
+                    )
                     stats.remaining = len(downloads) - i
+                    set_current_item_id(None)
                     return False
                 except Exception as exc:
                     error(f"download failed for {action.new_basename}: {exc}")
                     stats.failed += 1
                     stats.failures.append((action.new_basename, str(exc)))
+                    emit(
+                        {
+                            "event": "item_done",
+                            "id": event_id,
+                            "action": "failed",
+                            "seconds": time.monotonic() - started,
+                        }
+                    )
                     continue
                 if not info_dict.get("id"):
                     error(f"download returned no metadata for {action.new_basename}")
                     stats.failed += 1
                     stats.failures.append((action.new_basename, "download returned no metadata"))
+                    emit(
+                        {
+                            "event": "item_done",
+                            "id": event_id,
+                            "action": "failed",
+                            "seconds": time.monotonic() - started,
+                        }
+                    )
                     continue
                 log_step(settings, f"[{i}/{len(downloads)}] Copying to library")
                 copy_progress = DownloadProgress(enabled=settings.show_progress)
@@ -689,6 +827,15 @@ def _apply_youtube_job(
                 playlist = _commit_episode(
                     series, season_path, playlist, index, season_number, episode, cache
                 )
+                emit(
+                    {
+                        "event": "item_done",
+                        "id": event_id,
+                        "action": "downloaded",
+                        "seconds": time.monotonic() - started,
+                    }
+                )
+                set_current_item_id(None)
 
     for action in sidecars:
         assert action.live is not None

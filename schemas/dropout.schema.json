@@ -80,6 +80,7 @@
         "url": { "type": "string", "minLength": 1 },
         "to_season": { "type": "integer" },
         "enabled": { "type": "boolean" },
+        "title": { "type": "string", "minLength": 1 },
         "only_episodes": {
           "type": "array",
           "minItems": 1,

@@ -35,7 +35,7 @@ export function Header({
           aria-current={current === "dashboard" ? "page" : undefined}
           onClick={goTo("/")}
         >
-          Dashboard
+          Run
         </a>
         <a
           href="/series"

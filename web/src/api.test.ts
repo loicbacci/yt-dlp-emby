@@ -1,45 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pathNotices, routeForSession, runKeyFor, startPayload } from "./api";
-
-describe("startPayload", () => {
-  it("forces action download for youtube", () => {
-    const payload = startPayload({
-      source: "youtube",
-      dry_run: true,
-      verbose: false,
-      force: true,
-      action: "layout",
-    });
-    expect(payload.force).toBe(false);
-    expect(payload.action).toBe("download");
-  });
-
-  it("keeps force for dropout download", () => {
-    const payload = startPayload({
-      source: "dropout",
-      dry_run: false,
-      verbose: true,
-      force: true,
-      action: "download",
-    });
-    expect(payload.force).toBe(true);
-    expect(payload.action).toBe("download");
-  });
-
-  it("clears force for layout and check", () => {
-    for (const action of ["layout", "check"] as const) {
-      const payload = startPayload({
-        source: "dropout",
-        dry_run: true,
-        verbose: false,
-        force: true,
-        action,
-      });
-      expect(payload.force).toBe(false);
-      expect(payload.action).toBe(action);
-    }
-  });
-});
+import { pathNotices, routeForSession, runKeyFor } from "./api";
 
 describe("routeForSession", () => {
   it("routes to setup when required", () => {
@@ -67,6 +27,15 @@ describe("routeForSession", () => {
         "/settings",
       ),
     ).toBe("/settings");
+  });
+
+  it("keeps series routes when authenticated", () => {
+    expect(
+      routeForSession(
+        { setup_required: false, authenticated: true },
+        "/series/dropout/game-changer",
+      ),
+    ).toBe("/series/dropout/game-changer");
   });
 
   it("sends authenticated users away from login", () => {
@@ -113,6 +82,7 @@ describe("runKeyFor", () => {
     expect(
       runKeyFor({
         status: "running",
+        phase: "downloading",
         source: "youtube",
         dry_run: false,
         verbose: false,
@@ -120,6 +90,7 @@ describe("runKeyFor", () => {
         started_at: "2026-01-01T00:00:00+00:00",
         finished_at: null,
         exit_code: null,
+        plan: null,
       }),
     ).toBe("2026-01-01T00:00:00+00:00");
   });
@@ -128,6 +99,7 @@ describe("runKeyFor", () => {
     expect(
       runKeyFor({
         status: "idle",
+        phase: "idle",
         source: null,
         dry_run: false,
         verbose: false,
@@ -135,6 +107,7 @@ describe("runKeyFor", () => {
         started_at: null,
         finished_at: null,
         exit_code: null,
+        plan: null,
       }),
     ).toBe("idle");
   });

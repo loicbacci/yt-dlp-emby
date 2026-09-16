@@ -40,7 +40,7 @@ export function PlatformFields({
   return (
     <>
       <p class="settings-lead">
-        Library and old_dir in {kind}.yaml. Empty uses config fallback.
+        Library and old_dir in {`${kind}.yaml`}. Empty uses config fallback.
       </p>
       {notices.map((notice) => (
         <div key={notice} class="banner banner-warn">{notice}</div>
@@ -90,7 +90,7 @@ export function PlatformFields({
           </button>
         </div>
       </div>
-      <p class="settings-hint">{PLATFORM_LABEL[kind]} tab saves only {kind}.yaml.</p>
+      <p class="settings-hint">{PLATFORM_LABEL[kind]} tab saves only {`${kind}.yaml`}.</p>
     </>
   );
 }

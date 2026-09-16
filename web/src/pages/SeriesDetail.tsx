@@ -14,10 +14,11 @@ import { RemapModal } from "../components/series/RemapModal";
 import { SourceBlock } from "../components/series/SourceBlock";
 import { TvdbSkipPanel } from "../components/series/TvdbSkipPanel";
 import { go } from "../nav";
-import { parseSeriesPath } from "../seriesView";
+import { addTvdbSkip, parseSeriesPath } from "../seriesView";
 
 const idleRun: Run = {
   status: "idle",
+  phase: "idle",
   source: null,
   dry_run: false,
   verbose: false,
@@ -25,6 +26,7 @@ const idleRun: Run = {
   started_at: null,
   finished_at: null,
   exit_code: null,
+  plan: null,
 };
 
 export function SeriesDetail() {
@@ -33,9 +35,19 @@ export function SeriesDetail() {
   const { platform, slug } = parsed;
 
   const [run, setRun] = useState<Run>(idleRun);
+  const [folderView, setFolderView] = useState<"sources" | "emby">("sources");
+  const [layout, setLayout] = useState<Awaited<
+    ReturnType<typeof apiClient.getDropoutLayout>
+  > | null>(null);
+  const [check, setCheck] = useState<Awaited<
+    ReturnType<typeof apiClient.getDropoutCheck>
+  > | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
   const [detail, setDetail] = useState<SeriesDetailModel | null>(null);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [flash, setFlash] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
   const [addingUrl, setAddingUrl] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
@@ -79,6 +91,39 @@ export function SeriesDetail() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (platform !== "dropout" || !slug) return;
+    if (folderView === "emby") {
+      setLayoutError(null);
+      apiClient
+        .getDropoutLayout(slug)
+        .then(setLayout)
+        .catch((err) => {
+          setLayout(null);
+          setLayoutError(err instanceof ApiError ? err.message : "Layout failed");
+        });
+    }
+  }, [platform, slug, folderView]);
+
+  useEffect(() => {
+    if (platform !== "dropout" || !slug || detail?.tvdb_id == null) return;
+    apiClient
+      .getDropoutCheck(slug)
+      .then((body) => {
+        setCheck(body);
+        setCheckError(null);
+      })
+      .catch((err) => {
+        setCheck(null);
+        setCheckError(err instanceof ApiError ? err.message : "Check failed");
+      });
+  }, [platform, slug, detail?.tvdb_id, detail?.tvdb_skip]);
+
+  useEffect(() => {
+    if (window.location.hash !== "#sonarr-check") return;
+    document.getElementById("sonarr-check")?.scrollIntoView({ behavior: "smooth" });
+  }, [check, checkError, detail]);
+
   const persist = async (next: SeriesDetailModel) => {
     const body = await apiClient.putSeries(platform, slug, next);
     setDetail(body);
@@ -86,11 +131,17 @@ export function SeriesDetail() {
     return body;
   };
 
+  const flashSaved = () => {
+    setFlash(true);
+    window.setTimeout(() => setFlash(false), 1600);
+  };
+
   const save = async () => {
     if (!detail) return;
     setError(null);
     try {
       await persist(detail);
+      flashSaved();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Save failed");
     }
@@ -112,7 +163,6 @@ export function SeriesDetail() {
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Add URL failed";
       setPendingError(message);
-      setError(message);
     } finally {
       setAddingUrl(false);
     }
@@ -130,9 +180,13 @@ export function SeriesDetail() {
     if (risky && !window.confirm("Remove this source and its season settings?")) {
       return;
     }
-    const body = await apiClient.deleteSeriesSource(platform, slug, sourceId);
-    setDetail(body);
-    setSaved(body);
+    try {
+      const body = await apiClient.deleteSeriesSource(platform, slug, sourceId);
+      setDetail(body);
+      setSaved(body);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Remove failed");
+    }
   };
 
   const refreshSource = async (sourceId: number) => {
@@ -149,6 +203,35 @@ export function SeriesDetail() {
           idx === sourceId ? { ...src, error: message } : src,
         ),
       });
+    }
+  };
+
+  const updateSeasonTitle = async (
+    sourceId: number,
+    seasonId: number,
+    value: string,
+  ) => {
+    if (!detail) return;
+    const title = value.trim() || null;
+    const season = detail.sources[sourceId].seasons[seasonId];
+    if ((season.title ?? null) === title) return;
+    const next: SeriesDetailModel = {
+      ...detail,
+      sources: detail.sources.map((src, sid) =>
+        sid !== sourceId
+          ? src
+          : {
+              ...src,
+              seasons: src.seasons.map((se, seid) =>
+                seid !== seasonId ? se : { ...se, title },
+              ),
+            },
+      ),
+    };
+    try {
+      await persist(next);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Update failed");
     }
   };
 
@@ -259,8 +342,26 @@ export function SeriesDetail() {
             },
       ),
     };
-    await persist(next);
-    setRemap(null);
+    try {
+      await persist(next);
+      setRemap(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Remap failed");
+    }
+  };
+
+  const deleteSeries = async () => {
+    if (!detail) return;
+    const target = detail.inline ? `the ${detail.file} entry` : detail.file;
+    if (!window.confirm(`Delete ${detail.name}? This removes ${target}.`)) {
+      return;
+    }
+    try {
+      await apiClient.deleteSeries(platform, slug);
+      go("/series");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Delete failed");
+    }
   };
 
   const logout = async () => {
@@ -268,18 +369,49 @@ export function SeriesDetail() {
     go("/login");
   };
 
+  const navigate = (url: string) => {
+    if (dirty && !window.confirm("Discard unsaved series changes?")) return;
+    go(url);
+  };
+
   if (!detail) {
     return (
       <div class="series-shell">
-        <Header run={run} current="series" onLogout={() => void logout()} />
-        {error ? <div class="validation-error">{error}</div> : <div class="shell" />}
+        <Header
+          run={run}
+          current="series"
+          onLogout={() => void logout()}
+          onNavigate={navigate}
+        />
+        <section class="card series-card">
+          <a
+            href="/series"
+            class="header-link"
+            onClick={(e) => {
+              e.preventDefault();
+              go("/series");
+            }}
+          >
+            ← Series
+          </a>
+          {error ? (
+            <div class="validation-error">{error}</div>
+          ) : (
+            <div class="empty-state">Loading…</div>
+          )}
+        </section>
       </div>
     );
   }
 
   return (
     <div class="series-shell">
-      <Header run={run} current="series" onLogout={() => void logout()} />
+      <Header
+        run={run}
+        current="series"
+        onLogout={() => void logout()}
+        onNavigate={navigate}
+      />
       <section class="card series-card">
         <div class="series-toolbar">
           <div>
@@ -288,7 +420,7 @@ export function SeriesDetail() {
               class="header-link"
               onClick={(e) => {
                 e.preventDefault();
-                go("/series");
+                navigate("/series");
               }}
             >
               ← Series
@@ -298,12 +430,22 @@ export function SeriesDetail() {
               <span>{detail.path}</span>
               <span>{detail.file}</span>
               {detail.tvdb_id != null && <span>tvdb {detail.tvdb_id}</span>}
+              {detail.inline && <span>inline</span>}
             </div>
-            <button type="button" class="btn-ghost" onClick={() => setEditOpen(true)}>
-              Edit details
-            </button>
+            <div class="series-toolbar">
+              <button type="button" class="btn-ghost" onClick={() => setEditOpen(true)}>
+                Edit details
+              </button>
+              <button
+                type="button"
+                class="btn-danger"
+                onClick={() => void deleteSeries()}
+              >
+                Delete
+              </button>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div class="series-toolbar-end">
             <span
               class={
                 detail.platform === "youtube" ? "badge-youtube" : "badge-dropout"
@@ -312,6 +454,7 @@ export function SeriesDetail() {
               {detail.platform === "youtube" ? "YouTube" : "Dropout.tv"}
             </span>
             {dirty && <span class="editor-unsaved">Unsaved</span>}
+            {flash && !dirty && <span class="saved-flash">Saved</span>}
             <button
               type="button"
               class="btn-secondary"
@@ -322,10 +465,60 @@ export function SeriesDetail() {
             </button>
           </div>
         </div>
+        {platform === "dropout" && (
+          <div class="series-toolbar">
+            <button
+              type="button"
+              class={folderView === "sources" ? "filter-chip active" : "filter-chip"}
+              onClick={() => setFolderView("sources")}
+            >
+              Dropout seasons
+            </button>
+            <button
+              type="button"
+              class={folderView === "emby" ? "filter-chip active" : "filter-chip"}
+              onClick={() => setFolderView("emby")}
+            >
+              Emby folders
+            </button>
+          </div>
+        )}
+        {platform === "dropout" && folderView === "emby" && layoutError && (
+          <p class="settings-hint">{layoutError}</p>
+        )}
+        {platform === "dropout" && folderView === "emby" && !layout && !layoutError && (
+          <p class="settings-hint">Loading Emby folders…</p>
+        )}
+        {platform === "dropout" && folderView === "emby" && layout && (
+          <div class="layout-folders">
+            {layout.folders.map((folder) => (
+              <details key={folder.label} open>
+                <summary>{folder.folder ?? folder.label}</summary>
+                <ul>
+                  {folder.episodes.map((ep) => (
+                    <li key={`${ep.code}-${ep.title}`}>
+                      {ep.code ?? "—"} {ep.title}{" "}
+                      <span class="run-meta">{ep.status}</span>
+                      {ep.origin && <span class="run-meta">({ep.origin})</span>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+          </div>
+        )}
+        {!(platform === "dropout" && folderView === "emby") && (
+        <>
         <h2 class="settings-heading">
           {platform === "youtube" ? "Playlists" : "Catalog URLs"}
         </h2>
-        <div class="series-toolbar">
+        <form
+          class="series-toolbar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addUrl();
+          }}
+        >
           <input
             type="url"
             class="series-search"
@@ -338,14 +531,13 @@ export function SeriesDetail() {
             }
           />
           <button
-            type="button"
+            type="submit"
             class="btn-secondary"
             disabled={addingUrl || runActive || !urlDraft.trim()}
-            onClick={() => void addUrl()}
           >
             Add URL
           </button>
-        </div>
+        </form>
         {runActive && (
           <div class="banner banner-warn">a run is in progress</div>
         )}
@@ -363,6 +555,9 @@ export function SeriesDetail() {
             onToggleEnabled={(seasonId) =>
               void toggleSeasonEnabled(sourceId, seasonId)
             }
+            onTitleChange={(seasonId, value) =>
+              void updateSeasonTitle(sourceId, seasonId, value)
+            }
             onSkip={(seasonId, ep) => void toggleSkip(sourceId, seasonId, ep)}
             onRemap={(seasonId, ep) =>
               setRemap({ sourceId, seasonId, episode: ep })
@@ -373,18 +568,109 @@ export function SeriesDetail() {
           <div class="source-block">
             <div class="source-head">
               <span class="editor-filename">{pendingUrl}</span>
+              {pendingError && (
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  onClick={() => {
+                    setPendingUrl(null);
+                    setPendingError(null);
+                  }}
+                >
+                  Dismiss
+                </button>
+              )}
             </div>
             <p class="settings-hint">
               {addingUrl ? "Discovering seasons…" : pendingError ?? ""}
             </p>
-            {pendingError && <div class="validation-error">{pendingError}</div>}
           </div>
         )}
         {platform === "dropout" && (
           <TvdbSkipPanel
             detail={detail}
-            onChange={(tvdb_skip) => void persist({ ...detail, tvdb_skip })}
+            onChange={(tvdb_skip) => {
+              void persist({ ...detail, tvdb_skip }).catch((err) => {
+                setError(
+                  err instanceof ApiError ? err.message : "Update failed",
+                );
+              });
+            }}
           />
+        )}
+        </>
+        )}
+        {platform === "dropout" && detail.tvdb_id != null && (
+          <section class="sonarr-check" id="sonarr-check">
+            <h2 class="settings-heading">Sonarr check</h2>
+            {checkError && <p class="settings-hint">{checkError}</p>}
+            {check && (
+              <>
+                {check.ok && <p class="saved-flash">ok</p>}
+                {check.missing.length > 0 && (
+                  <>
+                    <h3>Missing</h3>
+                    <ul>
+                      {check.missing.map((row) => (
+                        <li key={row.code} class="sonarr-check-row">
+                          <span>
+                            {row.code} {row.title}
+                            {row.hints?.length
+                              ? ` — ${row.hints.map((h) => h.text).join("; ")}`
+                              : ""}
+                          </span>
+                          <button
+                            type="button"
+                            class="btn-ghost"
+                            onClick={() => {
+                              void persist({
+                                ...detail,
+                                tvdb_skip: addTvdbSkip(
+                                  detail.tvdb_skip,
+                                  row.season,
+                                  row.episode,
+                                ),
+                              }).catch((err) => {
+                                setError(
+                                  err instanceof ApiError
+                                    ? err.message
+                                    : "Skip update failed",
+                                );
+                              });
+                            }}
+                          >
+                            Add to skip list
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {check.warnings.length > 0 && (
+                  <>
+                    <h3>Warnings</h3>
+                    <ul>
+                      {check.warnings.map((row) => (
+                        <li key={row.code}>{row.code} {row.detail}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {check.title_mismatches?.length > 0 && (
+                  <>
+                    <h3>On disk title differs</h3>
+                    <ul>
+                      {check.title_mismatches.map((row) => (
+                        <li key={row.code}>
+                          {row.code} {row.file_title} (Sonarr: {row.sonarr_title})
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
+            )}
+          </section>
         )}
       </section>
       {remap && (
@@ -417,6 +703,7 @@ export function SeriesDetail() {
               tvdb_id: body.tvdb_id,
             });
             setEditOpen(false);
+            flashSaved();
           }}
         />
       )}
