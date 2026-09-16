@@ -57,6 +57,10 @@ def bar_width(stream: TextIO | None = None, fallback: int = 28) -> int:
     return max(10, min(40, cols - 52))
 
 
+# Combined A/V around 5 Mbit/s for the default 1080p mkv selector.
+ESTIMATE_BITS_PER_SECOND = 5_000_000
+
+
 def format_bytes(num: float | None) -> str:
     if num is None:
         return "?"
@@ -66,6 +70,25 @@ def format_bytes(num: float | None) -> str:
             return f"{value:.1f}{unit}"
         value /= 1024.0
     return f"{value:.1f}GiB"
+
+
+def estimate_media_bytes(
+    *,
+    filesize: int | None = None,
+    duration: float | None = None,
+) -> int | None:
+    """Prefer yt-dlp's size; otherwise estimate from duration at 1080p bitrate."""
+    if isinstance(filesize, int) and filesize > 0:
+        return filesize
+    if duration is not None and duration > 0:
+        return int(float(duration) * (ESTIMATE_BITS_PER_SECOND / 8.0))
+    return None
+
+
+def format_size_estimate(nbytes: int | None) -> str | None:
+    if nbytes is None or nbytes <= 0:
+        return None
+    return f"~{format_bytes(nbytes)}"
 
 
 def format_eta(seconds: float | None) -> str:

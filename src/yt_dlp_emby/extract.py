@@ -122,6 +122,15 @@ def _episode_thumbnail(entry: dict[str, Any]) -> str | None:
     return pick_best_thumbnail(entry.get("thumbnails"))
 
 
+def _duration(entry: dict[str, Any]) -> float | None:
+    value = entry.get("duration")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return float(value)
+
+
 def _filesize(entry: dict[str, Any]) -> int | None:
     for key in ("filesize", "filesize_approx"):
         value = entry.get(key)
@@ -404,6 +413,8 @@ class DropoutListing:
     url: str
     title: str
     dropout_episode: int
+    duration: float | None = None
+    filesize: int | None = None
 
 
 def _entry_url(entry: dict[str, Any]) -> str | None:
@@ -545,6 +556,12 @@ def extract_dropout_season(
             or _title_from_url(episode_url)
         )
         listed.append(
-            DropoutListing(url=episode_url, title=title, dropout_episode=dropout_episode)
+            DropoutListing(
+                url=episode_url,
+                title=title,
+                dropout_episode=dropout_episode,
+                duration=_duration(entry),
+                filesize=_filesize(entry),
+            )
         )
     return listed

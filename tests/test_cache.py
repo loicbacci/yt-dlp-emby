@@ -89,6 +89,8 @@ def test_dropout_season_cache_roundtrip(tmp_path: Path) -> None:
             url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
             title="Welcome to the Wastes",
             dropout_episode=1,
+            duration=3600,
+            filesize=1234,
         )
     ]
     page = "https://watch.dropout.tv/x/season:28"

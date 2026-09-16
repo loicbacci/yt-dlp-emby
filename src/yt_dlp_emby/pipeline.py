@@ -53,7 +53,7 @@ from yt_dlp_emby.library import (
 )
 from yt_dlp_emby.log import RunStats, error, format_unit_plan
 from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
-from yt_dlp_emby.progress import DownloadProgress
+from yt_dlp_emby.progress import DownloadProgress, estimate_media_bytes, format_size_estimate
 from yt_dlp_emby.sync import (
     ActionKind,
     SyncAction,
@@ -276,6 +276,22 @@ def _youtube_plan_counts(actions: list[SyncAction]) -> tuple[int, int, dict[str,
     return skip, download, extras
 
 
+def _youtube_download_bytes(actions: list[SyncAction]) -> int | None:
+    total = 0
+    found = False
+    for action in actions:
+        if action.kind not in {ActionKind.ADD, ActionKind.REPLACE} or action.live is None:
+            continue
+        nbytes = estimate_media_bytes(
+            filesize=action.live.filesize, duration=action.live.duration
+        )
+        if not nbytes:
+            continue
+        total += nbytes
+        found = True
+    return total if found else None
+
+
 def _tally_youtube_plan(job: YoutubePlaylistJob, stats: RunStats) -> None:
     counts = Counter(action.kind.value for action in job.actions)
     stats.downloaded += counts.get("add", 0) + counts.get("replace", 0)
@@ -292,6 +308,7 @@ def _print_youtube_unit(job: YoutubePlaylistJob, settings: Settings) -> None:
             skip=skip,
             download=download,
             extras=extras,
+            download_bytes=_youtube_download_bytes(job.actions),
             listing_source="listed",
             listing_seconds=job.listing_seconds,
             disk_seconds=job.disk_seconds,
@@ -306,6 +323,13 @@ def _print_youtube_unit(job: YoutubePlaylistJob, settings: Settings) -> None:
                 emby_code(action.season, action.episode or 0),
                 _action_title(action),
                 f"{job.season_path.name}/",
+                size=(
+                    estimate_media_bytes(
+                        filesize=action.live.filesize, duration=action.live.duration
+                    )
+                    if action.kind in {ActionKind.ADD, ActionKind.REPLACE} and action.live
+                    else None
+                ),
             )
             for action in job.actions
         ],
@@ -569,7 +593,12 @@ def _apply_youtube_job(
     ]
     staging_parent = str(settings.staging) if settings.staging else None
     if downloads:
-        log_step(settings, f"Downloading {len(downloads)} of {len(playlist.episodes)} episodes")
+        hint = format_size_estimate(_youtube_download_bytes(downloads))
+        extra = f"  {hint}" if hint else ""
+        log_step(
+            settings,
+            f"Downloading {len(downloads)} of {len(playlist.episodes)} episodes{extra}",
+        )
         if settings.staging:
             settings.staging.mkdir(parents=True, exist_ok=True)
             log_step(settings, f"Staging downloads on local disk: {settings.staging}")

@@ -37,11 +37,38 @@ from yt_dlp_emby.library import (
     titles_match,
 )
 from yt_dlp_emby.log import RunStats, error, format_elapsed, format_unit_plan
-from yt_dlp_emby.progress import DownloadProgress
+from yt_dlp_emby.progress import DownloadProgress, estimate_media_bytes, format_size_estimate
 from yt_dlp_emby.style import dim
 from yt_dlp_emby.sync import move_episode_files
 
 DROPOUT_SUBS = ["all"]
+
+
+def listing_bytes(listing: DropoutListing) -> int | None:
+    return estimate_media_bytes(filesize=listing.filesize, duration=listing.duration)
+
+
+def total_listing_bytes(items: list[DropoutListing]) -> int | None:
+    total = 0
+    found = False
+    for listing in items:
+        nbytes = listing_bytes(listing)
+        if not nbytes:
+            continue
+        total += nbytes
+        found = True
+    return total if found else None
+
+
+def total_download_row_bytes(rows: list[WorkRow]) -> int | None:
+    total = 0
+    found = False
+    for row in rows:
+        if row.action != "download" or not row.size:
+            continue
+        total += row.size
+        found = True
+    return total if found else None
 
 
 def emby_season_dir(series: Path, season: int) -> Path:
@@ -77,6 +104,7 @@ def format_season_plan(
     listing_seconds: float | None = None,
     disk_seconds: float | None = None,
     debug: bool = False,
+    download_bytes: int | None = None,
 ) -> str:
     key = f"season {season.dropout}" if season.dropout is not None else "season"
     extras: dict[str, int] = {}
@@ -96,6 +124,7 @@ def format_season_plan(
         listing_seconds=listing_seconds,
         disk_seconds=disk_seconds,
         debug=debug,
+        download_bytes=download_bytes,
     )
 
 
@@ -208,12 +237,19 @@ def print_series_layout(settings: Settings, rows: list[WorkRow]) -> None:
             continue
         skip = sum(1 for row in grouped if row.action == "skip")
         download = sum(1 for row in grouped if row.action == "download")
+        download_bytes = total_download_row_bytes(grouped)
         retitled = sum(1 for row in grouped if row.note)
         extras = {"title differs": retitled} if retitled else None
         label = "Specials" if dest == 0 else season_folder_name(dest)
         note(
             settings,
-            format_unit_plan(label, skip=skip, download=download, extras=extras),
+            format_unit_plan(
+                label,
+                skip=skip,
+                download=download,
+                extras=extras,
+                download_bytes=download_bytes,
+            ),
         )
         print_work_rows(settings, grouped)
 
@@ -422,6 +458,7 @@ def _run_dropout(
                 else:
                     queued += 1
                     action = "download"
+                size = listing_bytes(listing) if action == "download" else None
                 jobs.append(
                     (series, listing, to_season, to_episode, dest_dir, stem, existing)
                 )
@@ -438,6 +475,7 @@ def _run_dropout(
                             if settings.layout
                             else None
                         ),
+                        size=size,
                     )
                 )
             plan = format_season_plan(
@@ -451,6 +489,7 @@ def _run_dropout(
                 listing_seconds=listing_seconds,
                 disk_seconds=disk_seconds,
                 debug=settings.debug,
+                download_bytes=total_download_row_bytes(work_rows),
             )
             if settings.layout:
                 layout_rows.extend(work_rows)
@@ -477,7 +516,13 @@ def _run_dropout(
         return finish(settings, stats)
 
     if download_jobs:
-        log_step(settings, f"Downloading {len(download_jobs)} of {len(jobs)} episodes")
+        nbytes = total_listing_bytes([job[1] for job in download_jobs])
+        hint = format_size_estimate(nbytes)
+        extra = f"  {hint}" if hint else ""
+        log_step(
+            settings,
+            f"Downloading {len(download_jobs)} of {len(jobs)} episodes{extra}",
+        )
     elif jobs:
         log_step(settings, f"Skipping {stats.skipped} existing file(s)")
 

@@ -23,6 +23,7 @@ def _playlist() -> PlaylistInfo:
                 title="Intro",
                 description="",
                 playlist_index=1,
+                duration=3600,
                 webpage_url="https://www.youtube.com/watch?v=vid1",
             )
         ],
@@ -69,7 +70,7 @@ def _patch_extractors(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None
             description="Fetched plot",
             playlist_index=listing.playlist_index,
             upload_date="20240101",
-            duration=12,
+            duration=3600,
             thumbnail_url="https://img.example/e.jpg",
             webpage_url=listing.webpage_url,
         )
@@ -87,7 +88,7 @@ def _patch_extractors(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None
             "title": "Intro",
             "description": "Full plot",
             "upload_date": "20240101",
-            "duration": 12,
+            "duration": 3600,
             "thumbnail": "https://img.example/e.jpg",
             "webpage_url": url,
         }
@@ -319,6 +320,7 @@ def test_pipeline_dry_run_prints_unit_plan(
     assert "Example Channel" in out
     assert "season 1 → Season 1" in out
     assert "1 download" in out
+    assert "~2.1GiB" in out
     assert "listed" in out
     assert "    download" in out
     assert "S01E01" in out

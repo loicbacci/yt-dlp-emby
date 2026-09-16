@@ -24,6 +24,7 @@ class WorkRow:
     note: str | None = None
     dest_season: int | None = None
     origin: str | None = None
+    size: int | None = None
 
 
 def log_step(settings: Settings, message: str) -> None:
@@ -74,7 +75,12 @@ def print_work_rows(
             settings,
             indent
             + format_dry_run_row(
-                row.action, row.code, row.title, row.folder, origin=row.origin
+                row.action,
+                row.code,
+                row.title,
+                row.folder,
+                origin=row.origin,
+                size=row.size,
             ),
         )
         if row.note and settings.verbose:

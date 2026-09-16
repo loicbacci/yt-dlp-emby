@@ -11,10 +11,12 @@ from yt_dlp_emby.log import (
 )
 from yt_dlp_emby.progress import (
     DownloadProgress,
+    estimate_media_bytes,
     format_bytes,
     format_copy_line,
     format_extract_line,
     format_progress_line,
+    format_size_estimate,
     parse_playlist_item,
     render_bar,
     stream_label,
@@ -243,6 +245,18 @@ def test_run_summary_and_plan_counts() -> None:
     assert "2 download" in line
     assert "1 rename" in line
     assert line.endswith("listed  1.4s")
+    sized = strip_ansi(
+        format_unit_plan(
+            "season 1", dest="Season 1", skip=0, download=2, download_bytes=2_250_000_000
+        )
+    )
+    assert "2 download" in sized
+    assert "~2.1GiB" in sized
+    assert format_size_estimate(None) is None
+    assert estimate_media_bytes(filesize=1000) == 1000
+    assert estimate_media_bytes(filesize=1000, duration=3600) == 1000
+    assert estimate_media_bytes(duration=3600) == 2_250_000_000
+    assert estimate_media_bytes() is None
     debug = strip_ansi(
         format_unit_plan(
             "season 1",

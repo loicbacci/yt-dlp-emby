@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from yt_dlp_emby.progress import format_size_estimate
 from yt_dlp_emby.style import (
     ANSI_RE,
     RESET,
@@ -114,12 +115,16 @@ def format_dry_run_row(
     title: str,
     folder: str,
     origin: str | None = None,
+    size: int | None = None,
 ) -> str:
     short = title if len(title) <= 40 else f"{title[:37]}..."
     styled = _ACTION_STYLE.get(action, lambda text: text)(action)
     line = f"{pad_visible(styled, 8)}  {code}  {short:<40}"
     if folder:
         line += f"  {folder}"
+    hint = format_size_estimate(size)
+    if hint:
+        line += f"  {dim(hint)}"
     if origin:
         line += f"  {dim(f'({origin})')}"
     return line
@@ -194,11 +199,15 @@ def format_unit_plan(
     listing_seconds: float | None = None,
     disk_seconds: float | None = None,
     debug: bool = False,
+    download_bytes: int | None = None,
 ) -> str:
     skip_part = dim(f"{skip} skip")
     download_part = (
         green(f"{download} download") if download else dim(f"{download} download")
     )
+    hint = format_size_estimate(download_bytes)
+    if hint and download:
+        download_part += f" {dim(hint)}"
     line = f"  {label}"
     if dest:
         line += f" → {dest}"

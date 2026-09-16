@@ -651,6 +651,8 @@ def test_extract_dropout_season_omits_youtube_clients() -> None:
                     "url": "https://watch.dropout.tv/x/videos/ep",
                     "title": "Ep",
                     "episode_number": 3,
+                    "duration": 3600,
+                    "filesize_approx": 1234,
                 }
             ]
         }
@@ -664,6 +666,8 @@ def test_extract_dropout_season_omits_youtube_clients() -> None:
     assert seen.get("skip_download") is True
     assert listed[0].dropout_episode == 3
     assert listed[0].title == "Ep"
+    assert listed[0].duration == 3600
+    assert listed[0].filesize == 1234
 
 
 def test_extract_dropout_season_falls_back_to_list_order() -> None:
@@ -776,10 +780,18 @@ def test_format_season_plan_and_dry_run_row() -> None:
         )
     )
     assert "cached 4ms  disk 1.4s" in debug
-    row = format_dry_run_row("download", "S27E01", "Welcome to the Wastes", "Season 27/")
+    sized = strip_ansi(
+        format_season_plan(mapped, skip=0, download=2, unmapped=0, download_bytes=2_250_000_000)
+    )
+    assert "2 download" in sized
+    assert "~2.1GiB" in sized
+    row = format_dry_run_row(
+        "download", "S27E01", "Welcome to the Wastes", "Season 27/", size=2_250_000_000
+    )
     assert strip_ansi(row).startswith("download")
     assert "S27E01" in row
     assert "Season 27/" in row
+    assert "~2.1GiB" in strip_ansi(row)
     origin_row = format_dry_run_row(
         "download", "S00E28", "Behind the Scenes: How It Began", "", origin="season 17 E07"
     )
@@ -797,6 +809,7 @@ def test_dropout_dry_run_prints_table(tmp_path: Path, capsys: pytest.CaptureFixt
                     url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
                     title="Welcome to the Wastes",
                     dropout_episode=1,
+                    duration=3600,
                 )
             ]
         return [
@@ -825,6 +838,7 @@ def test_dropout_dry_run_prints_table(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "S00E70" in out
     assert "Season 27/" in out
     assert "Specials/" in out
+    assert "~2.1GiB" in out
     assert "fetch" in out
     assert "listing cache" not in out
     assert "Listing 1/2" not in out

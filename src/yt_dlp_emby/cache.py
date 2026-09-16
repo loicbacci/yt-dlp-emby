@@ -143,14 +143,19 @@ def save_dropout_season_cache(path: Path, seasons: dict[str, list[dict]]) -> Non
 
 
 def dropout_listings_to_cache(listings: list[DropoutListing]) -> list[dict]:
-    return [
-        {
+    payload: list[dict] = []
+    for item in listings:
+        row: dict = {
             "url": item.url,
             "title": item.title,
             "dropout_episode": item.dropout_episode,
         }
-        for item in listings
-    ]
+        if item.duration is not None:
+            row["duration"] = item.duration
+        if item.filesize is not None:
+            row["filesize"] = item.filesize
+        payload.append(row)
+    return payload
 
 
 def dropout_listings_from_cache(raw: list[dict] | None) -> list[DropoutListing] | None:
@@ -167,7 +172,21 @@ def dropout_listings_from_cache(raw: list[dict] | None) -> list[DropoutListing] 
             continue
         if isinstance(episode, bool) or not isinstance(episode, int):
             continue
+        duration = item.get("duration")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+            duration = None
+        else:
+            duration = float(duration)
+        filesize = item.get("filesize")
+        if isinstance(filesize, bool) or not isinstance(filesize, int) or filesize <= 0:
+            filesize = None
         listed.append(
-            DropoutListing(url=url, title=title.strip(), dropout_episode=episode)
+            DropoutListing(
+                url=url,
+                title=title.strip(),
+                dropout_episode=episode,
+                duration=duration,
+                filesize=filesize,
+            )
         )
     return listed or None
