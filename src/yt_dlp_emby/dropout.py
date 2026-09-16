@@ -338,6 +338,7 @@ def _run_dropout(
         for series in manifest.series
         for source in series.sources
         for season in source.seasons
+        if season.enabled
     ]
     cache_path = dropout_cache_path(manifest.path)
     cache_started = time.monotonic()

@@ -106,7 +106,7 @@ series:
         load_dropout_manifest(path)
 
 
-def test_urls_rejects_empty_list(tmp_path: Path) -> None:
+def test_urls_empty_list_allowed_for_new_series(tmp_path: Path) -> None:
     path = _write_root(
         tmp_path,
         """
@@ -116,8 +116,8 @@ series:
     urls: []
 """,
     )
-    with pytest.raises(ConfigError, match="urls"):
-        load_dropout_manifest(path)
+    manifest = load_dropout_manifest(path)
+    assert manifest.series[0].sources == ()
 
 
 def test_urls_item_requires_seasons(tmp_path: Path) -> None:
@@ -399,6 +399,24 @@ imports:
     )
     with pytest.raises(ConfigError, match="library"):
         load_dropout_manifest(path)
+
+
+def test_dropout_manifest_allows_omitted_paths(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+series:
+  - name: Game Changer
+    path: Game Changer
+    url: https://watch.dropout.tv/game-changer
+    seasons:
+      - dropout: 1
+""",
+        encoding="utf-8",
+    )
+    manifest = load_dropout_manifest(path)
+    assert manifest.library is None
+    assert manifest.old_dir is None
 
 
 def test_import_child_rejects_nested_imports(tmp_path: Path) -> None:

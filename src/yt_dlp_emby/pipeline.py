@@ -495,12 +495,21 @@ def run_youtube_manifest(
         jobs: list[YoutubePlaylistJob] = []
         last_series: str | None = None
         for series in manifest.series:
+            folder = series.path or series.name
             for item in series.playlists:
+                if not item.enabled:
+                    continue
                 job = _prepare_playlist(
                     item.url,
                     replace(settings, season=item.season),
-                    series_folder=series.name,
+                    series_folder=folder,
                 )
+                if item.skip:
+                    skip_ids = set(item.skip)
+                    job = replace(
+                        job,
+                        actions=[a for a in job.actions if a.video_id not in skip_ids],
+                    )
                 last_series = note_series(settings, series.name, last_series)
                 _print_youtube_unit(job, settings)
                 jobs.append(job)

@@ -45,31 +45,34 @@ uv run yt-dlp-emby bench --size 64M --dest /path/to/old
 
 ## Configuration
 
-There are **no default media paths**. `library` and `old_dir` must be set via a CLI flag, environment variable, or config file.
+There are **no default media paths**. `library` and `old_dir` must be set via a CLI flag, environment variable, a manifest, or `[fallback]` in a config file.
 
-Resolution order (highest wins): **CLI flag → environment variable → config file**.
+Resolution order (highest wins): **CLI flag → environment variable → manifest → config `[fallback]`**.
 
-| Setting | CLI | Environment | Config key |
-| --- | --- | --- | --- |
-| Library root | `--library` | `YT_DLP_EMBY_LIBRARY` | `library` |
-| Old/replaced files | `--old-dir` | `YT_DLP_EMBY_OLD_DIR` | `old_dir` |
-| Bench copy destination | `--dest` | `YT_DLP_EMBY_BENCH_DEST` | `bench_dest` |
-| Local download staging | `--staging` | `YT_DLP_EMBY_STAGING` | `staging` |
-| Config file | `--config` | `YT_DLP_EMBY_CONFIG` | — |
-| ffmpeg binary | `--ffmpeg-location` | `YT_DLP_EMBY_FFMPEG` | — |
-| Netscape cookies | `--cookies` | `YT_DLP_EMBY_COOKIES` | `cookies` |
-| Force metadata refetch | `--force-refetch` | `YT_DLP_EMBY_FORCE_REFETCH` | — |
-| Dropout listing timings | `-vv` / `--debug` | `YT_DLP_EMBY_DEBUG` | — |
+| Setting | CLI | Environment | Manifest | Config key |
+| --- | --- | --- | --- | --- |
+| Library root | `--library` | `YT_DLP_EMBY_LIBRARY` | `library` | `[fallback].library` |
+| Old/replaced files | `--old-dir` | `YT_DLP_EMBY_OLD_DIR` | `old_dir` | `[fallback].old_dir` |
+| Bench copy destination | `--dest` | `YT_DLP_EMBY_BENCH_DEST` | — | `bench_dest` |
+| Local download staging | `--staging` | `YT_DLP_EMBY_STAGING` | `staging` | `[fallback].staging` |
+| Config file | `--config` | `YT_DLP_EMBY_CONFIG` | — | — |
+| ffmpeg binary | `--ffmpeg-location` | `YT_DLP_EMBY_FFMPEG` | — | — |
+| Netscape cookies | `--cookies` | `YT_DLP_EMBY_COOKIES` | `cookies` | `cookies` (CLI URL mode only) |
+| Force metadata refetch | `--force-refetch` | `YT_DLP_EMBY_FORCE_REFETCH` | — | — |
+| Dropout listing timings | `-vv` / `--debug` | `YT_DLP_EMBY_DEBUG` | — | — |
 
-If `--config` / `YT_DLP_EMBY_CONFIG` is unset, `config.toml` in the current working directory is loaded when that file exists. `YT_EMBY_*` environment variables still work as a fallback.
+If `--config` / `YT_DLP_EMBY_CONFIG` is unset, `config.toml` in the current working directory is loaded when that file exists. `YT_EMBY_*` environment variables still work as a fallback. Top-level `library` / `old_dir` / `staging` in older config files still load as fallbacks.
 
 Copy [`config.toml.example`](config.toml.example):
 
 ```toml
+# sonarr_url = "http://localhost:8989"
+# sonarr_api_key = "your-sonarr-api-key"
+
+[fallback]
 library = "/path/to/library"
 old_dir = "/path/to/old"
 # staging = "/path/to/local/tmp"
-# bench_dest = "/path/to/old"
 ```
 
 Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and subtitle `.srt` files are copied to `library` and the staged files are deleted. Merge temps (`.temp.mkv`) and stream fragments (`.mp4` / `.m4a`) stay in staging and are never copied, so Emby does not pick them up. Point `staging` at a local SSD if `/tmp` is small. Leftover `yt-dlp-emby-*` folders in temp/staging from a killed run cannot be resumed (each run uses a new directory) and are deleted the next time you launch, unless another `yt-dlp-emby` process is still using that folder.
@@ -263,7 +266,7 @@ cp compose.yaml.example compose.yaml
 docker compose up --build
 ```
 
-Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, start/stop runs, and watch logs. Dropout has an action picker (Download, Preview remaps by folder, Check unmapped episodes vs Sonarr). Dry run and Redownload stay on Download only. If `dropout.yaml` lists `imports:`, the editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
+Open `http://localhost:8080`, set an admin password on first visit, then edit `youtube.yaml` / `dropout.yaml`, set path fallbacks and Sonarr under **Settings**, start/stop runs, and watch logs. Dropout has an action picker (Download, Preview remaps by folder, Check unmapped episodes vs Sonarr). Dry run and Redownload stay on Download only. If `dropout.yaml` lists `imports:`, the editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
 
 | Variable | Role |
 | --- | --- |

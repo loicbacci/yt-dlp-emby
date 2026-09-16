@@ -45,6 +45,7 @@ class DropoutSeason:
     to_season: int | None = None
     remap: tuple[DropoutRemap, ...] = ()
     only_episodes: tuple[int, ...] | None = None
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -64,9 +65,9 @@ class DropoutSeries:
 
 @dataclass(frozen=True)
 class DropoutManifest:
-    library: Path
-    old_dir: Path
-    series: tuple[DropoutSeries, ...]
+    library: Path | None = None
+    old_dir: Path | None = None
+    series: tuple[DropoutSeries, ...] = ()
     staging: Path | None = None
     cookies: Path | None = None
     path: Path | None = None
@@ -84,6 +85,14 @@ def _optional_path(value: Any) -> Path | None:
     if value is None or value == "":
         return None
     return Path(str(value))
+
+
+def _optional_str_path(value: Any, key: str, context: str) -> Path | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{key} must be a string in {context}")
+    return Path(value.strip())
 
 
 def _int_field(value: Any, key: str, context: str) -> int:
@@ -162,12 +171,17 @@ def _parse_season(raw: Any, series_name: str, index: int) -> DropoutSeason:
     only_episodes = _parse_only_episodes(raw.get("only_episodes"), context)
     if to_season is None and not parsed and dropout is None:
         raise ConfigError(f"Season needs to_season, remap, or dropout in {context}")
+    enabled_raw = raw.get("enabled")
+    if enabled_raw is not None and not isinstance(enabled_raw, bool):
+        raise ConfigError(f"enabled must be a boolean in {context}")
+    enabled = True if enabled_raw is None else bool(enabled_raw)
     return DropoutSeason(
         dropout=dropout,
         url=url,
         to_season=to_season,
         remap=parsed,
         only_episodes=only_episodes,
+        enabled=enabled,
     )
 
 
@@ -233,16 +247,21 @@ def _parse_series(raw: Any, index: int) -> DropoutSeries:
         raise ConfigError(f"Series {name!r} cannot mix urls with url/seasons")
     if has_urls:
         urls_raw = raw.get("urls")
-        if not isinstance(urls_raw, list) or not urls_raw:
-            raise ConfigError(f"urls must be a non-empty list in {context}")
-        sources = tuple(_parse_source_item(item, name, i) for i, item in enumerate(urls_raw, start=1))
-    else:
+        if not isinstance(urls_raw, list):
+            raise ConfigError(f"urls must be a list in {context}")
+        sources = tuple(
+            _parse_source_item(item, name, i) for i, item in enumerate(urls_raw, start=1)
+        )
+    elif "url" in raw or "seasons" in raw:
         seasons_raw = raw.get("seasons") or []
-        if not isinstance(seasons_raw, list) or not seasons_raw:
-            raise ConfigError(f"Series {name!r} needs a non-empty seasons list")
+        if not isinstance(seasons_raw, list):
+            raise ConfigError(f"seasons must be a list in {context}")
         seasons = tuple(_parse_season(item, name, i) for i, item in enumerate(seasons_raw, start=1))
         sources = (DropoutSource(url=_optional_url(raw.get("url")), seasons=seasons),)
-        _validate_source_urls(sources[0], name)
+        if sources[0].seasons:
+            _validate_source_urls(sources[0], name)
+    else:
+        sources = ()
     tvdb_id_raw = raw.get("tvdb_id")
     tvdb_id = None
     if tvdb_id_raw is not None:
@@ -304,8 +323,10 @@ def merge_series_by_path(series_list: Sequence[DropoutSeries]) -> tuple[DropoutS
 def _parse_imports_list(raw: Any) -> tuple[str, ...]:
     if raw is None:
         return ()
-    if not isinstance(raw, list) or not raw:
-        raise ConfigError("imports must be a non-empty list of paths")
+    if not isinstance(raw, list):
+        raise ConfigError("imports must be a list of paths")
+    if not raw:
+        return ()
     paths: list[str] = []
     for item in raw:
         if not isinstance(item, str) or not item.strip():
@@ -343,8 +364,8 @@ def parse_dropout_manifest(
 ) -> DropoutManifest:
     if not isinstance(data, dict):
         raise ConfigError(f"Dropout manifest must be a mapping: {path}")
-    library = _require_str(data, "library", str(path))
-    old_dir = _require_str(data, "old_dir", str(path))
+    library = _optional_str_path(data.get("library"), "library", str(path))
+    old_dir = _optional_str_path(data.get("old_dir"), "old_dir", str(path))
     import_paths = _parse_imports_list(data.get("imports"))
     series_raw = data.get("series")
     if series_raw is None:
@@ -352,7 +373,7 @@ def parse_dropout_manifest(
     if not isinstance(series_raw, list):
         raise ConfigError("series must be a list")
     if not import_paths and not series_raw:
-        raise ConfigError("Manifest needs a non-empty series list")
+        raise ConfigError("Manifest needs series or imports")
     collected: list[DropoutSeries] = []
     if load_imports:
         for rel in import_paths:
@@ -362,7 +383,7 @@ def parse_dropout_manifest(
             collected.extend(parse_dropout_series_file(_load_yaml_mapping(child_path), child_path))
     collected.extend(_parse_series(item, i) for i, item in enumerate(series_raw, start=1))
     if not collected and (load_imports or not import_paths):
-        raise ConfigError("Manifest needs a non-empty series list")
+        raise ConfigError("Manifest needs series or imports")
     cookies = _optional_path(data.get("cookies"))
     if cookies is not None and not cookies.is_absolute():
         cookies = path.parent / cookies
@@ -370,11 +391,16 @@ def parse_dropout_manifest(
         raise ConfigError(f"Cookies file not found: {cookies}")
     if cookies is not None and not cookies_file_usable(cookies):
         raise ConfigError(f"Cookies file is empty: {cookies}")
+    staging = data.get("staging")
+    if staging is not None and staging != "":
+        staging_path = _optional_str_path(staging, "staging", str(path))
+    else:
+        staging_path = None
     return DropoutManifest(
-        library=Path(library),
-        old_dir=Path(old_dir),
+        library=library,
+        old_dir=old_dir,
         series=merge_series_by_path(collected),
-        staging=_optional_path(data.get("staging")),
+        staging=staging_path,
         cookies=cookies,
         path=path,
         imports=import_paths,
@@ -425,7 +451,9 @@ def filter_dropout_manifest(
             selected = tuple(
                 season
                 for season in source.seasons
-                if season.dropout is not None and season.dropout in seasons
+                if season.enabled
+                and season.dropout is not None
+                and season.dropout in seasons
             )
             if selected:
                 sources.append(replace(source, seasons=selected))

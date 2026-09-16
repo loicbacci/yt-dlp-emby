@@ -10,6 +10,7 @@ export function ManifestEditor({
   savedText,
   exists,
   error,
+  notices,
   tabs,
   activePath,
   onTabChange,
@@ -21,6 +22,7 @@ export function ManifestEditor({
   savedText: string;
   exists: boolean;
   error: string | null;
+  notices?: string[];
   tabs?: EditorTab[];
   activePath?: string;
   onTabChange?: (path: string) => void;
@@ -61,6 +63,18 @@ export function ManifestEditor({
           File not on disk yet. Save to create it. Start is disabled until then.
         </div>
       )}
+      {notices?.map((notice) => (
+        <div
+          key={notice}
+          class={
+            notice.includes("is not set")
+              ? "banner banner-warn"
+              : "banner"
+          }
+        >
+          {notice}
+        </div>
+      ))}
       {showTabs && (
         <div class="editor-tabs" role="tablist">
           {tabs!.map((tab) => (

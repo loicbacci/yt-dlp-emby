@@ -103,7 +103,9 @@ series:
 """
     response = client.post("/api/manifests/youtube/validate", json={"text": text})
     assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    body = response.json()
+    assert body["ok"] is True
+    assert body["paths"]["library"]["source"] == "manifest"
     assert not (tmp_path / "youtube.yaml").exists()
 
 
@@ -272,3 +274,21 @@ def test_put_dropout_root_without_imports_still_works(tmp_path) -> None:
     response = client.put("/api/manifests/dropout", json={"text": text})
     assert response.status_code == 200
     assert response.json()["exists"] is True
+
+
+def test_get_youtube_lists_relative_import(tmp_path) -> None:
+    client = _authed_client(tmp_path)
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "example.yaml").write_text(
+        "series:\n  - name: Example Channel\n    playlists: []\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "youtube.yaml").write_text(
+        "library: /lib\nold_dir: /old\nimports:\n  - shows/example.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    body = client.get("/api/manifests/youtube").json()
+    assert body["imports"][0]["path"] == "shows/example.yaml"
+    assert body["imports"][0]["exists"] is True
+    assert "Example Channel" in body["imports"][0]["text"]

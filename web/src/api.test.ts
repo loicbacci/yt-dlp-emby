@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeForSession, runKeyFor, startPayload } from "./api";
+import { pathNotices, routeForSession, runKeyFor, startPayload } from "./api";
 
 describe("startPayload", () => {
   it("forces action download for youtube", () => {
@@ -44,20 +44,67 @@ describe("startPayload", () => {
 describe("routeForSession", () => {
   it("routes to setup when required", () => {
     expect(
-      routeForSession({ setup_required: true, authenticated: false }),
+      routeForSession({ setup_required: true, authenticated: false }, "/"),
     ).toBe("/setup");
   });
 
   it("routes to login when not authenticated", () => {
     expect(
-      routeForSession({ setup_required: false, authenticated: false }),
+      routeForSession({ setup_required: false, authenticated: false }, "/settings"),
     ).toBe("/login");
   });
 
-  it("routes to dashboard when authenticated", () => {
+  it("keeps the dashboard when authenticated", () => {
     expect(
-      routeForSession({ setup_required: false, authenticated: true }),
+      routeForSession({ setup_required: false, authenticated: true }, "/"),
     ).toBe("/");
+  });
+
+  it("keeps settings when authenticated", () => {
+    expect(
+      routeForSession(
+        { setup_required: false, authenticated: true },
+        "/settings",
+      ),
+    ).toBe("/settings");
+  });
+
+  it("sends authenticated users away from login", () => {
+    expect(
+      routeForSession({ setup_required: false, authenticated: true }, "/login"),
+    ).toBe("/");
+  });
+});
+
+describe("pathNotices", () => {
+  it("explains fallback and unset library", () => {
+    const notices = pathNotices({
+      library: {
+        manifest: null,
+        effective: "/from/file",
+        source: "fallback",
+        env_name: null,
+      },
+      old_dir: {
+        manifest: null,
+        effective: null,
+        source: "unset",
+        env_name: null,
+      },
+      staging: {
+        manifest: null,
+        effective: null,
+        source: "unset",
+        env_name: null,
+      },
+    });
+    expect(notices.some((item) => item.includes("fallback from config.toml"))).toBe(
+      true,
+    );
+    expect(notices.some((item) => item.includes("old_dir is not set"))).toBe(true);
+    expect(notices.some((item) => item.includes("staging is not set"))).toBe(
+      false,
+    );
   });
 });
 

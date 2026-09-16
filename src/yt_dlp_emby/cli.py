@@ -11,6 +11,10 @@ from yt_dlp_emby.config import ConfigError, Settings, resolve_settings
 from yt_dlp_emby.ffmpeg import FFmpegNotFoundError
 
 
+def _path_or_none(value: Path | None) -> str | None:
+    return str(value) if value else None
+
+
 def _add_verbosity(parser: argparse.ArgumentParser) -> None:
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
@@ -358,8 +362,8 @@ def run_download(args: argparse.Namespace) -> int:
             series_names=getattr(args, "series_filter", None),
         )
         settings = resolve_settings(
-            library=getattr(args, "library", None) or str(manifest.library),
-            old_dir=getattr(args, "old_dir", None) or str(manifest.old_dir),
+            library=getattr(args, "library", None),
+            old_dir=getattr(args, "old_dir", None),
             ffmpeg_location=getattr(args, "ffmpeg_location", None),
             cookies_from_browser=getattr(args, "cookies_from_browser", None),
             cookiefile=getattr(args, "cookies", None)
@@ -369,11 +373,14 @@ def run_download(args: argparse.Namespace) -> int:
             silent=bool(getattr(args, "silent", False)),
             verbose=bool(getattr(args, "verbose", False)),
             debug=bool(getattr(args, "debug", False)),
-            staging=getattr(args, "staging", None)
-            or (str(manifest.staging) if manifest.staging else None),
+            staging=getattr(args, "staging", None),
             force_refetch=bool(getattr(args, "force_refetch", False)),
-            use_default_config=False,
-            auto_cookies=False,
+            manifest_library=_path_or_none(manifest.library),
+            manifest_old_dir=_path_or_none(manifest.old_dir),
+            manifest_staging=_path_or_none(manifest.staging),
+            use_file_cookies=False,
+            auto_cookies=True,
+            auto_cookie_name="cookies.txt",
         )
         return run_youtube_manifest(
             manifest,
@@ -428,8 +435,8 @@ def run_dropout(args: argparse.Namespace) -> int:
             dropout_seasons=getattr(args, "season_filter", None),
         )
         settings = resolve_settings(
-            library=getattr(args, "library", None) or str(manifest.library),
-            old_dir=getattr(args, "old_dir", None) or str(manifest.old_dir),
+            library=getattr(args, "library", None),
+            old_dir=getattr(args, "old_dir", None),
             ffmpeg_location=getattr(args, "ffmpeg_location", None),
             cookies_from_browser=None
             if check
@@ -446,17 +453,16 @@ def run_dropout(args: argparse.Namespace) -> int:
             silent=bool(getattr(args, "silent", False)),
             verbose=bool(getattr(args, "verbose", False)),
             debug=bool(getattr(args, "debug", False)),
-            staging=None
-            if check
-            else (
-                getattr(args, "staging", None)
-                or (str(manifest.staging) if manifest.staging else None)
-            ),
+            staging=None if check else getattr(args, "staging", None),
             force_refetch=bool(getattr(args, "force_refetch", False)),
             sonarr_url=getattr(args, "sonarr_url", None),
             sonarr_api_key=getattr(args, "sonarr_api_key", None),
-            use_default_config=check,
-            auto_cookies=False,
+            manifest_library=_path_or_none(manifest.library),
+            manifest_old_dir=_path_or_none(manifest.old_dir),
+            manifest_staging=None if check else _path_or_none(manifest.staging),
+            use_file_cookies=False,
+            auto_cookies=not check,
+            auto_cookie_name="dropout-cookies.txt",
         )
         if check:
             from yt_dlp_emby.dropout_check import run_dropout_check

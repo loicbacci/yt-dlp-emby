@@ -3,7 +3,6 @@
   "title": "yt-dlp-emby Dropout manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["library", "old_dir"],
   "anyOf": [
     { "required": ["series"] },
     { "required": ["imports"] }
@@ -80,6 +79,7 @@
         "dropout": { "type": "integer" },
         "url": { "type": "string", "minLength": 1 },
         "to_season": { "type": "integer" },
+        "enabled": { "type": "boolean" },
         "only_episodes": {
           "type": "array",
           "minItems": 1,

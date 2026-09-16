@@ -1,7 +1,12 @@
+# yaml-language-server: $schema=../../../../schemas/youtube.schema.json
 library: /path/to/library
 old_dir: /path/to/old
+# Omit library / old_dir / staging to use [fallback] in config.toml.
 # staging: /var/tmp/yt-dlp-emby
 # cookies: cookies.txt
+# Child files (series: only) use schemas/youtube-series.schema.json
+# imports:
+#   - shows/example-channel.yaml
 
 series:
   - name: Example Channel

@@ -3,11 +3,13 @@ import {
   ApiError,
   type DropoutAction,
   type ManifestImport,
+  type ManifestPaths,
   type Run,
   type Source,
   apiClient,
   confirmDirtyStart,
   confirmDirtySwitch,
+  pathNotices,
   runKeyFor,
 } from "../api";
 import { go } from "../nav";
@@ -53,6 +55,7 @@ export function Dashboard() {
   const [runError, setRunError] = useState<string | null>(null);
   const [run, setRun] = useState<Run>(idleRun);
   const [runKey, setRunKey] = useState("idle");
+  const [paths, setPaths] = useState<ManifestPaths | null>(null);
 
   const active = tabs[activePath] ?? tabs[ROOT];
   const text = active?.text ?? "";
@@ -66,7 +69,7 @@ export function Dashboard() {
 
   const loadManifest = async (kind: Source) => {
     const manifest = await apiClient.getManifest(kind);
-    const imports: ManifestImport[] = kind === "dropout" ? (manifest.imports ?? []) : [];
+    const imports: ManifestImport[] = manifest.imports ?? [];
     const nextTabs: Record<string, TabState> = {
       [ROOT]: {
         text: manifest.text,
@@ -86,6 +89,7 @@ export function Dashboard() {
     setActivePath(ROOT);
     setLoadedSource(kind);
     setManifestError(null);
+    setPaths(manifest.paths ?? null);
   };
 
   const refreshRun = async () => {
@@ -113,8 +117,11 @@ export function Dashboard() {
     const timer = window.setTimeout(() => {
       apiClient
         .validateManifest(source, text)
-        .then(() => {
-          if (!cancelled) setManifestError(null);
+        .then((result) => {
+          if (!cancelled) {
+            setManifestError(null);
+            if (result.paths) setPaths(result.paths);
+          }
         })
         .catch((err) => {
           if (cancelled) return;
@@ -166,8 +173,7 @@ export function Dashboard() {
     try {
       if (activePath === ROOT) {
         const manifest = await apiClient.putManifest(source, text);
-        const imports: ManifestImport[] =
-          source === "dropout" ? (manifest.imports ?? []) : [];
+        const imports: ManifestImport[] = manifest.imports ?? [];
         setTabs((current) => {
           const next: Record<string, TabState> = {
             ...current,
@@ -187,8 +193,9 @@ export function Dashboard() {
           return next;
         });
         setImportPaths(imports.map((item) => item.path));
+        setPaths(manifest.paths ?? null);
       } else {
-        const saved = await apiClient.putDropoutImport(activePath, text);
+        const saved = await apiClient.putImport(source, activePath, text);
         setTabs((current) => ({
           ...current,
           [activePath]: {
@@ -240,8 +247,15 @@ export function Dashboard() {
   };
 
   const logout = async () => {
+    if (anyDirty && !confirmDirtySwitch()) return;
     await apiClient.logout();
     go("/login");
+  };
+
+  const navigate = (url: string) => {
+    if (url === "/") return;
+    if (anyDirty && !confirmDirtySwitch()) return;
+    go(url);
   };
 
   const editorTabs =
@@ -254,7 +268,12 @@ export function Dashboard() {
 
   return (
     <div class="dashboard-shell">
-      <Header run={run} onLogout={logout} />
+      <Header
+        run={run}
+        current="dashboard"
+        onLogout={logout}
+        onNavigate={navigate}
+      />
       <div class="dashboard-left">
         <RunControls
           source={source}
@@ -279,6 +298,7 @@ export function Dashboard() {
           savedText={savedText}
           exists={active?.exists ?? false}
           error={manifestError}
+          notices={activePath === ROOT ? pathNotices(paths) : []}
           tabs={editorTabs}
           activePath={activePath}
           onTabChange={changeTab}

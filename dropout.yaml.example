@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=schemas/dropout.schema.json
 library: /path/to/dropout-library
 old_dir: /path/to/old
+# Omit library / old_dir / staging to use [fallback] in config.toml.
 # staging: /var/tmp/yt-dlp-emby
 cookies: dropout-cookies.txt
 imports:

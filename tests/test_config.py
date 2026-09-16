@@ -269,6 +269,26 @@ def test_cookiefile_from_cwd_cookies_txt(tmp_path: Path) -> None:
     assert settings.cookiefile == cookies
 
 
+def test_cookiefile_from_cwd_auto_cookie_name(tmp_path: Path) -> None:
+    youtube = tmp_path / "cookies.txt"
+    youtube.write_text(
+        "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n"
+    )
+    dropout = tmp_path / "dropout-cookies.txt"
+    dropout.write_text(
+        "# Netscape HTTP Cookie File\n.watch.dropout.tv\tTRUE\t/\tTRUE\t0\t_session\tabc\n"
+    )
+    settings = resolve_settings(
+        library="/lib",
+        old_dir="/old",
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+        auto_cookie_name="dropout-cookies.txt",
+    )
+    assert settings.cookiefile == dropout
+
+
 def test_empty_cookiefile_raises(tmp_path: Path) -> None:
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n")
@@ -325,3 +345,143 @@ def test_sonarr_url_from_cli_env_config(tmp_path: Path) -> None:
     )
     assert from_cli.sonarr_url == "http://from-cli:8989"
     assert from_cli.sonarr_api_key == "cli-key"
+
+
+def test_fallback_table_used_when_manifest_omits_paths(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[fallback]\nlibrary = "/from/fallback/lib"\nold_dir = "/from/fallback/old"\n'
+        'staging = "/from/fallback/staging"\n',
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert settings.library == Path("/from/fallback/lib")
+    assert settings.old_dir == Path("/from/fallback/old")
+    assert settings.staging == Path("/from/fallback/staging")
+
+
+def test_fallback_table_wins_over_legacy_top_level(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'library = "/legacy/lib"\nold_dir = "/legacy/old"\n'
+        '[fallback]\nlibrary = "/fallback/lib"\nold_dir = "/fallback/old"\n',
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert settings.library == Path("/fallback/lib")
+    assert settings.old_dir == Path("/fallback/old")
+
+
+def test_manifest_paths_win_over_fallback_file(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[fallback]\nlibrary = "/from/fallback/lib"\nold_dir = "/from/fallback/old"\n',
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        ffmpeg_location="/usr/bin/ffmpeg",
+        manifest_library="/from/yaml/lib",
+        manifest_old_dir="/from/yaml/old",
+        environ={},
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert settings.library == Path("/from/yaml/lib")
+    assert settings.old_dir == Path("/from/yaml/old")
+
+
+def test_env_wins_over_manifest_and_fallback(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[fallback]\nlibrary = "/from/fallback/lib"\nold_dir = "/from/fallback/old"\n',
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        ffmpeg_location="/usr/bin/ffmpeg",
+        manifest_library="/from/yaml/lib",
+        manifest_old_dir="/from/yaml/old",
+        environ={
+            "YT_DLP_EMBY_LIBRARY": "/from/env/lib",
+            "YT_DLP_EMBY_OLD_DIR": "/from/env/old",
+        },
+        cwd=tmp_path,
+        auto_cookies=False,
+    )
+    assert settings.library == Path("/from/env/lib")
+    assert settings.old_dir == Path("/from/env/old")
+
+
+def test_manifest_does_not_use_config_cookies(tmp_path: Path) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[fallback]\nlibrary = "/lib"\nold_dir = "/old"\n'
+        f'cookies = "{cookies}"\n',
+        encoding="utf-8",
+    )
+    settings = resolve_settings(
+        ffmpeg_location="/usr/bin/ffmpeg",
+        environ={},
+        cwd=tmp_path,
+        use_file_cookies=False,
+        auto_cookies=False,
+    )
+    assert settings.cookiefile is None
+
+
+def test_write_config_uses_fallback_table_and_preserves_cookies(tmp_path: Path) -> None:
+    from yt_dlp_emby.config import load_config_values, write_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('cookies = "keep-me.txt"\nlibrary = "/old"\n', encoding="utf-8")
+    write_config(
+        path,
+        {
+            "library": "/new/lib",
+            "old_dir": "/new/old",
+            "staging": None,
+            "bench_dest": None,
+            "sonarr_url": "http://sonarr:8989",
+            "sonarr_api_key": "secret",
+        },
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "[fallback]" in text
+    assert "library = " in text
+    assert 'sonarr_api_key = "secret"' in text
+    assert "keep-me.txt" in text
+    assert 'library = "/old"' not in text.split("[fallback]")[0]
+    values = load_config_values(path)
+    assert values["library"] == "/new/lib"
+    assert values["cookies"] == "keep-me.txt"
+
+
+def test_inspect_config_marks_env_source(tmp_path: Path) -> None:
+    from yt_dlp_emby.config import inspect_config
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[fallback]\nlibrary = "/from/file/lib"\nold_dir = "/from/file/old"\n',
+        encoding="utf-8",
+    )
+    _path, exists, fields = inspect_config(
+        environ={"YT_DLP_EMBY_LIBRARY": "/from/env/lib"},
+        cwd=tmp_path,
+    )
+    assert exists is True
+    assert fields["library"].source == "env"
+    assert fields["library"].env_name == "YT_DLP_EMBY_LIBRARY"
+    assert fields["library"].file == "/from/file/lib"
+    assert fields["library"].effective == "/from/env/lib"
+    assert fields["old_dir"].source == "file"

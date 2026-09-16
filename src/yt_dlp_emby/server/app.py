@@ -9,21 +9,52 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
 
+import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from yt_dlp_emby.config import ConfigError
+from yt_dlp_emby.config import (
+    ConfigError,
+    config_target_path,
+    inspect_config_payload,
+    write_config,
+)
+from yt_dlp_emby.cookies import (
+    DEFAULT_COOKIE_FILES,
+    confined_cookie_path,
+    inspect_cookie_jars,
+    write_cookie_jar,
+)
 from yt_dlp_emby.server.auth import AuthState, load_auth, setup_password, verify_password
 from yt_dlp_emby.server.manifests import (
     ALLOWED,
+    paths_from_text,
     read_manifest,
     validate_manifest_text,
-    write_dropout_import,
+    write_import,
     write_manifest,
 )
 from yt_dlp_emby.server.runner import CommandFactory, RunManager
+from yt_dlp_emby.server.series import (
+    add_series_source,
+    create_series,
+    delete_series,
+    delete_series_source,
+    get_series,
+    list_series,
+    list_series_episodes,
+    patch_platform_cookies_field,
+    platform_payload,
+    put_platform,
+    put_series,
+    refresh_series_source,
+)
+from yt_dlp_emby.library import titles_match
+from yt_dlp_emby.dropout_check import titles_related
+from yt_dlp_emby.sonarr import fetch_episodes_cached
+from yt_dlp_emby.config import load_config_values, config_target_path
 
 LOG_POLL_SECONDS = 0.2
 LOG_PING_SECONDS = 15.0
@@ -55,6 +86,50 @@ class ImportManifestBody(BaseModel):
     text: str
 
 
+class CookieBody(BaseModel):
+    text: str
+
+
+class ConfigBody(BaseModel):
+    library: str | None = None
+    old_dir: str | None = None
+    staging: str | None = None
+    bench_dest: str | None = None
+    shows_dir: str | None = None
+    sonarr_url: str | None = None
+    sonarr_api_key: str | None = None
+
+
+class PlatformBody(BaseModel):
+    library: str | None = None
+    old_dir: str | None = None
+    cookies: str | None = None
+
+
+class CreateSeriesBody(BaseModel):
+    name: str
+    platform: str
+    path: str
+    tvdb_id: int | None = None
+
+
+class SeriesPutBody(BaseModel):
+    name: str
+    path: str
+    tvdb_id: int | None = None
+    tvdb_skip: list[dict[str, Any]] | None = None
+    sources: list[dict[str, Any]]
+
+
+class AddSourceBody(BaseModel):
+    url: str
+
+
+class SonarrSuggestBody(BaseModel):
+    tvdb_id: int
+    title: str
+
+
 def resolve_data_dir(data_dir: Path | None, environ: Mapping[str, str]) -> Path:
     if data_dir is not None:
         return data_dir
@@ -75,6 +150,13 @@ def _static_dir(environ: Mapping[str, str]) -> Path | None:
 
 def _https_only(environ: Mapping[str, str]) -> bool:
     return environ.get("YT_DLP_EMBY_HTTPS", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _series_value_status(exc: BaseException) -> int:
+    msg = str(exc)
+    if "already exists" in msg or "ambiguous" in msg:
+        return 409
+    return 400
 
 
 def create_app(
@@ -103,6 +185,7 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
     app.state.data_dir = resolved_data
+    app.state.environ = environ
     app.state.auth = initial_auth
     app.state.runner = runner
     app.add_middleware(
@@ -146,6 +229,22 @@ def create_app(
                     "setup_required": payload["setup_required"],
                 },
             )
+
+    def manifest_json(payload: Any, request: Request) -> dict[str, Any]:
+        return {
+            "kind": payload.kind,
+            "text": payload.text,
+            "exists": payload.exists,
+            "imports": [
+                {"path": item.path, "text": item.text, "exists": item.exists}
+                for item in payload.imports
+            ],
+            "paths": paths_from_text(
+                payload.text,
+                request.app.state.data_dir,
+                request.app.state.environ,
+            ),
+        }
 
     @app.get("/api/health")
     async def health() -> dict[str, bool]:
@@ -193,15 +292,7 @@ def create_app(
         if kind not in ALLOWED:
             raise HTTPException(status_code=404, detail={"error": "not found"})
         payload = read_manifest(request.app.state.data_dir, kind)
-        return {
-            "kind": payload.kind,
-            "text": payload.text,
-            "exists": payload.exists,
-            "imports": [
-                {"path": item.path, "text": item.text, "exists": item.exists}
-                for item in payload.imports
-            ],
-        }
+        return manifest_json(payload, request)
 
     @app.put("/api/manifests/{kind}")
     async def put_manifest(kind: str, body: ManifestBody, request: Request) -> JSONResponse:
@@ -214,23 +305,19 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return JSONResponse(
-            {
-                "kind": payload.kind,
-                "text": payload.text,
-                "exists": payload.exists,
-                "imports": [
-                    {"path": item.path, "text": item.text, "exists": item.exists}
-                    for item in payload.imports
-                ],
-            }
-        )
+        return JSONResponse(manifest_json(payload, request))
 
-    @app.put("/api/manifests/dropout/imports")
-    async def put_dropout_import(body: ImportManifestBody, request: Request) -> JSONResponse:
+    @app.put("/api/manifests/{kind}/imports")
+    async def put_manifest_import(
+        kind: str, body: ImportManifestBody, request: Request
+    ) -> JSONResponse:
         require_auth(request)
+        if kind not in ALLOWED:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
         try:
-            payload = write_dropout_import(request.app.state.data_dir, body.path, body.text)
+            payload = write_import(
+                request.app.state.data_dir, kind, body.path, body.text
+            )
         except ConfigError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         except ValueError as exc:
@@ -240,7 +327,7 @@ def create_app(
         )
 
     @app.post("/api/manifests/{kind}/validate")
-    async def validate_manifest(kind: str, body: ManifestBody, request: Request) -> dict[str, bool]:
+    async def validate_manifest(kind: str, body: ManifestBody, request: Request) -> dict[str, Any]:
         require_auth(request)
         if kind not in ALLOWED:
             raise HTTPException(status_code=404, detail={"error": "not found"})
@@ -250,7 +337,378 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return {"ok": True}
+        return {
+            "ok": True,
+            "paths": paths_from_text(
+                body.text,
+                request.app.state.data_dir,
+                request.app.state.environ,
+            ),
+        }
+
+    @app.get("/api/config")
+    async def get_config(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        return inspect_config_payload(
+            environ=request.app.state.environ,
+            cwd=request.app.state.data_dir,
+        )
+
+    @app.put("/api/config")
+    async def put_config(body: ConfigBody, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        values = {
+            "library": (body.library or "").strip() or None,
+            "old_dir": (body.old_dir or "").strip() or None,
+            "staging": (body.staging or "").strip() or None,
+            "bench_dest": (body.bench_dest or "").strip() or None,
+            "shows_dir": (body.shows_dir or "").strip() or None,
+            "sonarr_url": (body.sonarr_url or "").strip() or None,
+            "sonarr_api_key": (body.sonarr_api_key or "").strip() or None,
+        }
+        url = values["sonarr_url"]
+        if url and not url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "sonarr_url must start with http:// or https://"},
+            )
+        path = config_target_path(
+            None, request.app.state.environ, request.app.state.data_dir
+        )
+        try:
+            await asyncio.to_thread(write_config, path, values)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return inspect_config_payload(
+            environ=request.app.state.environ,
+            cwd=request.app.state.data_dir,
+        )
+
+    @app.get("/api/cookies")
+    async def get_cookies(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        return inspect_cookie_jars(
+            request.app.state.data_dir, request.app.state.environ
+        )
+
+    @app.put("/api/cookies/{kind}")
+    async def put_cookies(kind: str, body: CookieBody, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        if kind not in DEFAULT_COOKIE_FILES:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        try:
+            field = None
+            from yt_dlp_emby.server.manifests import _manifest_path
+
+            root = _manifest_path(request.app.state.data_dir, kind)
+            if root.is_file():
+                loaded = yaml.safe_load(root.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    field = loaded.get("cookies")
+            written = await asyncio.to_thread(
+                write_cookie_jar,
+                request.app.state.data_dir,
+                kind,
+                body.text,
+                filename=str(field) if field else None,
+            )
+            if confined_cookie_path(request.app.state.data_dir, str(field) if field else None) is None:
+                if root.is_file():
+                    await asyncio.to_thread(
+                        patch_platform_cookies_field,
+                        request.app.state.data_dir,
+                        kind,
+                        written.name,
+                    )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return inspect_cookie_jars(
+            request.app.state.data_dir, request.app.state.environ
+        )
+
+    @app.get("/api/platform/{kind}")
+    async def get_platform(kind: str, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        if kind not in ALLOWED:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        return platform_payload(
+            request.app.state.data_dir, kind, request.app.state.environ
+        )
+
+    @app.put("/api/platform/{kind}")
+    async def put_platform_route(
+        kind: str, body: PlatformBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        if kind not in ALLOWED:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        try:
+            return await asyncio.to_thread(
+                put_platform,
+                request.app.state.data_dir,
+                kind,
+                {
+                    "library": body.library,
+                    "old_dir": body.old_dir,
+                    "cookies": body.cookies,
+                },
+                environ=request.app.state.environ,
+            )
+        except (ConfigError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @app.get("/api/series")
+    async def get_series_list(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        return await asyncio.to_thread(list_series, request.app.state.data_dir)
+
+    @app.post("/api/series")
+    async def post_series(body: CreateSeriesBody, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                create_series,
+                request.app.state.data_dir,
+                request.app.state.environ,
+                name=body.name,
+                platform=body.platform,
+                path=body.path,
+                tvdb_id=body.tvdb_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.get("/api/series/{platform}/{slug}")
+    async def get_series_detail(
+        platform: str, slug: str, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                get_series, request.app.state.data_dir, platform, slug
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.put("/api/series/{platform}/{slug}")
+    async def put_series_detail(
+        platform: str, slug: str, body: SeriesPutBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            payload = body.model_dump()
+            return await asyncio.to_thread(
+                put_series, request.app.state.data_dir, platform, slug, payload
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    def _reject_if_run_active(request: Request) -> None:
+        runner = get_runner(request)
+        if runner.snapshot().get("status") in {"running", "stopping"}:
+            raise HTTPException(
+                status_code=409, detail={"error": "a run is in progress"}
+            )
+
+    @app.delete("/api/series/{platform}/{slug}")
+    async def delete_series_route(
+        platform: str, slug: str, request: Request
+    ) -> Response:
+        require_auth(request)
+        try:
+            await asyncio.to_thread(
+                delete_series, request.app.state.data_dir, platform, slug
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+        return Response(status_code=204)
+
+    @app.post("/api/series/{platform}/{slug}/sources")
+    async def post_series_source(
+        platform: str, slug: str, body: AddSourceBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        _reject_if_run_active(request)
+        try:
+            return await asyncio.to_thread(
+                add_series_source,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                body.url,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.delete("/api/series/{platform}/{slug}/sources/{source_id}")
+    async def delete_series_source_route(
+        platform: str, slug: str, source_id: int, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                delete_series_source,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                source_id,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.post("/api/series/{platform}/{slug}/sources/{source_id}/refresh")
+    async def refresh_series_source_route(
+        platform: str, slug: str, source_id: int, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        _reject_if_run_active(request)
+        try:
+            return await asyncio.to_thread(
+                refresh_series_source,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                source_id,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.get(
+        "/api/series/{platform}/{slug}/sources/{source_id}/seasons/{season_id}/episodes"
+    )
+    async def get_series_episodes(
+        platform: str,
+        slug: str,
+        source_id: int,
+        season_id: int,
+        request: Request,
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                list_series_episodes,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                source_id,
+                season_id,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.get("/api/sonarr/episodes")
+    async def get_sonarr_episodes(request: Request, tvdb_id: int) -> dict[str, Any]:
+        require_auth(request)
+        cfg_path = config_target_path(
+            None, request.app.state.environ, request.app.state.data_dir
+        )
+        cfg = load_config_values(cfg_path) if cfg_path.is_file() else {}
+        url = cfg.get("sonarr_url") or ""
+        key = cfg.get("sonarr_api_key") or ""
+        if not url or not key:
+            raise HTTPException(
+                status_code=400, detail={"error": "Sonarr is not configured"}
+            )
+        try:
+            title, episodes = await asyncio.to_thread(
+                fetch_episodes_cached,
+                tvdb_id,
+                base_url=url,
+                api_key=key,
+                cache_path=request.app.state.data_dir / "cache" / "sonarr.json",
+            )
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        return {
+            "title": title,
+            "episodes": [
+                {
+                    "season": ep.season,
+                    "episode": ep.episode,
+                    "title": ep.title,
+                    "air_date": ep.air_date,
+                }
+                for ep in episodes
+            ],
+        }
+
+    @app.post("/api/sonarr/suggest")
+    async def post_sonarr_suggest(
+        body: SonarrSuggestBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        cfg_path = config_target_path(
+            None, request.app.state.environ, request.app.state.data_dir
+        )
+        cfg = load_config_values(cfg_path) if cfg_path.is_file() else {}
+        url = cfg.get("sonarr_url") or ""
+        key = cfg.get("sonarr_api_key") or ""
+        if not url or not key:
+            raise HTTPException(
+                status_code=400, detail={"error": "Sonarr is not configured"}
+            )
+        try:
+            _title, episodes = await asyncio.to_thread(
+                fetch_episodes_cached,
+                body.tvdb_id,
+                base_url=url,
+                api_key=key,
+                cache_path=request.app.state.data_dir / "cache" / "sonarr.json",
+            )
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        suggestions = [
+            {
+                "season": ep.season,
+                "episode": ep.episode,
+                "title": ep.title,
+                "air_date": ep.air_date,
+            }
+            for ep in episodes
+            if titles_match(ep.title, body.title) or titles_related(ep.title, body.title)
+        ]
+        return {"suggestions": suggestions[:20]}
 
     @app.get("/api/runs")
     async def get_runs(request: Request) -> dict[str, Any]:

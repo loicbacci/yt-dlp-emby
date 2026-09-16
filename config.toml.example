@@ -1,10 +1,15 @@
-library = "/path/to/library"
-old_dir = "/path/to/old"
-# Optional local disk for in-progress downloads (recommended when the library is on SMB/NFS).
-# If unset, the system temp directory is used.
 # cookies = "cookies.txt"
 # Destination for `yt-dlp-emby bench` (defaults to library).
 # bench_dest = "/path/to/old"
 # Sonarr (used by `yt-dlp-emby dropout check`). Do not put the API key in dropout.yaml.
 # sonarr_url = "http://localhost:8989"
 # sonarr_api_key = "your-sonarr-api-key"
+
+# Path fallbacks: used when youtube.yaml / dropout.yaml omit the matching key.
+# YT_DLP_EMBY_* environment variables override both the manifest and this table.
+[fallback]
+library = "/path/to/library"
+old_dir = "/path/to/old"
+# Optional local disk for in-progress downloads (recommended when the library is on SMB/NFS).
+# If unset, the system temp directory is used.
+# staging = "/path/to/local/tmp"

@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "yt-dlp-emby YouTube manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "anyOf": [
+    { "required": ["series"] },
+    { "required": ["imports"] }
+  ],
+  "properties": {
+    "library": { "type": "string", "minLength": 1 },
+    "old_dir": { "type": "string", "minLength": 1 },
+    "cookies": { "type": "string", "minLength": 1 },
+    "staging": { "type": "string", "minLength": 1 },
+    "imports": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "series": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/seriesItem" }
+    }
+  },
+  "definitions": {
+    "seriesItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "tvdb_id": { "type": "integer", "minimum": 1 },
+        "playlists": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/playlist" }
+        }
+      }
+    },
+    "playlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "season": { "type": "integer", "minimum": 1 },
+        "enabled": { "type": "boolean" },
+        "skip": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

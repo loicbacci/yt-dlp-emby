@@ -100,3 +100,20 @@ def test_filter_youtube_manifest_none_matched(tmp_path: Path) -> None:
     manifest = load_youtube_manifest(_write_manifest(tmp_path))
     with pytest.raises(ConfigError, match="No series matched"):
         filter_youtube_manifest(manifest, series_names=["nope"])
+
+
+def test_youtube_manifest_allows_omitted_paths(tmp_path: Path) -> None:
+    path = tmp_path / "youtube.yaml"
+    path.write_text(
+        """
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://www.youtube.com/playlist?list=PLaaaa
+""",
+        encoding="utf-8",
+    )
+    manifest = load_youtube_manifest(path)
+    assert manifest.library is None
+    assert manifest.old_dir is None
+    assert manifest.staging is None
