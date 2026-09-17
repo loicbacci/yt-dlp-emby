@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useMemo, useState } from "preact/hooks";
+import { useQuery } from "@tanstack/preact-query";
+import { ApiError, apiClient, type SeriesDetail } from "../../api";
+import { queryKeys } from "../../queryKeys";
 import {
-  ApiError,
-  apiClient,
-  type SeriesDetail,
-  type SonarrEpisode,
-} from "../../api";
-import { seasonHeading } from "../../seriesView";
+  formatMapsTo,
+  removeTvdbSkip,
+  skippedTvdbRows,
+} from "../../seriesView";
 
 export function TvdbSkipPanel({
   detail,
@@ -14,80 +15,72 @@ export function TvdbSkipPanel({
   detail: SeriesDetail;
   onChange: (blocks: { season: number; episodes: number[] }[]) => void;
 }) {
-  const [episodes, setEpisodes] = useState<SonarrEpisode[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [manualSeason, setManualSeason] = useState("");
   const [manualEpisode, setManualEpisode] = useState("");
-  const [open, setOpen] = useState<Record<number, boolean>>({ 0: true });
+  const [picked, setPicked] = useState("");
+  const sonarrQuery = useQuery({
+    queryKey: queryKeys.sonarrEpisodes(detail.tvdb_id ?? 0),
+    queryFn: () => apiClient.getSonarrEpisodes(detail.tvdb_id as number),
+    enabled: detail.tvdb_id != null,
+    staleTime: 30 * 60 * 1000,
+  });
+  const episodes = sonarrQuery.data?.episodes ?? null;
+  const error =
+    sonarrQuery.error instanceof ApiError
+      ? sonarrQuery.error.message
+      : sonarrQuery.error instanceof Error
+        ? sonarrQuery.error.message
+        : null;
 
-  useEffect(() => {
-    if (detail.tvdb_id == null) {
-      setEpisodes(null);
-      setError(null);
-      return;
-    }
-    apiClient
-      .getSonarrEpisodes(detail.tvdb_id)
-      .then((body) => {
-        setEpisodes(body.episodes);
-        setError(null);
-      })
-      .catch((err) => {
-        setEpisodes([]);
-        setError(err instanceof ApiError ? err.message : "Sonarr request failed");
-      });
-  }, [detail.tvdb_id]);
+  const skipped = useMemo(
+    () => skippedTvdbRows(detail.tvdb_skip, episodes ?? []),
+    [detail.tvdb_skip, episodes],
+  );
 
-  const skipped = useMemo(() => {
-    const set = new Set<string>();
-    for (const block of detail.tvdb_skip) {
-      for (const ep of block.episodes) set.add(`${block.season}-${ep}`);
-    }
-    return set;
-  }, [detail.tvdb_skip]);
+  const available = useMemo(() => {
+    const hidden = new Set(
+      skipped.map((row) => `${row.season}-${row.episode}`),
+    );
+    return (episodes ?? []).filter(
+      (ep) => !hidden.has(`${ep.season}-${ep.episode}`),
+    );
+  }, [episodes, skipped]);
 
-  const grouped = useMemo(() => {
-    const map = new Map<number, { episode: number; title?: string }[]>();
-    for (const ep of episodes ?? []) {
-      const list = map.get(ep.season) ?? [];
-      list.push({ episode: ep.episode, title: ep.title });
-      map.set(ep.season, list);
-    }
-    for (const block of detail.tvdb_skip) {
-      const list = map.get(block.season) ?? [];
-      for (const ep of block.episodes) {
-        if (!list.some((item) => item.episode === ep)) {
-          list.push({ episode: ep });
-        }
-      }
-      map.set(block.season, list);
-    }
-    return [...map.entries()].sort((a, b) => a[0] - b[0]);
-  }, [episodes, detail.tvdb_skip]);
-
-  const toggle = (season: number, episode: number) => {
-    const next = detail.tvdb_skip.map((b) => ({
-      ...b,
-      episodes: [...b.episodes],
+  const add = (season: number, episode: number) => {
+    const next = detail.tvdb_skip.map((block) => ({
+      ...block,
+      episodes: [...block.episodes],
     }));
-    const block = next.find((b) => b.season === season);
+    const block = next.find((item) => item.season === season);
     if (block) {
-      const idx = block.episodes.indexOf(episode);
-      if (idx >= 0) block.episodes.splice(idx, 1);
-      else block.episodes.push(episode);
-      block.episodes.sort((a, b) => a - b);
+      if (!block.episodes.includes(episode)) {
+        block.episodes.push(episode);
+        block.episodes.sort((a, b) => a - b);
+      }
     } else {
       next.push({ season, episodes: [episode] });
     }
-    onChange(next.filter((b) => b.episodes.length));
+    onChange(next);
   };
 
   const addManual = () => {
     const season = Number.parseInt(manualSeason, 10);
     const episode = Number.parseInt(manualEpisode, 10);
     if (!Number.isFinite(season) || !Number.isFinite(episode)) return;
-    toggle(season, episode);
+    add(season, episode);
     setManualEpisode("");
+    setAdding(false);
+  };
+
+  const addPicked = () => {
+    const [seasonRaw, episodeRaw] = picked.split("-");
+    const season = Number.parseInt(seasonRaw, 10);
+    const episode = Number.parseInt(episodeRaw, 10);
+    if (!Number.isFinite(season) || !Number.isFinite(episode)) return;
+    add(season, episode);
+    setPicked("");
+    setAdding(false);
   };
 
   return (
@@ -98,67 +91,103 @@ export function TvdbSkipPanel({
       </p>
       {detail.tvdb_id == null && (
         <p class="settings-hint">
-          Set a TVDB id to load Sonarr episodes, or add rows below.
+          Set a TVDB id to look up episode titles, or add rows below.
         </p>
       )}
       {error && <div class="validation-error">{error}</div>}
-      {grouped.map(([season, rows]) => (
-        <div key={season} class="accordion">
-          <button
-            type="button"
-            class="accordion-head"
-            aria-expanded={Boolean(open[season])}
-            onClick={() =>
-              setOpen((current) => ({ ...current, [season]: !current[season] }))
-            }
-          >
-            <span>{open[season] ? "▾" : "▸"}</span>
-            <span>
-              {season === 0 ? "Specials (S00)" : seasonHeading(season)}
-            </span>
-          </button>
-          {open[season] && (
-            <div class="accordion-body">
-              {rows
-                .sort((a, b) => a.episode - b.episode)
-                .map((row) => (
-                  <label key={row.episode} class="settings-field">
-                    <input
-                      type="checkbox"
-                      checked={skipped.has(`${season}-${row.episode}`)}
-                      onChange={() => toggle(season, row.episode)}
-                    />{" "}
-                    E{row.episode}
-                    {row.title ? ` ${row.title}` : ""}
-                  </label>
+      {skipped.length === 0 ? (
+        <p class="settings-hint">No exceptions yet.</p>
+      ) : (
+        <ul class="skip-list">
+          {skipped.map((row) => (
+            <li key={`${row.season}-${row.episode}`} class="skip-list-row">
+              <span>
+                {formatMapsTo(row.season, row.episode)}
+                {row.title ? ` ${row.title}` : ""}
+              </span>
+              <button
+                type="button"
+                class="btn-ghost"
+                onClick={() =>
+                  onChange(removeTvdbSkip(detail.tvdb_skip, row.season, row.episode))
+                }
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!adding ? (
+        <button
+          type="button"
+          class="btn-secondary"
+          onClick={() => setAdding(true)}
+        >
+          Add exception
+        </button>
+      ) : (
+        <div class="skip-add">
+          {available.length > 0 && (
+            <div class="series-toolbar">
+              <select
+                value={picked}
+                onChange={(e) =>
+                  setPicked((e.currentTarget as HTMLSelectElement).value)
+                }
+              >
+                <option value="">Choose a Sonarr episode…</option>
+                {available.map((ep) => (
+                  <option
+                    key={`${ep.season}-${ep.episode}`}
+                    value={`${ep.season}-${ep.episode}`}
+                  >
+                    {formatMapsTo(ep.season, ep.episode)} {ep.title}
+                  </option>
                 ))}
+              </select>
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={!picked}
+                onClick={addPicked}
+              >
+                Add
+              </button>
             </div>
           )}
+          <div class="series-toolbar">
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Season"
+              value={manualSeason}
+              onInput={(e) =>
+                setManualSeason((e.currentTarget as HTMLInputElement).value)
+              }
+            />
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Episode"
+              value={manualEpisode}
+              onInput={(e) =>
+                setManualEpisode((e.currentTarget as HTMLInputElement).value)
+              }
+            />
+            <button type="button" class="btn-ghost" onClick={addManual}>
+              Add
+            </button>
+            <button
+              type="button"
+              class="btn-ghost"
+              onClick={() => setAdding(false)}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
-      ))}
-      <div class="series-toolbar">
-        <input
-          type="text"
-          inputMode="numeric"
-          placeholder="Season"
-          value={manualSeason}
-          onInput={(e) =>
-            setManualSeason((e.currentTarget as HTMLInputElement).value)
-          }
-        />
-        <input
-          type="text"
-          inputMode="numeric"
-          placeholder="Episode"
-          value={manualEpisode}
-          onInput={(e) =>
-            setManualEpisode((e.currentTarget as HTMLInputElement).value)
-          }
-        />
-        <button type="button" class="btn-ghost" onClick={addManual}>
-          Add
-        </button>
-      </div>
+      )}
     </div>
   );
 }

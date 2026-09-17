@@ -506,12 +506,51 @@ textarea {
   min-height: 12rem;
 }
 
+.log-card--compact {
+  min-height: 0;
+  margin-bottom: 0;
+}
+
 .log-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.log-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.log-autoscroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.log-autoscroll input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.log-trim-hint {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.btn-compact {
+  min-height: 2rem;
+  padding: 0 10px;
+  font-size: 13px;
 }
 
 .log-indicator {
@@ -546,6 +585,12 @@ textarea {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.log-pre--compact {
+  flex: none;
+  max-height: 9.5rem;
+  min-height: 4.5rem;
 }
 
 .log-pre .ansi-bold {
@@ -828,8 +873,10 @@ textarea {
 }
 
 .series-shell {
-  padding: var(--pad);
-  padding-top: calc(var(--header-h) + var(--pad));
+  padding: max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
 }
 
 .series-card {
@@ -993,19 +1040,20 @@ textarea {
 
 .episode-table {
   width: 100%;
-  font-size: 13px;
+  font-size: 12px;
   border-collapse: collapse;
+  line-height: 1.25;
 }
 
 .episode-table th {
   color: var(--text-muted);
   font-weight: 600;
-  padding: 8px 6px;
+  padding: 4px 6px;
   text-align: left;
 }
 
 .episode-table td {
-  padding: 8px 6px;
+  padding: 2px 6px;
   border-top: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -1014,9 +1062,126 @@ textarea {
   white-space: nowrap;
 }
 
+.episode-table .btn-ghost {
+  min-height: 22px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 1;
+}
+
 .episode-table tr.is-skipped td {
   color: var(--text-muted);
   text-decoration: line-through;
+}
+
+.season-has-missing {
+  color: var(--warn);
+}
+
+.season-missing-count {
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.episode-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  padding: 12px 6px;
+}
+
+.skeleton {
+  display: inline-block;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--text-muted) 28%, var(--bg-inset));
+  border-radius: 4px;
+  animation: skeleton-pulse 1.1s ease-in-out infinite;
+}
+
+.season-missing-skeleton {
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.episode-table-skeleton {
+  padding: 4px 0 8px;
+}
+
+.episode-skeleton-row {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr 4.5rem 5rem;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.episode-status {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.episode-status.is-downloaded {
+  color: var(--ok);
+}
+
+.episode-status.is-missing {
+  color: var(--warn);
+}
+
+.episode-status.is-unmapped,
+.episode-status.is-skipped {
+  color: var(--text-muted);
+}
+
+.skip-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.skip-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.skip-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .maps-to {
@@ -1099,14 +1264,19 @@ textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--pad);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: start;
 }
 
 .run-hero h1 {
   margin: 0;
   font-size: 1.25rem;
+}
+
+.run-hero-copy {
+  min-width: 0;
 }
 
 .run-hero-sub {
@@ -1115,8 +1285,14 @@ textarea {
   font-size: 14px;
 }
 
+.run-hero-stop {
+  width: auto;
+  justify-self: end;
+}
+
 .run-hero-bar {
-  height: 6px;
+  grid-column: 1 / -1;
+  height: 8px;
   background: var(--bg-inset);
   border-radius: 999px;
   overflow: hidden;
@@ -1124,7 +1300,23 @@ textarea {
 
 .run-hero-fill {
   height: 100%;
+  width: 0;
   background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.run-hero-bar.is-indeterminate .run-hero-fill {
+  width: 32%;
+  animation: run-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes run-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
 }
 
 .run-tree {
@@ -1153,6 +1345,31 @@ textarea {
 
 .run-series-body {
   padding-left: 8px;
+}
+
+.run-upcoming {
+  margin: 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+
+.run-upcoming-summary {
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.run-upcoming[open] .run-upcoming-summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.run-upcoming .run-row-season {
+  margin-left: 0;
+  border-left: 0;
+  padding-left: 4px;
 }
 
 .run-twist {
@@ -1206,6 +1423,14 @@ textarea {
 
 .run-row-ep.is-now {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.run-row-ep.is-done {
+  opacity: 0.55;
+}
+
+.run-row-ep.is-failed .run-ep-title {
+  color: var(--danger);
 }
 
 .run-check {

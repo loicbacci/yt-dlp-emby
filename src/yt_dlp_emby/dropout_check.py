@@ -257,7 +257,7 @@ def _missing_suggestions(
     catalog: list[SonarrRef],
     listings: list[CachedListing],
     on_disk: dict[str, set[tuple[int, int]]],
-) -> list[str]:
+) -> list[Hint]:
     hints: list[Hint] = []
     seen: set[str] = set()
 
@@ -344,7 +344,7 @@ def _missing_suggestions(
             sure = _is_sure_duplicate(missing, other)
             add(_duplicate_label(current_name, current_name, other, on_disk, sure=sure))
     hints.sort(key=lambda item: (not item.sure, item.kind != "origin"))
-    return [_paint_hint(item) for item in hints[:3]]
+    return hints[:3]
 
 
 def run_dropout_check(
@@ -425,7 +425,8 @@ def _run_dropout_check(
                     episode, series.name, catalog, listings, disk_files
                 )
                 if hints:
-                    line += f"  {dim('(')}{dim('; ').join(hints)}{dim(')')}"
+                    painted = [_paint_hint(item) for item in hints]
+                    line += f"  {dim('(')}{dim('; ').join(painted)}{dim(')')}"
                 print(line)
         if warnings:
             print(f"  {yellow('warning')}")
@@ -452,12 +453,14 @@ def check_series_report(
     settings: Settings,
     slug: str,
     *,
+    series: DropoutSeries | None = None,
     fetch_fn: FetchFn | None = None,
 ) -> dict[str, object]:
-    series = next(
-        (item for item in manifest.series if slugify(item.name) == slug),
-        None,
-    )
+    if series is None:
+        series = next(
+            (item for item in manifest.series if slugify(item.name) == slug),
+            None,
+        )
     if series is None:
         raise ConfigError("series not found")
     if series.tvdb_id is None:

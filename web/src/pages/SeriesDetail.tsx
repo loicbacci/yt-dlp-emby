@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useLocation } from "preact-iso";
+import { useQuery } from "@tanstack/preact-query";
+import { useSelector } from "@tanstack/preact-store";
 import {
   ApiError,
   type Run,
@@ -9,12 +11,24 @@ import {
   apiClient,
 } from "../api";
 import { Header } from "../components/Header";
+import { SeriesDetailSkeleton, Skeleton } from "../components/Skeleton";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
 import { RemapModal } from "../components/series/RemapModal";
 import { SourceBlock } from "../components/series/SourceBlock";
 import { TvdbSkipPanel } from "../components/series/TvdbSkipPanel";
 import { go } from "../nav";
-import { addTvdbSkip, parseSeriesPath } from "../seriesView";
+import { queryClient } from "../queryClient";
+import { queryKeys } from "../queryKeys";
+import { useSeriesCatalog } from "../seriesCatalog";
+import {
+  patchSeriesFold,
+  seriesUiKey,
+  seriesUiStore,
+  setSeriesFolds,
+} from "../seriesUiStore";
+import { addTvdbSkip, isSeasonOpen, parseSeriesPath, seasonFoldKey, seasonFoldMap } from "../seriesView";
+
+const EMPTY_FOLDS: Record<string, boolean> = {};
 
 const idleRun: Run = {
   status: "idle",
@@ -36,14 +50,6 @@ export function SeriesDetail() {
 
   const [run, setRun] = useState<Run>(idleRun);
   const [folderView, setFolderView] = useState<"sources" | "emby">("sources");
-  const [layout, setLayout] = useState<Awaited<
-    ReturnType<typeof apiClient.getDropoutLayout>
-  > | null>(null);
-  const [check, setCheck] = useState<Awaited<
-    ReturnType<typeof apiClient.getDropoutCheck>
-  > | null>(null);
-  const [checkError, setCheckError] = useState<string | null>(null);
-  const [layoutError, setLayoutError] = useState<string | null>(null);
   const [detail, setDetail] = useState<SeriesDetailModel | null>(null);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,24 +66,63 @@ export function SeriesDetail() {
     episode: SeriesEpisode;
   } | null>(null);
 
+  const seriesQuery = useQuery({
+    queryKey: queryKeys.series(platform, slug),
+    queryFn: () => apiClient.getSeries(platform, slug),
+    enabled: Boolean(slug),
+    staleTime: 60 * 1000,
+  });
+  const uiKey = seriesUiKey(platform, slug);
+  const seasonFolds = useSelector(
+    seriesUiStore,
+    (state) => state.folds[uiKey] ?? EMPTY_FOLDS,
+  );
+  const { episodeMap, loadingMap, onDisk } = useSeriesCatalog(
+    platform,
+    slug,
+    seriesQuery.data?.sources,
+  );
+  const layoutQuery = useQuery({
+    queryKey: queryKeys.layout(slug),
+    queryFn: () => apiClient.getDropoutLayout(slug),
+    enabled: platform === "dropout" && folderView === "emby" && Boolean(slug),
+  });
+  const checkQuery = useQuery({
+    queryKey: [...queryKeys.check(slug), JSON.stringify(detail?.tvdb_skip ?? [])],
+    queryFn: () => apiClient.getDropoutCheck(slug),
+    enabled: platform === "dropout" && Boolean(slug) && detail?.tvdb_id != null,
+    staleTime: 5 * 60 * 1000,
+  });
+  const layout = layoutQuery.data ?? null;
+  const layoutError =
+    layoutQuery.error instanceof Error ? layoutQuery.error.message : null;
+  const check = checkQuery.data ?? null;
+  const checkError =
+    checkQuery.error instanceof Error ? checkQuery.error.message : null;
+
   const dirty = useMemo(
     () => JSON.stringify(detail) !== JSON.stringify(saved),
     [detail, saved],
   );
   const runActive = run.status === "running" || run.status === "stopping";
-
-  const load = async () => {
-    if (!slug) return;
-    const next = await apiClient.getSeries(platform, slug);
-    setDetail(next);
-    setSaved(next);
-  };
+  const prevRunStatus = useRef(run.status);
 
   useEffect(() => {
-    load().catch((err) => {
-      if (err instanceof ApiError && err.status === 401) go("/login");
-      else setError(err instanceof Error ? err.message : "Failed to load");
-    });
+    if (!seriesQuery.data || dirty) return;
+    setDetail(seriesQuery.data);
+    setSaved(seriesQuery.data);
+  }, [seriesQuery.data, dirty]);
+
+  useEffect(() => {
+    if (seriesQuery.data) setError(null);
+    if (seriesQuery.error instanceof ApiError && seriesQuery.error.status === 401) {
+      go("/login");
+    } else if (seriesQuery.error instanceof Error) {
+      setError(seriesQuery.error.message);
+    }
+  }, [seriesQuery.error, seriesQuery.data]);
+
+  useEffect(() => {
     apiClient
       .listSeries()
       .then((body) => setExisting(body.series))
@@ -92,32 +137,17 @@ export function SeriesDetail() {
   }, []);
 
   useEffect(() => {
-    if (platform !== "dropout" || !slug) return;
-    if (folderView === "emby") {
-      setLayoutError(null);
-      apiClient
-        .getDropoutLayout(slug)
-        .then(setLayout)
-        .catch((err) => {
-          setLayout(null);
-          setLayoutError(err instanceof ApiError ? err.message : "Layout failed");
-        });
+    if (
+      prevRunStatus.current === "running" &&
+      (run.status === "exited" || run.status === "idle")
+    ) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.disk(platform, slug) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.check(slug) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.missing(platform, slug) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() });
     }
-  }, [platform, slug, folderView]);
-
-  useEffect(() => {
-    if (platform !== "dropout" || !slug || detail?.tvdb_id == null) return;
-    apiClient
-      .getDropoutCheck(slug)
-      .then((body) => {
-        setCheck(body);
-        setCheckError(null);
-      })
-      .catch((err) => {
-        setCheck(null);
-        setCheckError(err instanceof ApiError ? err.message : "Check failed");
-      });
-  }, [platform, slug, detail?.tvdb_id, detail?.tvdb_skip]);
+    prevRunStatus.current = run.status;
+  }, [run.status, platform, slug]);
 
   useEffect(() => {
     if (window.location.hash !== "#sonarr-check") return;
@@ -126,6 +156,7 @@ export function SeriesDetail() {
 
   const persist = async (next: SeriesDetailModel) => {
     const body = await apiClient.putSeries(platform, slug, next);
+    queryClient.setQueryData(queryKeys.series(platform, slug), body);
     setDetail(body);
     setSaved(body);
     return body;
@@ -156,10 +187,15 @@ export function SeriesDetail() {
     setError(null);
     try {
       const body = await apiClient.addSeriesSource(platform, slug, url);
+      queryClient.setQueryData(queryKeys.series(platform, slug), body);
       setDetail(body);
       setSaved(body);
       setUrlDraft("");
       setPendingUrl(null);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.episodesSeries(platform, slug),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.disk(platform, slug) });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Add URL failed";
       setPendingError(message);
@@ -182,8 +218,13 @@ export function SeriesDetail() {
     }
     try {
       const body = await apiClient.deleteSeriesSource(platform, slug, sourceId);
+      queryClient.setQueryData(queryKeys.series(platform, slug), body);
       setDetail(body);
       setSaved(body);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.episodesSeries(platform, slug),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.disk(platform, slug) });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Remove failed");
     }
@@ -193,8 +234,13 @@ export function SeriesDetail() {
     if (runActive || !detail) return;
     try {
       const body = await apiClient.refreshSeriesSource(platform, slug, sourceId);
+      queryClient.setQueryData(queryKeys.series(platform, slug), body);
       setDetail(body);
       setSaved(body);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.episodesSource(platform, slug, sourceId),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.disk(platform, slug) });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Refresh failed";
       setDetail({
@@ -397,7 +443,7 @@ export function SeriesDetail() {
           {error ? (
             <div class="validation-error">{error}</div>
           ) : (
-            <div class="empty-state">Loading…</div>
+            <SeriesDetailSkeleton />
           )}
         </section>
       </div>
@@ -487,7 +533,15 @@ export function SeriesDetail() {
           <p class="settings-hint">{layoutError}</p>
         )}
         {platform === "dropout" && folderView === "emby" && !layout && !layoutError && (
-          <p class="settings-hint">Loading Emby folders…</p>
+          <div class="layout-folders" aria-busy="true">
+            <Skeleton width="9rem" height="1em" />
+            <div style={{ marginTop: "10px" }}>
+              <Skeleton width="100%" height="2.2em" />
+            </div>
+            <div style={{ marginTop: "8px" }}>
+              <Skeleton width="80%" height="2.2em" />
+            </div>
+          </div>
         )}
         {platform === "dropout" && folderView === "emby" && layout && (
           <div class="layout-folders">
@@ -512,6 +566,24 @@ export function SeriesDetail() {
         <h2 class="settings-heading">
           {platform === "youtube" ? "Playlists" : "Catalog URLs"}
         </h2>
+        {detail.sources.some((src) => src.seasons.length > 0) && (
+          <div class="series-toolbar">
+            <button
+              type="button"
+              class="btn-ghost"
+              onClick={() => setSeriesFolds(uiKey, seasonFoldMap(detail.sources, true))}
+            >
+              Expand all
+            </button>
+            <button
+              type="button"
+              class="btn-ghost"
+              onClick={() => setSeriesFolds(uiKey, seasonFoldMap(detail.sources, false))}
+            >
+              Collapse all
+            </button>
+          </div>
+        )}
         <form
           class="series-toolbar"
           onSubmit={(e) => {
@@ -546,10 +618,21 @@ export function SeriesDetail() {
           <SourceBlock
             key={source.id}
             platform={platform}
-            slug={slug}
             source={source}
             sourceId={sourceId}
             runActive={runActive}
+            episodeMap={episodeMap}
+            loadingMap={loadingMap}
+            onDisk={onDisk}
+            seasonOpen={(seasonId) => isSeasonOpen(seasonFolds, sourceId, seasonId)}
+            onToggleOpen={(seasonId) => {
+              const key = seasonFoldKey(sourceId, seasonId);
+              patchSeriesFold(
+                uiKey,
+                key,
+                !isSeasonOpen(seasonFolds, sourceId, seasonId),
+              );
+            }}
             onRefresh={() => void refreshSource(sourceId)}
             onRemove={() => void removeSource(sourceId)}
             onToggleEnabled={(seasonId) =>

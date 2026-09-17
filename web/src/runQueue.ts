@@ -125,28 +125,34 @@ export function buildTree(plan: PlanFile): QueueTree {
       }
       continue;
     }
+    const ownSeasons = (block.seasons ?? []).filter(
+      (s) => !s.platform || s.platform === platform,
+    );
+    const ownItems = (block.items ?? []).filter(
+      (item) => !item.platform || item.platform === platform,
+    );
     const itemsBySeason = new Map<string, QueueEpisode[]>();
-    for (const item of block.items ?? []) {
+    for (const item of ownItems) {
       if (item.action === "skip") continue;
-      const key = seasonKey(item.platform, item.slug, item.dest_season);
+      const key = seasonKey(platform, item.slug, item.dest_season);
       const list = itemsBySeason.get(key) ?? [];
       list.push({ ...item, status: "pending" });
       itemsBySeason.set(key, list);
     }
     const { pending: pendingSeasons, complete: completeSeasons } = partitionSeasons(
-      block.seasons ?? [],
+      ownSeasons,
     );
     const seasonMeta = new Map<string, PlanSeason>();
     for (const s of [...pendingSeasons, ...completeSeasons]) {
-      seasonMeta.set(seasonKey(s.platform, s.slug, s.dest_season), s);
+      seasonMeta.set(seasonKey(platform, s.slug, s.dest_season), s);
     }
     const slugs = new Set<string>();
-    for (const s of block.seasons ?? []) slugs.add(s.slug);
-    for (const item of block.items ?? []) slugs.add(item.slug);
+    for (const s of ownSeasons) slugs.add(s.slug);
+    for (const item of ownItems) slugs.add(item.slug);
     for (const slug of slugs) {
       const name =
-        block.seasons?.find((s) => s.slug === slug)?.series ??
-        block.items?.find((i) => i.slug === slug)?.series ??
+        ownSeasons.find((s) => s.slug === slug)?.series ??
+        ownItems.find((i) => i.slug === slug)?.series ??
         slug;
       const seriesKey = `${platform}|${slug}`;
       let series = bySeries.get(seriesKey);
@@ -170,13 +176,16 @@ export function buildTree(plan: PlanFile): QueueTree {
       if (!meta) {
         for (const ep of episodes) {
           if (ep.action !== "unmapped") continue;
-          const seriesKey = `${ep.platform}|${ep.slug}`;
+          const seriesKey = `${platform}|${ep.slug}`;
           const series = bySeries.get(seriesKey);
-          if (series) series.unmapped.push(ep);
+          if (!series) continue;
+          if (!series.unmapped.some((existing) => existing.id === ep.id)) {
+            series.unmapped.push(ep);
+          }
         }
         continue;
       }
-      const seriesKey = `${meta.platform}|${meta.slug}`;
+      const seriesKey = `${platform}|${meta.slug}`;
       const series = bySeries.get(seriesKey);
       if (!series) continue;
       const downloadable = episodes.filter((e) =>
@@ -184,17 +193,35 @@ export function buildTree(plan: PlanFile): QueueTree {
       );
       const unmappedOnly = episodes.filter((e) => e.action === "unmapped");
       if (unmappedOnly.length) {
-        series.unmapped.push(...unmappedOnly);
+        const seenUnmapped = new Set(series.unmapped.map((ep) => ep.id));
+        for (const ep of unmappedOnly) {
+          if (!seenUnmapped.has(ep.id)) {
+            series.unmapped.push(ep);
+            seenUnmapped.add(ep.id);
+          }
+        }
       }
       const active = meta.download + meta.replace + meta.unmapped;
       const isComplete = active === 0 && meta.skip > 0;
       if (isComplete && downloadable.length === 0) continue;
+      const existing = series.seasons.find((s) => s.key === key);
+      if (existing) {
+        const seen = new Set(existing.pending.map((ep) => ep.id));
+        for (const ep of downloadable) {
+          if (!seen.has(ep.id)) {
+            existing.pending.push(ep);
+            series.pendingCount += 1;
+            seen.add(ep.id);
+          }
+        }
+        continue;
+      }
       series.seasons.push({
         key,
         destSeason: meta.dest_season,
         folderLabel: meta.folder,
         seasonTitle: meta.season_title,
-        platform: meta.platform,
+        platform,
         pending: downloadable,
         complete: isComplete,
         download: meta.download,
@@ -203,11 +230,13 @@ export function buildTree(plan: PlanFile): QueueTree {
       series.pendingCount += downloadable.length;
     }
     for (const meta of completeSeasons) {
-      const seriesKey = `${meta.platform}|${meta.slug}`;
+      const seriesKey = `${platform}|${meta.slug}`;
       const series = bySeries.get(seriesKey);
       if (!series) continue;
-      const hasPending = series.seasons.some((s) => s.key === seasonKey(meta.platform, meta.slug, meta.dest_season));
+      const destKey = seasonKey(platform, meta.slug, meta.dest_season);
+      const hasPending = series.seasons.some((s) => s.key === destKey);
       if (hasPending) continue;
+      if (series.completeSeasons.some((s) => s.folderLabel === meta.folder)) continue;
       series.completeSeasons.push({
         folderLabel: meta.folder,
         seasonTitle: meta.season_title,
@@ -370,6 +399,25 @@ export type ProgressState = {
   failedIds: Set<string>;
 };
 
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
+
+export function parsePercent(raw: unknown, bytes?: unknown, total?: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.min(100, Math.max(0, raw));
+  }
+  if (typeof raw === "string") {
+    const cleaned = raw.replace(ANSI_RE, "").replace("%", "").trim();
+    const parsed = parseFloat(cleaned);
+    if (Number.isFinite(parsed)) return Math.min(100, Math.max(0, parsed));
+  }
+  const totalN = Number(total);
+  const bytesN = Number(bytes);
+  if (totalN > 0 && Number.isFinite(bytesN)) {
+    return Math.min(100, Math.max(0, (bytesN / totalN) * 100));
+  }
+  return null;
+}
+
 export function applyProgress(
   tree: QueueTree,
   event: Record<string, unknown>,
@@ -384,21 +432,7 @@ export function applyProgress(
   };
   if (kind === "progress") {
     progress.currentId = (event.id as string) ?? null;
-    const raw = event.percent;
-    let percent: number | null = null;
-    if (typeof raw === "number") {
-      percent = raw;
-    } else if (typeof raw === "string") {
-      const cleaned = raw.replace("%", "").trim();
-      const parsed = parseFloat(cleaned);
-      percent = Number.isFinite(parsed) ? parsed : null;
-    }
-    if (percent == null && event.bytes != null && event.total) {
-      const total = Number(event.total);
-      const bytes = Number(event.bytes);
-      if (total > 0) percent = (bytes / total) * 100;
-    }
-    progress.percent = percent;
+    progress.percent = parsePercent(event.percent, event.bytes, event.total);
     progress.phase = (event.phase as string) ?? null;
     return { tree, progress };
   }
@@ -407,9 +441,51 @@ export function applyProgress(
     if (event.action === "failed") progress.failedIds.add(id);
     else progress.doneIds.add(id);
     progress.currentId = id;
+    progress.percent = event.action === "failed" ? null : 100;
     return { tree, progress };
   }
   return { tree, progress };
+}
+
+export function mergeProgress(current: ProgressState, next: ProgressState): ProgressState {
+  return {
+    currentId: next.currentId ?? current.currentId,
+    percent: next.percent ?? current.percent,
+    phase: next.phase ?? current.phase,
+    doneIds: new Set([...current.doneIds, ...next.doneIds]),
+    failedIds: new Set([...current.failedIds, ...next.failedIds]),
+  };
+}
+
+export function overlayProgress(tree: QueueTree, progress: ProgressState): QueueTree {
+  if (!progress.currentId && progress.doneIds.size === 0 && progress.failedIds.size === 0) {
+    return tree;
+  }
+  return tree.map((series) => ({
+    ...series,
+    seasons: series.seasons.map((season) => ({
+      ...season,
+      pending: season.pending.map((ep) => {
+        let status = ep.status ?? "pending";
+        if (progress.failedIds.has(ep.id)) status = "failed";
+        else if (progress.doneIds.has(ep.id)) status = "done";
+        else if (progress.currentId === ep.id) status = "downloading";
+        else status = "pending";
+        return status === ep.status ? ep : { ...ep, status };
+      }),
+    })),
+  }));
+}
+
+function episodeForId(tree: QueueTree, id: string): { series: QueueSeries; season: QueueSeason; ep: QueueEpisode } | null {
+  for (const series of tree) {
+    for (const season of series.seasons) {
+      for (const ep of season.pending) {
+        if (ep.id === id) return { series, season, ep };
+      }
+    }
+  }
+  return null;
 }
 
 export type RunPhase =
@@ -433,7 +509,7 @@ export function runStatsLine(
   if (run.phase !== "downloading") {
     return `${totalPending} pending`;
   }
-  const total = Math.max(totalPending + done, done + failed, 1);
+  const total = Math.max(totalPending, done + failed, 1);
   const src = run.source === "youtube" ? "YouTube" : "Dropout";
   const parts = [`${done}/${total} done`, `${failed} failed`, src];
   return parts.join(" · ");
@@ -455,20 +531,19 @@ export function heroFrom(
     return { heading: "Stopping", sub: listingSeries ?? "" };
   }
   if (run.phase === "downloading" && progress.currentId) {
-    for (const series of tree) {
-      for (const season of series.seasons) {
-        for (const ep of season.pending) {
-          if (ep.id === progress.currentId) {
-            const title = season.seasonTitle ?? season.folderLabel;
-            return {
-              heading: `${series.name} · ${title}`,
-              sub: `${ep.code} ${ep.title} · ${season.folderLabel}`,
-            };
-          }
-        }
-      }
+    const hit = episodeForId(tree, progress.currentId);
+    const pct =
+      progress.percent != null ? ` · ${Math.round(progress.percent)}%` : "";
+    const phase = progress.phase ? ` · ${progress.phase}` : "";
+    if (hit) {
+      const title = hit.season.seasonTitle ?? hit.season.folderLabel;
+      return {
+        heading: `${hit.series.name} · ${title}`,
+        sub: `${hit.ep.code} ${hit.ep.title}${pct}${phase}`,
+      };
     }
-    return { heading: "Downloading", sub: listingSeries ?? "" };
+    const code = progress.currentId.split("|")[2] ?? progress.currentId;
+    return { heading: "Downloading", sub: `${code}${pct}${phase}` };
   }
   if (run.phase === "downloading") {
     return { heading: "Downloading", sub: listingSeries ?? "Starting…" };

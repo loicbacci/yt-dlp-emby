@@ -14,6 +14,7 @@ from yt_dlp_emby.config import (
     load_config_values,
     config_target_path,
 )
+from yt_dlp_emby.ffmpeg import FFmpegNotFoundError
 from yt_dlp_emby.dropout_manifest import (
     DropoutRemap,
     DropoutSeason,
@@ -357,8 +358,12 @@ def _youtube_series_to_detail(
     }
 
 
-def list_series(data_dir: Path) -> dict[str, Any]:
+def list_series(
+    data_dir: Path, environ: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    env = environ or {}
     items: list[dict[str, Any]] = []
+    dropout_cache = _dropout_listing_cache(data_dir)
     for loc, series in _iter_dropout_entries(data_dir):
         detail = _dropout_series_to_detail(loc, series)
         items.append(
@@ -372,6 +377,12 @@ def list_series(data_dir: Path) -> dict[str, Any]:
                 "tvdb_id": detail["tvdb_id"],
                 "source_count": detail["source_count"],
                 "season_count": detail["season_count"],
+                "missing_count": _dropout_missing_count(
+                    data_dir, series, env, cache=dropout_cache
+                ),
+                "listings_complete": _dropout_listings_complete(
+                    series, dropout_cache
+                ),
             }
         )
     for loc, series in _iter_youtube_entries(data_dir):
@@ -387,6 +398,8 @@ def list_series(data_dir: Path) -> dict[str, Any]:
                 "tvdb_id": detail["tvdb_id"],
                 "source_count": detail["source_count"],
                 "season_count": detail["season_count"],
+                "missing_count": None,
+                "listings_complete": False,
             }
         )
     items.sort(key=lambda row: row["name"].casefold())
@@ -963,6 +976,184 @@ def refresh_series_source(
     return detail
 
 
+def _series_on_disk(
+    data_dir: Path, platform: str, series_path: str, environ: Mapping[str, str]
+) -> set[tuple[int, int]]:
+    from yt_dlp_emby.config import resolve_settings
+    from yt_dlp_emby.library import index_series_mkvs
+
+    data, _ = _load_root_yaml(data_dir, platform)
+    try:
+        settings = resolve_settings(
+            environ=environ,
+            cwd=data_dir,
+            manifest_library=str(data.get("library")) if data and data.get("library") else None,
+            manifest_old_dir=str(data.get("old_dir")) if data and data.get("old_dir") else None,
+            use_default_config=(data_dir / "config.toml").is_file(),
+            auto_cookies=False,
+        )
+        return set(index_series_mkvs(settings.library / series_path))
+    except (ConfigError, FFmpegNotFoundError, OSError, ValueError):
+        return set()
+
+
+def _dropout_listing_cache(data_dir: Path) -> dict[str, list[dict]]:
+    from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache
+
+    _, path = _load_root_yaml(data_dir, "dropout")
+    return load_dropout_season_cache(dropout_cache_path(path))
+
+
+def _dropout_cached_listings(
+    data_dir: Path,
+    series: DropoutSeries,
+    source_id: int,
+    season_obj,
+    *,
+    cache: dict[str, list[dict]] | None = None,
+) -> list[Any] | None:
+    from yt_dlp_emby.cache import dropout_listings_from_cache
+    from yt_dlp_emby.dropout_manifest import season_page_url
+
+    seasons = cache if cache is not None else _dropout_listing_cache(data_dir)
+    page = season_page_url(series.sources[source_id], season_obj)
+    return dropout_listings_from_cache(seasons.get(page))
+
+
+def _write_listing_cache(data_dir: Path, cache: dict[str, list[dict]]) -> None:
+    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
+
+    _, path = _load_root_yaml(data_dir, "dropout")
+    save_dropout_season_cache(dropout_cache_path(path), cache)
+
+
+def _dropout_listings_complete(
+    series: DropoutSeries, cache: dict[str, list[dict]]
+) -> bool:
+    from yt_dlp_emby.cache import dropout_listings_from_cache
+    from yt_dlp_emby.dropout_manifest import season_page_url
+
+    for source in series.sources:
+        for season_obj in source.seasons:
+            if not season_obj.enabled:
+                continue
+            if dropout_listings_from_cache(cache.get(season_page_url(source, season_obj))) is None:
+                return False
+    return True
+
+
+def _hydrate_dropout_listings(
+    data_dir: Path,
+    series: DropoutSeries,
+    environ: Mapping[str, str],
+    cache: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    from yt_dlp_emby.auth import DropoutAuthError
+    from yt_dlp_emby.cache import dropout_listings_from_cache, dropout_listings_to_cache
+    from yt_dlp_emby.dropout_manifest import season_page_url
+
+    cookie = str(_cookie_path_for_platform(data_dir, "dropout", environ))
+    for source in series.sources:
+        for season_obj in source.seasons:
+            if not season_obj.enabled:
+                continue
+            page = season_page_url(source, season_obj)
+            if dropout_listings_from_cache(cache.get(page)) is not None:
+                continue
+            try:
+                listings = extract_dropout_season(page, cookiefile=cookie)
+            except DropoutAuthError:
+                return cache
+            except Exception:
+                continue
+            cache[page] = dropout_listings_to_cache(listings)
+            _write_listing_cache(data_dir, cache)
+    return cache
+
+
+def _store_dropout_listings(
+    data_dir: Path,
+    series: DropoutSeries,
+    source_id: int,
+    season_obj,
+    listings: list[Any],
+) -> None:
+    from yt_dlp_emby.cache import dropout_listings_to_cache
+    from yt_dlp_emby.dropout_manifest import season_page_url
+
+    cached = _dropout_listing_cache(data_dir)
+    page = season_page_url(series.sources[source_id], season_obj)
+    cached[page] = dropout_listings_to_cache(listings)
+    _write_listing_cache(data_dir, cached)
+
+
+def _dropout_missing_count(
+    data_dir: Path,
+    series: DropoutSeries,
+    environ: Mapping[str, str],
+    *,
+    cache: dict[str, list[dict]] | None = None,
+) -> int | None:
+    listings_cache = cache if cache is not None else _dropout_listing_cache(data_dir)
+    on_disk = _series_on_disk(data_dir, "dropout", series.path, environ)
+    missing = 0
+    cached_any = False
+    for source_id, source in enumerate(series.sources):
+        for season_obj in source.seasons:
+            if not season_obj.enabled:
+                continue
+            listings = _dropout_cached_listings(
+                data_dir, series, source_id, season_obj, cache=listings_cache
+            )
+            if listings is None:
+                continue
+            cached_any = True
+            for row in dropout_episode_rows(season_obj, listings, on_disk=on_disk):
+                if row["status"] == "missing":
+                    missing += 1
+    if not cached_any:
+        return None
+    return missing
+
+
+def series_missing_status(
+    data_dir: Path,
+    platform: str,
+    slug: str,
+    *,
+    environ: Mapping[str, str],
+    hydrate: bool = True,
+) -> dict[str, Any]:
+    _loc, series = _find_locator(data_dir, platform, slug)
+    if platform != "dropout":
+        return {"missing_count": None, "complete": False}
+    assert isinstance(series, DropoutSeries)
+    cache = _dropout_listing_cache(data_dir)
+    if hydrate:
+        try:
+            cache = _hydrate_dropout_listings(data_dir, series, environ, cache)
+        except ConfigError:
+            pass
+    return {
+        "missing_count": _dropout_missing_count(
+            data_dir, series, environ, cache=cache
+        ),
+        "complete": _dropout_listings_complete(series, cache),
+    }
+
+
+def series_disk_status(
+    data_dir: Path, platform: str, slug: str, *, environ: Mapping[str, str]
+) -> dict[str, Any]:
+    detail = get_series(data_dir, platform, slug)
+    on_disk = _series_on_disk(data_dir, platform, str(detail.get("path") or ""), environ)
+    return {
+        "on_disk": [
+            {"season": season, "episode": episode} for season, episode in sorted(on_disk)
+        ]
+    }
+
+
 def list_series_episodes(
     data_dir: Path,
     platform: str,
@@ -981,17 +1172,33 @@ def list_series_episodes(
     if season_id < 0 or season_id >= len(seasons):
         raise KeyError("season")
     season_json = seasons[season_id]
-    cookie = str(_cookie_path_for_platform(data_dir, platform, environ))
+    on_disk = _series_on_disk(data_dir, platform, str(detail.get("path") or ""), environ)
+    on_disk_payload = [
+        {"season": season, "episode": episode} for season, episode in sorted(on_disk)
+    ]
     if platform == "dropout":
-        loc, series = _find_locator(data_dir, platform, slug)
+        _, series = _find_locator(data_dir, platform, slug)
         assert isinstance(series, DropoutSeries)
         season_obj = series.sources[source_id].seasons[season_id]
-        url = season_obj.url or source.get("url") or ""
-        listings = extract_dropout_season(url, cookiefile=cookie)
-        return {"episodes": dropout_episode_rows(season_obj, listings)}
+        listings = _dropout_cached_listings(data_dir, series, source_id, season_obj)
+        if listings is None:
+            from yt_dlp_emby.dropout_manifest import season_page_url
+
+            cookie = str(_cookie_path_for_platform(data_dir, platform, environ))
+            url = season_page_url(series.sources[source_id], season_obj)
+            listings = extract_dropout_season(url, cookiefile=cookie)
+            _store_dropout_listings(data_dir, series, source_id, season_obj, listings)
+        return {
+            "episodes": dropout_episode_rows(season_obj, listings, on_disk=on_disk),
+            "on_disk": on_disk_payload,
+        }
+    cookie = str(_cookie_path_for_platform(data_dir, platform, environ))
     url = str(source.get("url") or season_json.get("url") or "")
     playlist = extract_playlist(url, cookiefile=cookie)
-    return {"episodes": youtube_episode_rows(season_json, playlist)}
+    return {
+        "episodes": youtube_episode_rows(season_json, playlist, on_disk=on_disk),
+        "on_disk": on_disk_payload,
+    }
 
 
 def _validate_only_episodes(old: DropoutSeries, new: DropoutSeries) -> None:
@@ -1099,11 +1306,24 @@ def _dropout_manifest_parsed(data_dir: Path):
     return parse_dropout_manifest(data, path)
 
 
-def _dropout_series_by_slug(manifest, slug: str) -> DropoutSeries:
-    for series in manifest.series:
-        if slugify(series.name) == slug:
-            return series
-    raise KeyError(slug)
+def _dropout_series_for_web_slug(
+    data_dir: Path, slug: str
+) -> tuple[Any, DropoutSeries]:
+    """Resolve a UI slug (file stem or slugify(name)) to the merged series."""
+    _loc, located = _find_locator(data_dir, "dropout", slug)
+    if not isinstance(located, DropoutSeries):
+        raise KeyError(slug)
+    manifest = _dropout_manifest_parsed(data_dir)
+    series = next(
+        (
+            item
+            for item in manifest.series
+            if item.name.casefold() == located.name.casefold()
+            and item.path.casefold() == located.path.casefold()
+        ),
+        located,
+    )
+    return manifest, series
 
 
 def dropout_series_check(
@@ -1112,7 +1332,7 @@ def dropout_series_check(
     from yt_dlp_emby.config import resolve_settings
     from yt_dlp_emby.dropout_check import check_series_report
 
-    manifest = _dropout_manifest_parsed(data_dir)
+    manifest, series = _dropout_series_for_web_slug(data_dir, slug)
     settings = resolve_settings(
         environ=environ,
         cwd=data_dir,
@@ -1120,7 +1340,9 @@ def dropout_series_check(
         manifest_old_dir=str(manifest.old_dir) if manifest.old_dir else None,
         manifest_staging=str(manifest.staging) if manifest.staging else None,
     )
-    return check_series_report(manifest, settings, slug)
+    return check_series_report(
+        manifest, settings, slugify(series.name), series=series
+    )
 
 
 def dropout_series_layout(
@@ -1132,8 +1354,7 @@ def dropout_series_layout(
     from yt_dlp_emby.events import folder_label
     from yt_dlp_emby.library import emby_code, episode_stem, media_exists
 
-    manifest = _dropout_manifest_parsed(data_dir)
-    series = _dropout_series_by_slug(manifest, slug)
+    manifest, series = _dropout_series_for_web_slug(data_dir, slug)
     if not _cached_listings(manifest, series):
         raise ConfigError("List seasons first")
     settings = resolve_settings(
@@ -1167,7 +1388,7 @@ def dropout_series_layout(
             continue
         to_season, to_episode, title = target
         dest_dir = settings.library / series.path / folder_label(to_season)
-        stem = episode_stem(to_season, to_episode, title)
+        stem = episode_stem(series.name, to_season, to_episode, title)
         on_disk = media_exists(dest_dir, stem)
         row = {
             "code": emby_code(to_season, to_episode),

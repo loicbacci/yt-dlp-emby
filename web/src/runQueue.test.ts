@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCheck,
+  applyProgress,
   buildTree,
   downloadLabel,
   effectiveDownloadIds,
   formatItemSize,
+  heroFrom,
   itemId,
+  overlayProgress,
   platformLabel,
   needsConfirm,
   partitionSeasons,
   pendingIds,
   groupByDestSeason,
+  runStatsLine,
   sourcesFor,
   triState,
   upToDateSeries,
@@ -150,6 +154,34 @@ describe("buildTree", () => {
     expect(d20?.seasons).toHaveLength(1);
     expect(d20?.seasons[0].seasonTitle).toBe("Fantasy High Junior Year");
     expect(d20?.pendingCount).toBe(3);
+  });
+
+  it("does not copy dropout seasons from a youtube plan block", () => {
+    const tree = buildTree({
+      ...d20Plan,
+      sources: {
+        dropout: d20Plan.sources.dropout,
+        youtube: {
+          ok: true,
+          error: null,
+          seasons: [
+            ...d20Plan.sources.dropout.seasons,
+            ...d20Plan.sources.youtube.seasons,
+          ],
+          items: [
+            ...d20Plan.sources.dropout.items,
+            ...d20Plan.sources.youtube.items,
+          ],
+        },
+      },
+    });
+    const d20 = tree.filter((s) => s.slug === "dimension-20");
+    expect(d20).toHaveLength(1);
+    expect(d20[0].platform).toBe("dropout");
+    expect(d20[0].seasons).toHaveLength(1);
+    expect(d20[0].seasons[0].seasonTitle).toBe("Fantasy High Junior Year");
+    const yt = tree.find((s) => s.slug === "professor-messer");
+    expect(yt?.seasons).toHaveLength(1);
   });
 });
 
@@ -315,5 +347,84 @@ describe("groupByDestSeason", () => {
       { dest_season: 1, code: "S01E01" },
     ]);
     expect(grouped.map((g) => g.dest_season)).toEqual([1, 2, 0]);
+  });
+});
+
+describe("applyProgress", () => {
+  it("parses ANSI percent strings from yt-dlp", () => {
+    const { progress } = applyProgress([], {
+      event: "progress",
+      id: "dropout|dimension-20|S21E01",
+      percent: "\u001b[0;94m 12.5%\u001b[0m",
+      phase: "video",
+    });
+    expect(progress.percent).toBe(12.5);
+    expect(progress.currentId).toBe("dropout|dimension-20|S21E01");
+  });
+
+  it("uses bytes when percent is missing", () => {
+    const { progress } = applyProgress([], {
+      event: "progress",
+      id: "dropout|x|S01E01",
+      bytes: 25,
+      total: 100,
+    });
+    expect(progress.percent).toBe(25);
+  });
+});
+
+describe("overlayProgress", () => {
+  it("marks the current and finished episodes", () => {
+    const tree = buildTree(d20Plan);
+    const overlay = overlayProgress(tree, {
+      currentId: "dropout|dimension-20|S21E02",
+      percent: 40,
+      phase: "video",
+      doneIds: new Set(["dropout|dimension-20|S21E01"]),
+      failedIds: new Set(),
+    });
+    const eps = overlay[0].seasons[0].pending;
+    expect(eps.find((e) => e.id.endsWith("E01"))?.status).toBe("done");
+    expect(eps.find((e) => e.id.endsWith("E02"))?.status).toBe("downloading");
+  });
+});
+
+describe("heroFrom", () => {
+  it("shows the current episode while downloading", () => {
+    const tree = buildTree(d20Plan);
+    const hero = heroFrom(
+      { phase: "downloading", source: "dropout" },
+      tree,
+      {
+        currentId: "dropout|dimension-20|S21E01",
+        percent: 12.5,
+        phase: "video",
+        doneIds: new Set(),
+        failedIds: new Set(),
+      },
+      null,
+      3,
+    );
+    expect(hero.heading).toContain("Dimension 20");
+    expect(hero.sub).toContain("S21E01");
+    expect(hero.sub).toContain("13%");
+  });
+});
+
+describe("runStatsLine", () => {
+  it("counts done against the original queue size", () => {
+    expect(
+      runStatsLine(
+        { phase: "downloading", source: "dropout" },
+        {
+          currentId: "a",
+          percent: 10,
+          phase: "video",
+          doneIds: new Set(["a"]),
+          failedIds: new Set(),
+        },
+        4,
+      ),
+    ).toBe("1/4 done · 0 failed · Dropout");
   });
 });

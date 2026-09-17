@@ -170,9 +170,26 @@ def merge_dropout_seasons(
     return tuple(merged)
 
 
+def library_episode_status(
+    skipped: bool,
+    mapped_season: int | None,
+    mapped_episode: int | None,
+    on_disk: set[tuple[int, int]] | None = None,
+) -> str:
+    if skipped:
+        return "skipped"
+    if mapped_season is None or mapped_episode is None:
+        return "unmapped"
+    if on_disk is not None and (mapped_season, mapped_episode) in on_disk:
+        return "downloaded"
+    return "missing"
+
+
 def dropout_episode_rows(
     season: DropoutSeason,
     listings: list[Any],
+    *,
+    on_disk: set[tuple[int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     allowed = set(season.only_episodes) if season.only_episodes else None
     rows: list[dict[str, Any]] = []
@@ -199,18 +216,28 @@ def dropout_episode_rows(
                 "mapped_season": mapped_season,
                 "mapped_episode": mapped_episode,
                 "mapped_title": mapped_title,
+                "status": library_episode_status(
+                    skipped, mapped_season, mapped_episode, on_disk
+                ),
             }
         )
     return rows
 
 
-def youtube_episode_rows(season: dict[str, Any], playlist) -> list[dict[str, Any]]:
+def youtube_episode_rows(
+    season: dict[str, Any],
+    playlist,
+    *,
+    on_disk: set[tuple[int, int]] | None = None,
+) -> list[dict[str, Any]]:
     skip_ids = {str(x) for x in (season.get("skip_ids") or [])}
     to_season = season.get("to_season") or 1
     rows: list[dict[str, Any]] = []
     for episode in playlist.episodes:
         vid = episode.video_id
         skipped = vid in skip_ids
+        mapped_season = None if skipped else to_season
+        mapped_episode = None if skipped else episode.playlist_index
         rows.append(
             {
                 "id": vid,
@@ -218,9 +245,12 @@ def youtube_episode_rows(season: dict[str, Any], playlist) -> list[dict[str, Any
                 "url": episode.webpage_url or f"https://www.youtube.com/watch?v={vid}",
                 "source_episode": episode.playlist_index,
                 "skipped": skipped,
-                "mapped_season": to_season,
-                "mapped_episode": episode.playlist_index,
+                "mapped_season": mapped_season,
+                "mapped_episode": mapped_episode,
                 "mapped_title": episode.title,
+                "status": library_episode_status(
+                    skipped, mapped_season, mapped_episode, on_disk
+                ),
             }
         )
     return rows

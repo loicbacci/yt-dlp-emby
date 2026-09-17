@@ -1,3 +1,5 @@
+import type { EpisodeFileStatus } from "./api";
+
 export type SeriesPlatform = "youtube" | "dropout";
 
 export type SeriesSummary = {
@@ -10,6 +12,8 @@ export type SeriesSummary = {
   tvdb_id: number | null;
   source_count: number;
   season_count: number;
+  missing_count?: number | null;
+  listings_complete?: boolean;
 };
 
 const slugPattern = /[^a-z0-9]+/g;
@@ -85,8 +89,38 @@ export function filterSeries(
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
+export function seasonFoldKey(sourceId: number, seasonId: number): string {
+  return `${sourceId}-${seasonId}`;
+}
+
+export function seasonFoldMap(
+  sources: { seasons: unknown[] }[],
+  open: boolean,
+): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  sources.forEach((source, sourceId) => {
+    source.seasons.forEach((_season, seasonId) => {
+      next[seasonFoldKey(sourceId, seasonId)] = open;
+    });
+  });
+  return next;
+}
+
+export function isSeasonOpen(
+  folds: Record<string, boolean>,
+  sourceId: number,
+  seasonId: number,
+): boolean {
+  return folds[seasonFoldKey(sourceId, seasonId)] !== false;
+}
+
 export function countLabel(n: number, singular: string, plural: string): string {
   return `${n} ${n === 1 ? singular : plural}`;
+}
+
+export function seasonMissingLabel(missing: number | null | undefined): string {
+  if (missing == null || missing <= 0) return "";
+  return countLabel(missing, "missing", "missing");
 }
 
 export function emptyListMessage(total: number, filtered: number): string {
@@ -145,6 +179,34 @@ export function applySeasonToEpisode(
   return { ...episode, skipped };
 }
 
+export function diskSlotKey(season: number, episode: number): string {
+  return `${season}-${episode}`;
+}
+
+export function fileStatus(
+  episode: {
+    skipped: boolean;
+    mapped_season: number | null;
+    mapped_episode: number | null;
+  },
+  onDisk: ReadonlySet<string>,
+): EpisodeFileStatus {
+  if (episode.skipped) return "skipped";
+  if (episode.mapped_season == null || episode.mapped_episode == null) {
+    return "unmapped";
+  }
+  return onDisk.has(diskSlotKey(episode.mapped_season, episode.mapped_episode))
+    ? "downloaded"
+    : "missing";
+}
+
+export function episodeStatusLabel(status: EpisodeFileStatus): string {
+  if (status === "downloaded") return "downloaded";
+  if (status === "missing") return "missing";
+  if (status === "unmapped") return "unmapped";
+  return "skipped";
+}
+
 export type TvdbSkipBlock = { season: number; episodes: number[] };
 
 export function addTvdbSkip(
@@ -166,6 +228,45 @@ export function addTvdbSkip(
   }
   next.push({ season, episodes: [episode] });
   return next;
+}
+
+export function removeTvdbSkip(
+  skip: TvdbSkipBlock[],
+  season: number,
+  episode: number,
+): TvdbSkipBlock[] {
+  return skip
+    .map((block) =>
+      block.season !== season
+        ? block
+        : {
+            ...block,
+            episodes: block.episodes.filter((item) => item !== episode),
+          },
+    )
+    .filter((block) => block.episodes.length > 0);
+}
+
+export function skippedTvdbRows(
+  skip: TvdbSkipBlock[],
+  episodes: { season: number; episode: number; title?: string }[],
+): { season: number; episode: number; title?: string }[] {
+  const titles = new Map(
+    episodes.map((item) => [diskSlotKey(item.season, item.episode), item.title]),
+  );
+  const rows: { season: number; episode: number; title?: string }[] = [];
+  for (const block of skip) {
+    for (const episode of block.episodes) {
+      rows.push({
+        season: block.season,
+        episode,
+        title: titles.get(diskSlotKey(block.season, episode)),
+      });
+    }
+  }
+  return rows.sort(
+    (a, b) => a.season - b.season || a.episode - b.episode,
+  );
 }
 
 export function sonarrBadgeLabel(check: {

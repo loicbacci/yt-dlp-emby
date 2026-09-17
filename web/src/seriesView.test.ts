@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, filterSeries, formatMapsTo, parseSeriesPath, seasonDisplayName, seasonHeading, slugify, sonarrBadgeLabel, suggestFolder, uniqueNameError } from "./seriesView";
+import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, fileStatus, filterSeries, formatMapsTo, isSeasonOpen, parseSeriesPath, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, suggestFolder, uniqueNameError } from "./seriesView";
 
 describe("slugify", () => {
   it("matches python examples", () => {
@@ -92,11 +92,33 @@ describe("filterSeries", () => {
   });
 });
 
+describe("seasonFoldMap", () => {
+  it("sets every season and defaults open", () => {
+    const sources = [{ seasons: [1, 2] }, { seasons: [3] }];
+    expect(seasonFoldMap(sources, false)).toEqual({
+      "0-0": false,
+      "0-1": false,
+      "1-0": false,
+    });
+    expect(isSeasonOpen({}, 0, 0)).toBe(true);
+    expect(isSeasonOpen({ "0-0": false }, 0, 0)).toBe(false);
+  });
+});
+
 describe("countLabel", () => {
   it("pluralizes", () => {
     expect(countLabel(1, "url", "urls")).toBe("1 url");
     expect(countLabel(2, "url", "urls")).toBe("2 urls");
     expect(countLabel(0, "season", "seasons")).toBe("0 seasons");
+  });
+});
+
+describe("seasonMissingLabel", () => {
+  it("hides complete seasons and labels gaps", () => {
+    expect(seasonMissingLabel(0)).toBe("");
+    expect(seasonMissingLabel(1)).toBe("1 missing");
+    expect(seasonMissingLabel(4)).toBe("4 missing");
+    expect(seasonMissingLabel(null)).toBe("");
   });
 });
 
@@ -169,6 +191,58 @@ describe("addTvdbSkip", () => {
     expect(first).toEqual([{ season: 0, episodes: [12] }]);
     const second = addTvdbSkip(first, 0, 3);
     expect(second[0].episodes).toEqual([3, 12]);
+  });
+});
+
+describe("removeTvdbSkip", () => {
+  it("drops empty season blocks", () => {
+    expect(removeTvdbSkip([{ season: 0, episodes: [12, 30] }], 0, 12)).toEqual([
+      { season: 0, episodes: [30] },
+    ]);
+    expect(removeTvdbSkip([{ season: 0, episodes: [12] }], 0, 12)).toEqual([]);
+  });
+});
+
+describe("skippedTvdbRows", () => {
+  it("lists only skipped slots with Sonarr titles when known", () => {
+    const rows = skippedTvdbRows(
+      [{ season: 0, episodes: [30] }],
+      [
+        { season: 0, episode: 30, title: "Cut for Time" },
+        { season: 1, episode: 1, title: "Pilot" },
+      ],
+    );
+    expect(rows).toEqual([{ season: 0, episode: 30, title: "Cut for Time" }]);
+  });
+});
+
+describe("fileStatus", () => {
+  const disk = new Set(["1-1"]);
+  it("prefers skipped then disk presence", () => {
+    expect(
+      fileStatus(
+        { skipped: true, mapped_season: 1, mapped_episode: 1 },
+        disk,
+      ),
+    ).toBe("skipped");
+    expect(
+      fileStatus(
+        { skipped: false, mapped_season: 1, mapped_episode: 1 },
+        disk,
+      ),
+    ).toBe("downloaded");
+    expect(
+      fileStatus(
+        { skipped: false, mapped_season: 1, mapped_episode: 2 },
+        disk,
+      ),
+    ).toBe("missing");
+    expect(
+      fileStatus(
+        { skipped: false, mapped_season: null, mapped_episode: null },
+        disk,
+      ),
+    ).toBe("unmapped");
   });
 });
 

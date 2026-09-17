@@ -176,6 +176,8 @@ class RunManager:
         self._next_event_n = 1
         self._events_path = self.data_dir / EVENTS_NAME
         self._events_offset = 0
+        self._events_partial = ""
+        self._last_progress: dict[str, Any] | None = None
         self._pending_jobs: list[_QueuedJob] = []
         self._halt_queue = False
         self._only_path: Path | None = None
@@ -201,6 +203,7 @@ class RunManager:
             "finished_at": self._state.finished_at,
             "exit_code": self._state.exit_code,
             "plan": plan_summary,
+            "progress": self._last_progress,
         }
 
     def lines_after(self, after: int) -> list[LogLine]:
@@ -217,8 +220,9 @@ class RunManager:
 
     def _clear_events(self) -> None:
         self._events.clear()
-        self._next_event_n = 1
         self._events_offset = 0
+        self._events_partial = ""
+        self._last_progress = None
         self._events_path.unlink(missing_ok=True)
 
     def _append_line(self, text: str) -> None:
@@ -237,6 +241,9 @@ class RunManager:
     def _append_event(self, payload: dict[str, Any]) -> None:
         self._events.append(RunEvent(n=self._next_event_n, event=payload))
         self._next_event_n += 1
+        kind = payload.get("event")
+        if kind in {"progress", "item_done", "series"}:
+            self._last_progress = payload
 
     def _feed(self, chunk: str) -> None:
         self._partial += chunk
@@ -253,12 +260,14 @@ class RunManager:
         if not self._events_path.is_file():
             return
         raw = self._events_path.read_bytes()
-        if len(raw) <= self._events_offset:
+        if len(raw) <= self._events_offset and not self._events_partial:
             return
         chunk = raw[self._events_offset :]
         self._events_offset = len(raw)
-        text = chunk.decode("utf-8", errors="replace")
-        for line in text.splitlines():
+        text = self._events_partial + chunk.decode("utf-8", errors="replace")
+        lines = text.split("\n")
+        self._events_partial = lines.pop() if lines else ""
+        for line in lines:
             line = line.strip()
             if not line:
                 continue

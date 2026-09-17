@@ -345,3 +345,29 @@ def test_web_run_enables_color(tmp_path) -> None:
 
     asyncio.run(run())
 
+
+def test_event_sequence_survives_clear(tmp_path) -> None:
+    runner = RunManager(tmp_path)
+    runner._append_event({"event": "series", "name": "A"})
+    assert runner.events_after(0)[0].n == 1
+    runner._clear_events()
+    runner._append_event({"event": "progress", "id": "dropout|x|S01E01", "percent": 12})
+    fresh = runner.events_after(0)
+    assert len(fresh) == 1
+    assert fresh[0].n == 2
+    assert runner.events_after(1)[0].event["percent"] == 12
+    assert runner.snapshot()["progress"]["percent"] == 12
+
+
+def test_events_poll_completes_partial_line(tmp_path) -> None:
+    runner = RunManager(tmp_path)
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"event":"progress","id":"a","percent":')
+    runner._poll_events_file()
+    assert runner.events_after(0) == []
+    path.write_bytes(path.read_bytes() + b"41}\n")
+    runner._poll_events_file()
+    events = runner.events_after(0)
+    assert len(events) == 1
+    assert events[0].event["percent"] == 41
+

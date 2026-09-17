@@ -10,6 +10,7 @@ from yt_dlp_emby.events import (
     emit,
     item_id,
     merge_plan_source,
+    plan_from_events,
     read_events_path,
     reset_runtime,
 )
@@ -108,3 +109,41 @@ def test_merge_plan_source(tmp_path: Path) -> None:
     data = json.loads(plan_path.read_text(encoding="utf-8"))
     assert "dropout" in data["sources"]
     assert data["sources"]["youtube"]["seasons"][0]["dest_season"] == 2
+
+
+def test_plan_from_events_filters_platform() -> None:
+    events = [
+        {"event": "series", "platform": "dropout", "name": "Dimension 20"},
+        {
+            "event": "season",
+            "platform": "dropout",
+            "slug": "dimension-20",
+            "dest_season": 0,
+            "folder": "Specials",
+        },
+        {
+            "event": "item",
+            "platform": "dropout",
+            "id": "dropout|dimension-20|S00E01",
+            "dest_season": 0,
+        },
+        {
+            "event": "season",
+            "platform": "youtube",
+            "slug": "professor-messer",
+            "dest_season": 2,
+            "folder": "Season 2",
+        },
+        {
+            "event": "item",
+            "platform": "youtube",
+            "id": "youtube|professor-messer|S02E01",
+            "dest_season": 2,
+        },
+    ]
+    youtube = plan_from_events(events, platform="youtube")
+    assert [row["slug"] for row in youtube["seasons"]] == ["professor-messer"]
+    assert [row["id"] for row in youtube["items"]] == ["youtube|professor-messer|S02E01"]
+    dropout = plan_from_events(events, platform="dropout")
+    assert [row["slug"] for row in dropout["seasons"]] == ["dimension-20"]
+    assert [row["id"] for row in dropout["items"]] == ["dropout|dimension-20|S00E01"]

@@ -372,3 +372,258 @@ def test_channel_extract_error_stays_on_source_card(tmp_path, monkeypatch) -> No
     source = body.json()["sources"][-1]
     assert source["url"] == "https://www.youtube.com/@example"
     assert source["error"] == "login required"
+
+
+def test_list_episodes_from_cache_includes_disk_status(tmp_path) -> None:
+    lib = tmp_path / "lib"
+    dest = lib / "Clip" / "Season 1"
+    dest.mkdir(parents=True)
+    (dest / "Clip - S01E01 - Pilot.mkv").write_bytes(b"x")
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "clip.yaml").write_text(
+        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/clip.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
+
+    save_dropout_season_cache(
+        dropout_cache_path(tmp_path / "dropout.yaml"),
+        {
+            "https://watch.dropout.tv/c/season:1": [
+                {
+                    "url": "https://watch.dropout.tv/videos/pilot",
+                    "title": "Pilot",
+                    "dropout_episode": 1,
+                },
+                {
+                    "url": "https://watch.dropout.tv/videos/two",
+                    "title": "Two",
+                    "dropout_episode": 2,
+                },
+            ]
+        },
+    )
+    client = _authed(tmp_path)
+    body = client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes").json()
+    by_id = {row["id"]: row for row in body["episodes"]}
+    assert by_id["1"]["status"] == "downloaded"
+    assert by_id["2"]["status"] == "missing"
+    assert {"season": 1, "episode": 1} in body["on_disk"]
+    disk = client.get("/api/series/dropout/clip/disk").json()
+    assert {"season": 1, "episode": 1} in disk["on_disk"]
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["missing_count"] == 1
+    assert listed[0]["listings_complete"] is True
+
+
+def test_list_missing_count_zero_when_complete(tmp_path) -> None:
+    lib = tmp_path / "lib"
+    dest = lib / "Clip" / "Season 1"
+    dest.mkdir(parents=True)
+    (dest / "Clip - S01E01 - Pilot.mkv").write_bytes(b"x")
+    (dest / "Clip - S01E02 - Two.mkv").write_bytes(b"x")
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "clip.yaml").write_text(
+        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/clip.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
+
+    save_dropout_season_cache(
+        dropout_cache_path(tmp_path / "dropout.yaml"),
+        {
+            "https://watch.dropout.tv/c/season:1": [
+                {
+                    "url": "https://watch.dropout.tv/videos/pilot",
+                    "title": "Pilot",
+                    "dropout_episode": 1,
+                },
+                {
+                    "url": "https://watch.dropout.tv/videos/two",
+                    "title": "Two",
+                    "dropout_episode": 2,
+                },
+            ]
+        },
+    )
+    client = _authed(tmp_path)
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["missing_count"] == 0
+
+
+def test_list_episodes_live_extract_writes_cache(tmp_path, monkeypatch) -> None:
+    from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache
+    from yt_dlp_emby.extract import DropoutListing
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "clip.yaml").write_text(
+        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/clip.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    _write_cookies(tmp_path)
+
+    def fake_extract(url, **_kwargs):
+        assert url == "https://watch.dropout.tv/c/season:1"
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/videos/pilot",
+                title="Pilot",
+                dropout_episode=1,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.series.extract_dropout_season", fake_extract
+    )
+    client = _authed(tmp_path)
+    body = client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes")
+    assert body.status_code == 200
+    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
+    assert cached["https://watch.dropout.tv/c/season:1"][0]["title"] == "Pilot"
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["missing_count"] == 1
+
+
+def test_missing_endpoint_hydrates_uncached_seasons(tmp_path, monkeypatch) -> None:
+    from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache
+    from yt_dlp_emby.extract import DropoutListing
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "clip.yaml").write_text(
+        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
+        "    seasons:\n      - dropout: 1\n      - dropout: 2\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/clip.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    _write_cookies(tmp_path)
+    fetched: list[str] = []
+
+    def fake_extract(url, **_kwargs):
+        fetched.append(url)
+        season = 1 if "season:1" in url else 2
+        return [
+            DropoutListing(
+                url=f"https://watch.dropout.tv/videos/s{season}",
+                title=f"Ep {season}",
+                dropout_episode=1,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.series.extract_dropout_season", fake_extract
+    )
+    client = _authed(tmp_path)
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["missing_count"] is None
+    assert listed[0]["listings_complete"] is False
+    body = client.get("/api/series/dropout/clip/missing")
+    assert body.status_code == 200, body.text
+    payload = body.json()
+    assert payload["complete"] is True
+    assert payload["missing_count"] == 2
+    assert fetched == [
+        "https://watch.dropout.tv/c/season:1",
+        "https://watch.dropout.tv/c/season:2",
+    ]
+    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
+    assert "https://watch.dropout.tv/c/season:1" in cached
+    again = client.get("/api/series/dropout/clip/missing").json()
+    assert again["missing_count"] == 2
+    assert fetched == [
+        "https://watch.dropout.tv/c/season:1",
+        "https://watch.dropout.tv/c/season:2",
+    ]
+
+
+def test_check_uses_file_stem_when_name_has_apostrophe(tmp_path) -> None:
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("#!/bin/sh\n", encoding="utf-8")
+    ffmpeg.chmod(0o755)
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "dimension-20-adventuring-party.yaml").write_text(
+        "series:\n"
+        "  - name: Dimension 20's Adventuring Party\n"
+        "    path: AP\n"
+        "    tvdb_id: 391568\n"
+        "    url: https://watch.dropout.tv/ap\n"
+        "    seasons:\n"
+        "      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/dimension-20-adventuring-party.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
+    from yt_dlp_emby.sonarr import save_sonarr_cache, sonarr_cache_path
+
+    save_dropout_season_cache(
+        dropout_cache_path(tmp_path / "dropout.yaml"),
+        {
+            "https://watch.dropout.tv/ap/season:1": [
+                {
+                    "url": "https://watch.dropout.tv/videos/pilot",
+                    "title": "Pilot",
+                    "dropout_episode": 1,
+                }
+            ]
+        },
+    )
+    save_sonarr_cache(
+        sonarr_cache_path(tmp_path / "dropout.yaml"),
+        {
+            "391568": {
+                "title": "Dimension 20's Adventuring Party",
+                "episodes": [{"season": 1, "episode": 1, "title": "Pilot"}],
+            }
+        },
+    )
+    client = _authed(
+        tmp_path,
+        environ={
+            "YT_DLP_EMBY_SONARR_URL": "http://sonarr.example",
+            "YT_DLP_EMBY_SONARR_API_KEY": "k",
+            "YT_DLP_EMBY_FFMPEG": str(ffmpeg),
+        },
+    )
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["slug"] == "dimension-20-adventuring-party"
+    check = client.get("/api/series/dropout/dimension-20-adventuring-party/check")
+    assert check.status_code == 200, check.text
+    assert check.json()["ok"] is True
+    layout = client.get("/api/series/dropout/dimension-20-adventuring-party/layout")
+    assert layout.status_code == 200, layout.text

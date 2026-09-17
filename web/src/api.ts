@@ -52,6 +52,7 @@ export type Run = {
   finished_at: string | null;
   exit_code: number | null;
   plan: { generated_at: string | null; force: boolean; pending: number } | null;
+  progress?: Record<string, unknown> | null;
 };
 
 export type DownloadOptions = {
@@ -170,6 +171,8 @@ export type SeriesDetail = {
   sources: SeriesSource[];
 };
 
+export type EpisodeFileStatus = "downloaded" | "missing" | "skipped" | "unmapped";
+
 export type SeriesEpisode = {
   id: string;
   title: string;
@@ -179,6 +182,7 @@ export type SeriesEpisode = {
   mapped_season: number | null;
   mapped_episode: number | null;
   mapped_title: string | null;
+  status?: EpisodeFileStatus;
 };
 
 export type SonarrEpisode = {
@@ -354,6 +358,14 @@ export const apiClient = {
   }) => api<SeriesDetail>("/api/series", { method: "POST", body: JSON.stringify(body) }),
   getSeries: (platform: Source, slug: string) =>
     api<SeriesDetail>(`/api/series/${platform}/${slug}`),
+  getSeriesDisk: (platform: Source, slug: string) =>
+    api<{ on_disk: { season: number; episode: number }[] }>(
+      `/api/series/${platform}/${slug}/disk`,
+    ),
+  getSeriesMissing: (platform: Source, slug: string) =>
+    api<{ missing_count: number | null; complete: boolean }>(
+      `/api/series/${platform}/${slug}/missing`,
+    ),
   getDropoutCheck: (slug: string) =>
     api<DropoutCheck>(`/api/series/dropout/${slug}/check`),
   getDropoutLayout: (slug: string) =>
@@ -390,7 +402,10 @@ export const apiClient = {
     sourceId: number,
     seasonId: number,
   ) =>
-    api<{ episodes: SeriesEpisode[] }>(
+    api<{
+      episodes: SeriesEpisode[];
+      on_disk?: { season: number; episode: number }[];
+    }>(
       `/api/series/${platform}/${slug}/sources/${sourceId}/seasons/${seasonId}/episodes`,
     ),
   getSonarrEpisodes: (tvdbId: number) =>

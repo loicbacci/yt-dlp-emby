@@ -11,7 +11,9 @@ import {
   effectiveDownloadIds,
   formatItemSize,
   heroFrom,
+  mergeProgress,
   needsConfirm,
+  overlayProgress,
   pendingIds,
   platformLabel,
   runStatsLine,
@@ -57,6 +59,7 @@ export function Dashboard() {
   });
   const [openSeries, setOpenSeries] = useState<Set<string>>(new Set());
   const [openSeasons, setOpenSeasons] = useState<Set<string>>(new Set());
+  const [openUpcoming, setOpenUpcoming] = useState<Set<string>>(new Set());
   const [eventsReconnecting, setEventsReconnecting] = useState(false);
   const [downloadTotal, setDownloadTotal] = useState(0);
 
@@ -66,8 +69,9 @@ export function Dashboard() {
   );
   const treeRef = useRef(tree);
   treeRef.current = tree;
-  const visible = useMemo(() => visibleSeries(tree, query), [tree, query]);
-  const upToDate = useMemo(() => upToDateSeries(tree, query), [tree, query]);
+  const displayTree = useMemo(() => overlayProgress(tree, progress), [tree, progress]);
+  const visible = useMemo(() => visibleSeries(displayTree, query), [displayTree, query]);
+  const upToDate = useMemo(() => upToDateSeries(displayTree, query), [displayTree, query]);
   const allPending = useMemo(() => pendingIds(tree), [tree]);
   const effective = useMemo(
     () => effectiveDownloadIds(selected, allPending),
@@ -98,7 +102,17 @@ export function Dashboard() {
 
   const refreshRun = async () => {
     try {
-      applyRun(await apiClient.getRun());
+      const next = await apiClient.getRun();
+      applyRun(next);
+      if (next.progress && typeof next.progress.event === "string") {
+        if (next.progress.event === "series" && typeof next.progress.name === "string") {
+          setListingSeries(next.progress.name);
+        }
+        if (next.progress.event === "progress" || next.progress.event === "item_done") {
+          const { progress: patch } = applyProgress(treeRef.current, next.progress);
+          setProgress((current) => mergeProgress(current, patch));
+        }
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) go("/login");
     }
@@ -112,9 +126,19 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
+    setProgress({
+      currentId: null,
+      percent: null,
+      phase: null,
+      doneIds: new Set(),
+      failedIds: new Set(),
+    });
+    setListingSeries(null);
+    setEventsReconnecting(false);
     let source: EventSource | null = null;
     let last = 0;
     let closed = false;
+    let timer: number | undefined;
 
     const connect = () => {
       if (closed) return;
@@ -133,56 +157,42 @@ export function Dashboard() {
           }
           if (ev.event === "progress" || ev.event === "item_done") {
             const { progress: next } = applyProgress(treeRef.current, ev);
-            setProgress((current) => ({
-              ...current,
-              currentId: next.currentId ?? current.currentId,
-              percent: next.percent ?? current.percent,
-              phase: next.phase ?? current.phase,
-              doneIds: new Set([...current.doneIds, ...next.doneIds]),
-              failedIds: new Set([...current.failedIds, ...next.failedIds]),
-            }));
-            if (ev.event === "item_done" && typeof ev.id === "string") {
-              setPlan((current) => {
-                if (!current) return current;
-                const nextPlan = JSON.parse(JSON.stringify(current)) as PlanFile;
-                for (const block of Object.values(nextPlan.sources)) {
-                  block.items = block.items.filter((item) => item.id !== ev.id);
-                }
-                return nextPlan;
-              });
-            }
+            setProgress((current) => mergeProgress(current, next));
           }
         } catch {
           /* ignore malformed events */
         }
       };
       source.onerror = () => {
-        if (last > 0) setEventsReconnecting(true);
         source?.close();
-        window.setTimeout(connect, 1500);
+        if (closed) return;
+        if (last > 0) setEventsReconnecting(true);
+        timer = window.setTimeout(connect, 1500);
       };
     };
     connect();
     return () => {
       closed = true;
       source?.close();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, []);
+  }, [runKey]);
 
   useEffect(() => {
     if (downloading && progress.currentId) {
-      for (const series of tree) {
+      for (const series of displayTree) {
         for (const season of series.seasons) {
           for (const ep of season.pending) {
             if (ep.id === progress.currentId) {
               setOpenSeries((s) => new Set(s).add(series.key));
+              setOpenUpcoming((s) => new Set(s).add(series.key));
               setOpenSeasons((s) => new Set(s).add(season.key));
             }
           }
         }
       }
     }
-  }, [downloading, progress.currentId, tree]);
+  }, [downloading, progress.currentId, displayTree]);
 
   const onRefresh = async () => {
     setError(null);
@@ -235,12 +245,12 @@ export function Dashboard() {
   }, [run.status, run.dry_run, run.finished_at]);
 
   const downloadCount = effective.length || allPending.length;
-  const hero = heroFrom(run, tree, progress, listingSeries, allPending.length);
+  const hero = heroFrom(run, displayTree, progress, listingSeries, allPending.length);
   const hasManifest = plan !== null;
   const statsLine = runStatsLine(
     run,
     progress,
-    downloading ? downloadTotal : allPending.length,
+    downloading ? downloadTotal || allPending.length : allPending.length,
   );
   const expandedSeasons = useMemo(() => {
     const keys = new Set(openSeasons);
@@ -252,8 +262,48 @@ export function Dashboard() {
         }
       }
     }
+    if (downloading && progress.currentId) {
+      for (const series of displayTree) {
+        for (const season of series.seasons) {
+          if (season.pending.some((ep) => ep.id === progress.currentId)) {
+            keys.add(season.key);
+          }
+        }
+      }
+    }
     return keys;
-  }, [query, visible, openSeasons]);
+  }, [query, visible, openSeasons, downloading, progress.currentId, displayTree]);
+
+  const expandedUpcoming = useMemo(() => {
+    const keys = new Set(openUpcoming);
+    const q = query.trim();
+    if (q) {
+      for (const series of visible) {
+        if (series.seasons.some((season) => searchOpen(q, series, season))) {
+          keys.add(series.key);
+        }
+      }
+    }
+    if (downloading && progress.currentId) {
+      for (const series of displayTree) {
+        if (
+          series.seasons.some((season) =>
+            season.pending.some((ep) => ep.id === progress.currentId),
+          )
+        ) {
+          keys.add(series.key);
+        }
+      }
+    }
+    return keys;
+  }, [
+    openUpcoming,
+    query,
+    visible,
+    downloading,
+    progress.currentId,
+    displayTree,
+  ]);
 
   const toggleSeries = (series: QueueSeries, checked: boolean) => {
     const ids = series.seasons.flatMap((s) => s.pending.map((e) => e.id));
@@ -330,18 +380,27 @@ export function Dashboard() {
           </p>
         )}
         <section class="run-hero">
-          <div>
+          <div class="run-hero-copy">
             <h1>{hero.heading}</h1>
             <p class="run-hero-sub">{hero.sub}</p>
           </div>
           {downloading && (
-            <button type="button" class="btn-danger" onClick={onStop}>
+            <button type="button" class="btn-danger run-hero-stop" onClick={onStop}>
               Stop
             </button>
           )}
-          {progress.percent != null && downloading && (
-            <div class="run-hero-bar">
-              <div class="run-hero-fill" style={{ width: `${progress.percent}%` }} />
+          {downloading && (
+            <div
+              class={`run-hero-bar${progress.percent == null ? " is-indeterminate" : ""}`}
+            >
+              <div
+                class="run-hero-fill"
+                style={
+                  progress.percent != null
+                    ? { width: `${progress.percent}%` }
+                    : undefined
+                }
+              />
             </div>
           )}
         </section>
@@ -359,11 +418,13 @@ export function Dashboard() {
               series={series}
               open={openSeries.has(series.key) || Boolean(query.trim())}
               openSeasons={expandedSeasons}
+              upcomingOpen={expandedUpcoming.has(series.key)}
               selected={selected}
               busy={busy}
               downloading={downloading}
               listing={planning && listingSeries === series.name}
               currentId={progress.currentId}
+              currentPercent={progress.percent}
               onToggleOpen={() =>
                 setOpenSeries((s) => {
                   const next = new Set(s);
@@ -385,6 +446,14 @@ export function Dashboard() {
                   return next;
                 })
               }
+              onToggleUpcoming={(open) =>
+                setOpenUpcoming((s) => {
+                  const next = new Set(s);
+                  if (open) next.add(series.key);
+                  else next.delete(series.key);
+                  return next;
+                })
+              }
             />
           ))}
           {upToDate.length > 0 && (
@@ -398,10 +467,7 @@ export function Dashboard() {
             </details>
           )}
         </section>
-        <details class="yt-log">
-          <summary>Technical log</summary>
-          <LogViewer runKey={runKey} />
-        </details>
+        <LogViewer runKey={runKey} compact />
       </main>
       {!downloading && (
         <footer class="run-bar">
@@ -430,30 +496,36 @@ function SeriesRow({
   series,
   open,
   openSeasons,
+  upcomingOpen,
   selected,
   busy,
   downloading,
   listing,
   currentId,
+  currentPercent,
   onToggleOpen,
   onToggleSeries,
   onToggleSeason,
   onToggleEpisode,
   onToggleSeasonOpen,
+  onToggleUpcoming,
 }: {
   series: QueueSeries;
   open: boolean;
   openSeasons: Set<string>;
+  upcomingOpen: boolean;
   selected: Set<string>;
   busy: boolean;
   downloading: boolean;
   listing: boolean;
   currentId: string | null;
+  currentPercent: number | null;
   onToggleOpen: () => void;
   onToggleSeries: (checked: boolean) => void;
   onToggleSeason: (season: QueueSeason, checked: boolean) => void;
   onToggleEpisode: (id: string, checked: boolean) => void;
   onToggleSeasonOpen: (key: string) => void;
+  onToggleUpcoming: (open: boolean) => void;
 }) {
   const childIds = series.seasons.flatMap((s) => s.pending.map((e) => e.id));
   const state = triState(selected, childIds);
@@ -501,69 +573,101 @@ function SeriesRow({
       </div>
       {open && (
         <div class="run-series-body">
-          {series.seasons.map((season) => {
-            const seasonOpen = openSeasons.has(season.key);
-            const seasonIds = season.pending.map((e) => e.id);
-            return (
-              <div key={season.key} class="run-row run-row-season">
-                <div class="run-series-head">
-                  {!downloading && seasonIds.length > 0 && (
-                    <input
-                      type="checkbox"
-                      class="run-check"
-                      checked={triState(selected, seasonIds) === "all"}
-                      onChange={(e) =>
-                        onToggleSeason(season, (e.target as HTMLInputElement).checked)
-                      }
-                      disabled={busy}
-                      aria-label={`Select season ${season.folderLabel}`}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    class="run-twist"
-                    aria-expanded={seasonOpen}
-                    onClick={() => onToggleSeasonOpen(season.key)}
-                  >
-                    {seasonOpen ? "▾" : "▸"}
-                  </button>
-                  <button
-                    type="button"
-                    class="run-series-name"
-                    onClick={() => onToggleSeasonOpen(season.key)}
-                  >
-                    {season.seasonTitle ?? season.folderLabel}
-                  </button>
-                  <span class="run-meta muted">{season.folderLabel} on disk</span>
-                  <span class="run-meta">{season.pending.length} new</span>
-                </div>
-                {seasonOpen &&
-                  season.pending.map((ep) => (
-                    <div
-                      key={ep.id}
-                      class={`run-row run-row-ep${currentId === ep.id ? " is-now" : ""}`}
-                    >
-                      {!downloading && (
+          {series.seasons.length > 0 && (
+            <details
+              class="run-upcoming"
+              open={upcomingOpen}
+              onToggle={(e) =>
+                onToggleUpcoming((e.currentTarget as HTMLDetailsElement).open)
+              }
+            >
+              <summary class="run-upcoming-summary">
+                Upcoming · {series.seasons.length}{" "}
+                {series.seasons.length === 1 ? "season" : "seasons"} ·{" "}
+                {series.pendingCount}{" "}
+                {series.pendingCount === 1 ? "episode" : "episodes"}
+              </summary>
+              {series.seasons.map((season) => {
+                const seasonOpen = openSeasons.has(season.key);
+                const seasonIds = season.pending.map((e) => e.id);
+                return (
+                  <div key={season.key} class="run-row run-row-season">
+                    <div class="run-series-head">
+                      {!downloading && seasonIds.length > 0 && (
                         <input
                           type="checkbox"
                           class="run-check"
-                          checked={selected.has(ep.id)}
+                          checked={triState(selected, seasonIds) === "all"}
                           onChange={(e) =>
-                            onToggleEpisode(ep.id, (e.target as HTMLInputElement).checked)
+                            onToggleSeason(
+                              season,
+                              (e.target as HTMLInputElement).checked,
+                            )
                           }
                           disabled={busy}
+                          aria-label={`Select season ${season.folderLabel}`}
                         />
                       )}
-                      <span class="run-code">{ep.code}</span>
-                      <span class="run-ep-title">{ep.title}</span>
-                      {formatItemSize(ep.size) && (
-                        <span class="run-meta ep-size">{formatItemSize(ep.size)}</span>
-                      )}
+                      <button
+                        type="button"
+                        class="run-twist"
+                        aria-expanded={seasonOpen}
+                        onClick={() => onToggleSeasonOpen(season.key)}
+                      >
+                        {seasonOpen ? "▾" : "▸"}
+                      </button>
+                      <button
+                        type="button"
+                        class="run-series-name"
+                        onClick={() => onToggleSeasonOpen(season.key)}
+                      >
+                        {season.seasonTitle ?? season.folderLabel}
+                      </button>
+                      <span class="run-meta muted">{season.folderLabel} on disk</span>
+                      <span class="run-meta">{season.pending.length} new</span>
                     </div>
-                  ))}
-              </div>
-            );
-          })}
+                    {seasonOpen &&
+                      season.pending.map((ep) => {
+                        const now = currentId === ep.id;
+                        return (
+                          <div
+                            key={ep.id}
+                            class={`run-row run-row-ep${now ? " is-now" : ""}${ep.status === "done" ? " is-done" : ""}${ep.status === "failed" ? " is-failed" : ""}`}
+                          >
+                            {!downloading && (
+                              <input
+                                type="checkbox"
+                                class="run-check"
+                                checked={selected.has(ep.id)}
+                                onChange={(e) =>
+                                  onToggleEpisode(
+                                    ep.id,
+                                    (e.target as HTMLInputElement).checked,
+                                  )
+                                }
+                                disabled={busy}
+                              />
+                            )}
+                            <span class="run-code">{ep.code}</span>
+                            <span class="run-ep-title">{ep.title}</span>
+                            {now && currentPercent != null && (
+                              <span class="run-meta">{Math.round(currentPercent)}%</span>
+                            )}
+                            {ep.status === "done" && <span class="run-meta">done</span>}
+                            {ep.status === "failed" && (
+                              <span class="run-meta run-error">failed</span>
+                            )}
+                            {formatItemSize(ep.size) && (
+                              <span class="run-meta ep-size">{formatItemSize(ep.size)}</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                );
+              })}
+            </details>
+          )}
           {series.completeSeasons.length > 0 && (
             <details class="run-complete queue-complete">
               <summary>

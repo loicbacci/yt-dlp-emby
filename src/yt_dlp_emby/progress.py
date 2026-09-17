@@ -142,6 +142,30 @@ def stream_label(data: dict[str, Any]) -> str:
     return "download"
 
 
+def progress_percent(data: dict[str, Any]) -> float | None:
+    total = data.get("total_bytes") or data.get("total_bytes_estimate")
+    downloaded = data.get("downloaded_bytes")
+    if total not in (None, 0) and downloaded is not None:
+        try:
+            total_f = float(total)
+            if total_f > 0:
+                return min(100.0, max(0.0, 100.0 * float(downloaded) / total_f))
+        except (TypeError, ValueError):
+            pass
+    raw = data.get("percent", data.get("_percent_str"))
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        cleaned = strip_ansi(raw).replace("%", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
 def format_progress_line(
     data: dict[str, Any],
     width: int = 28,
@@ -334,7 +358,7 @@ class DownloadProgress(ProgressDisplay):
                         "event": "progress",
                         "phase": label,
                         "id": item,
-                        "percent": data.get("_percent_str"),
+                        "percent": progress_percent(data),
                         "speed": data.get("speed"),
                         "eta": data.get("eta"),
                         "bytes": data.get("downloaded_bytes"),
@@ -366,6 +390,18 @@ class DownloadProgress(ProgressDisplay):
                 copied, total, width=self.width, label=label, **self._bar_style()
             )
         )
+        item = current_item_id()
+        if item and total:
+            emit_progress(
+                {
+                    "event": "progress",
+                    "phase": label,
+                    "id": item,
+                    "percent": min(100.0, max(0.0, 100.0 * copied / total)),
+                    "bytes": copied,
+                    "total": total,
+                }
+            )
 
 
 class ExtractProgress(ProgressDisplay):

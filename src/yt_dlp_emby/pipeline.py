@@ -586,7 +586,9 @@ def run_youtube_manifest(
             if manifest.path is not None:
                 events_path = os.environ.get("YT_DLP_EMBY_EVENTS")
                 if events_path:
-                    payload = plan_from_events(parse_events_file(Path(events_path)))
+                    payload = plan_from_events(
+                        parse_events_file(Path(events_path)), platform="youtube"
+                    )
                     merge_plan_source(
                         manifest.path.parent / "plan.json",
                         "youtube",

@@ -45,6 +45,8 @@ from yt_dlp_emby.server.series import (
     get_series,
     list_series,
     list_series_episodes,
+    series_disk_status,
+    series_missing_status,
     patch_platform_cookies_field,
     platform_payload,
     put_platform,
@@ -465,7 +467,11 @@ def create_app(
     @app.get("/api/series")
     async def get_series_list(request: Request) -> dict[str, Any]:
         require_auth(request)
-        return await asyncio.to_thread(list_series, request.app.state.data_dir)
+        return await asyncio.to_thread(
+            list_series,
+            request.app.state.data_dir,
+            request.app.state.environ,
+        )
 
     @app.post("/api/series")
     async def post_series(body: CreateSeriesBody, request: Request) -> dict[str, Any]:
@@ -629,6 +635,50 @@ def create_app(
                 platform,
                 slug,
                 source_id,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.get("/api/series/{platform}/{slug}/disk")
+    async def get_series_disk(
+        platform: str, slug: str, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                series_disk_status,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.get("/api/series/{platform}/{slug}/missing")
+    async def get_series_missing(
+        platform: str, slug: str, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            return await asyncio.to_thread(
+                series_missing_status,
+                request.app.state.data_dir,
+                platform,
+                slug,
                 environ=request.app.state.environ,
             )
         except KeyError:

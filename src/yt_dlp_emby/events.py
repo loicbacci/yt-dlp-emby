@@ -207,13 +207,20 @@ def emit_dropout_unit(
         )
 
 
-def plan_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+def plan_from_events(
+    events: list[dict[str, Any]], platform: str | None = None
+) -> dict[str, Any]:
     seasons: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
     for row in events:
         kind = row.get("event")
+        if kind not in {"season", "item"}:
+            continue
+        if platform and row.get("platform") not in {None, platform}:
+            continue
+        payload = {k: v for k, v in row.items() if k != "event"}
         if kind == "season":
-            seasons.append({k: v for k, v in row.items() if k != "event"})
-        elif kind == "item":
-            items.append({k: v for k, v in row.items() if k != "event"})
+            seasons.append(payload)
+        else:
+            items.append(payload)
     return {"ok": True, "error": None, "seasons": seasons, "items": items}

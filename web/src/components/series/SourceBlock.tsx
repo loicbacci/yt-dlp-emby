@@ -1,13 +1,16 @@
-import type { SeriesSource, Source } from "../../api";
+import type { SeriesEpisode, SeriesSource, Source } from "../../api";
 import { SeasonAccordion } from "./SeasonAccordion";
-import type { SeriesEpisode } from "../../api";
 
 export function SourceBlock({
   platform,
-  slug,
   source,
   sourceId,
   runActive,
+  episodeMap,
+  loadingMap,
+  onDisk,
+  seasonOpen,
+  onToggleOpen,
   onRefresh,
   onRemove,
   onToggleEnabled,
@@ -16,10 +19,14 @@ export function SourceBlock({
   onRemap,
 }: {
   platform: Source;
-  slug: string;
   source: SeriesSource;
   sourceId: number;
   runActive: boolean;
+  episodeMap: Record<string, SeriesEpisode[]>;
+  loadingMap: Record<string, boolean>;
+  onDisk: ReadonlySet<string>;
+  seasonOpen: (seasonId: number) => boolean;
+  onToggleOpen: (seasonId: number) => void;
   onRefresh: () => void;
   onRemove: () => void;
   onToggleEnabled: (seasonId: number) => void;
@@ -47,20 +54,27 @@ export function SourceBlock({
         </button>
       </div>
       {source.error && <div class="validation-error">{source.error}</div>}
-      {source.seasons.map((season, seasonId) => (
-        <SeasonAccordion
-          key={season.id}
-          platform={platform}
-          slug={slug}
-          sourceId={sourceId}
-          seasonId={seasonId}
-          season={season}
-          onToggleEnabled={() => onToggleEnabled(seasonId)}
-          onTitleChange={(value) => onTitleChange(seasonId, value)}
-          onSkip={(ep) => onSkip(seasonId, ep)}
-          onRemap={(ep) => onRemap(seasonId, ep)}
-        />
-      ))}
+      {source.seasons.map((season, seasonId) => {
+        const key = `${sourceId}-${seasonId}`;
+        return (
+          <SeasonAccordion
+            key={season.id}
+            platform={platform}
+            sourceId={sourceId}
+            seasonId={seasonId}
+            season={season}
+            episodes={episodeMap[key] ?? null}
+            loading={Boolean(loadingMap[key])}
+            onDisk={onDisk}
+            open={seasonOpen(seasonId)}
+            onToggleOpen={() => onToggleOpen(seasonId)}
+            onToggleEnabled={() => onToggleEnabled(seasonId)}
+            onTitleChange={(value) => onTitleChange(seasonId, value)}
+            onSkip={(ep) => onSkip(seasonId, ep)}
+            onRemap={(ep) => onRemap(seasonId, ep)}
+          />
+        );
+      })}
     </div>
   );
 }

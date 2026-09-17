@@ -4,7 +4,7 @@ import pytest
 
 from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache, save_dropout_season_cache
 from yt_dlp_emby.config import ConfigError, resolve_settings
-from yt_dlp_emby.dropout_check import run_dropout_check
+from yt_dlp_emby.dropout_check import check_series_report, run_dropout_check
 from yt_dlp_emby.style import CYAN, GREEN, RED, YELLOW, strip_ansi
 from yt_dlp_emby.dropout_manifest import (
     DropoutManifest,
@@ -885,3 +885,97 @@ def test_check_suggests_other_series_listing(
     missing_line = next(line for line in out.splitlines() if "S00E64" in line)
     assert "maybe add to skip list" in missing_line
     assert "S21E21" in missing_line
+
+
+def test_check_series_report_hints_are_dicts(tmp_path: Path) -> None:
+    series = DropoutSeries(
+        name="Game Changer",
+        path="Game Changer [tvdbid=361151]",
+        sources=(
+            DropoutSource(
+                url="https://watch.dropout.tv/game-changer",
+                seasons=(DropoutSeason(dropout=1), DropoutSeason(dropout=4)),
+            ),
+        ),
+        tvdb_id=361151,
+    )
+    manifest = _manifest(tmp_path, series)
+    _seed_listings(
+        manifest,
+        series,
+        series.sources[0].seasons[0],
+        [
+            {
+                "url": "https://watch.dropout.tv/videos/pilot",
+                "title": "Pilot",
+                "dropout_episode": 1,
+            }
+        ],
+    )
+    _write_mkv(tmp_path, series.path, 4, 11, "Slug Eater")
+
+    def fetch(_tvdb_id: int):
+        return "Game Changer", [
+            SonarrEpisode(0, 30, "Slug Eater", air_date="2021-07-13"),
+            SonarrEpisode(4, 11, "Slug Eater", air_date="2021-07-13"),
+        ]
+
+    report = check_series_report(
+        manifest, _settings(tmp_path), "game-changer", fetch_fn=fetch
+    )
+    missing = report["missing"]
+    assert missing
+    hints = missing[0]["hints"]
+    assert hints
+    assert isinstance(hints[0], dict)
+    assert "text" in hints[0]
+    assert "kind" in hints[0]
+    assert "sure" in hints[0]
+
+
+def test_check_series_report_uses_series_when_web_slug_mismatches(tmp_path: Path) -> None:
+    series = DropoutSeries(
+        name="Dimension 20's Adventuring Party",
+        path="AP",
+        sources=(
+            DropoutSource(
+                url="https://watch.dropout.tv/ap",
+                seasons=(DropoutSeason(dropout=1),),
+            ),
+        ),
+        tvdb_id=391568,
+    )
+    manifest = _manifest(tmp_path, series)
+    _seed_listings(
+        manifest,
+        series,
+        series.sources[0].seasons[0],
+        [
+            {
+                "url": "https://watch.dropout.tv/videos/pilot",
+                "title": "Pilot",
+                "dropout_episode": 1,
+            }
+        ],
+    )
+
+    def fetch(_tvdb_id: int):
+        return "Dimension 20's Adventuring Party", [
+            SonarrEpisode(1, 1, "Pilot"),
+        ]
+
+    with pytest.raises(ConfigError, match="series not found"):
+        check_series_report(
+            manifest,
+            _settings(tmp_path),
+            "dimension-20-adventuring-party",
+            fetch_fn=fetch,
+        )
+    report = check_series_report(
+        manifest,
+        _settings(tmp_path),
+        "dimension-20-adventuring-party",
+        series=series,
+        fetch_fn=fetch,
+    )
+    assert report["ok"] is True

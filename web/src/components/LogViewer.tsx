@@ -20,12 +20,20 @@ function AnsiLine({ line }: { line: string }) {
   );
 }
 
-export function LogViewer({ runKey }: { runKey: string }) {
+const COMPACT_MAX_LINES = 500;
+
+export function LogViewer({
+  runKey,
+  compact = false,
+}: {
+  runKey: string;
+  compact?: boolean;
+}) {
   const preRef = useRef<HTMLPreElement>(null);
   const lastNRef = useRef(0);
   const [lines, setLines] = useState<string[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
-  const [pinned, setPinned] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   useEffect(() => {
     setLines([]);
@@ -48,7 +56,11 @@ export function LogViewer({ runKey }: { runKey: string }) {
         try {
           const payload = JSON.parse(event.data) as { n: number; line: string };
           lastNRef.current = payload.n;
-          setLines((prev) => [...prev, payload.line]);
+          setLines((prev) => {
+            const next = [...prev, payload.line];
+            if (!compact || next.length <= COMPACT_MAX_LINES) return next;
+            return next.slice(-COMPACT_MAX_LINES);
+          });
         } catch {
           /* ignore */
         }
@@ -88,47 +100,62 @@ export function LogViewer({ runKey }: { runKey: string }) {
   }, [runKey]);
 
   useEffect(() => {
-    const pre = preRef.current;
-    if (!pre) return;
-    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-    if (pinned || nearBottom) {
-      pre.scrollTop = pre.scrollHeight;
-      setPinned(true);
-    }
-  }, [lines, pinned]);
-
-  const jump = () => {
+    if (!autoScroll) return;
     const pre = preRef.current;
     if (!pre) return;
     pre.scrollTop = pre.scrollHeight;
-    setPinned(true);
+  }, [lines, autoScroll]);
+
+  const jumpToLatest = () => {
+    const pre = preRef.current;
+    if (!pre) return;
+    pre.scrollTop = pre.scrollHeight;
+    setAutoScroll(true);
   };
 
+  const trimmed =
+    compact && lines.length >= COMPACT_MAX_LINES
+      ? `Showing last ${COMPACT_MAX_LINES} lines`
+      : null;
+
   return (
-    <section class="card log-card">
+    <section class={`card log-card${compact ? " log-card--compact" : ""}`}>
       <div class="log-header">
-        <strong>Output</strong>
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+        <strong>{compact ? "Technical log" : "Output"}</strong>
+        <div class="log-header-actions">
+          <label class="log-autoscroll">
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => {
+                const on = (e.target as HTMLInputElement).checked;
+                setAutoScroll(on);
+                if (on) jumpToLatest();
+              }}
+            />
+            Auto-scroll
+          </label>
           <span class={`log-indicator ${!reconnecting ? "live" : ""}`}>
             <span class="log-dot" />
             {reconnecting ? "Reconnecting…" : "Live"}
           </span>
-          {!pinned && (
-            <button type="button" class="btn-secondary" onClick={jump}>
-              Jump to latest
+          {!autoScroll && (
+            <button type="button" class="btn-secondary btn-compact" onClick={jumpToLatest}>
+              Latest
             </button>
           )}
         </div>
       </div>
+      {trimmed && <p class="log-trim-hint">{trimmed}</p>}
       <pre
         ref={preRef}
-        class="log-pre"
+        class={`log-pre${compact ? " log-pre--compact" : ""}`}
         onScroll={() => {
           const pre = preRef.current;
           if (!pre) return;
           const nearBottom =
             pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-          setPinned(nearBottom);
+          if (!nearBottom && autoScroll) setAutoScroll(false);
         }}
       >
         {lines.map((line, index) => (
