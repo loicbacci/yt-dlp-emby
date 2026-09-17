@@ -931,6 +931,8 @@ def test_check_series_report_hints_are_dicts(tmp_path: Path) -> None:
     assert "text" in hints[0]
     assert "kind" in hints[0]
     assert "sure" in hints[0]
+    assert "dropout_season" in hints[0]
+    assert "dropout_episode" in hints[0]
 
 
 def test_check_series_report_uses_series_when_web_slug_mismatches(tmp_path: Path) -> None:

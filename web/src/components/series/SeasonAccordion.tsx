@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { SeriesEpisode, SeriesSeason, Source } from "../../api";
-import { applySeasonToEpisode, fileStatus, seasonMissingLabel } from "../../seriesView";
+import { applySeasonToEpisode, fileStatus, formatMapsTo, seasonMissingLabel } from "../../seriesView";
 import { EpisodeTable } from "./EpisodeTable";
 import { EpisodeTableSkeleton, Skeleton } from "../Skeleton";
 
@@ -64,6 +64,11 @@ export function SeasonAccordion({
           <span class={missing > 0 ? "season-has-missing" : undefined}>
             {season.label}
           </span>
+          {season.to_season != null && (
+            <span class="map-arrow" title="Emby folder">
+              → {season.to_season === 0 ? "Specials" : `S${String(season.to_season).padStart(2, "0")}`}
+            </span>
+          )}
           <span class="series-row-meta">{season.sublabel}</span>
           {loading && !shown ? (
             <Skeleton width="5.5rem" height="0.85em" class="season-missing-skeleton" />
@@ -101,10 +106,43 @@ export function SeasonAccordion({
           {loading && !shown && <EpisodeTableSkeleton />}
           {shown && (
             <EpisodeTable
-              platform={platform}
-              episodes={shown}
-              onSkip={onSkip}
-              onRemap={onRemap}
+              rows={shown.map((ep) => {
+                const status = ep.status ?? (ep.skipped ? "skipped" : "unmapped");
+                return {
+                  id: ep.id,
+                  index: ep.source_episode,
+                  title: ep.title,
+                  mapsTo: ep.skipped
+                    ? "skipped"
+                    : ep.mapped_season != null && ep.mapped_episode != null
+                      ? formatMapsTo(ep.mapped_season, ep.mapped_episode)
+                      : "—",
+                  status,
+                  skipped: ep.skipped,
+                  actions: (
+                    <>
+                      <button
+                        type="button"
+                        class="btn-ghost"
+                        data-testid={`episode-skip-${ep.id}`}
+                        onClick={() => onSkip(ep)}
+                      >
+                        {ep.skipped ? "Unskip" : "Skip"}
+                      </button>
+                      {platform === "dropout" && !ep.skipped && (
+                        <button
+                          type="button"
+                          class="btn-ghost"
+                          data-testid={`episode-remap-${ep.id}`}
+                          onClick={() => onRemap(ep)}
+                        >
+                          Remap
+                        </button>
+                      )}
+                    </>
+                  ),
+                };
+              })}
             />
           )}
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
   ApiError,
   type AppConfig,
@@ -81,18 +81,46 @@ const HOST_FIELDS: { key: ConfigKey; label: string; hint: string; password?: boo
       label: "Shows folder",
       hint: "Relative to the data directory. Series import files live here.",
     },
+  ];
+
+const SONARR_FIELDS: { key: ConfigKey; label: string; hint: string; password?: boolean }[] =
+  [
     {
       key: "sonarr_url",
-      label: "Sonarr URL",
-      hint: "Used by Dropout check. Example: http://localhost:8989",
+      label: "URL",
+      hint: "Base URL, including port. Example: http://localhost:8989",
     },
     {
       key: "sonarr_api_key",
-      label: "Sonarr API key",
-      hint: "Do not put this in dropout.yaml.",
+      label: "API key",
+      hint: "Settings → General → Security in Sonarr. Do not put this in dropout.yaml.",
       password: true,
     },
   ];
+
+type SonarrCheckState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "ok"; version: string | null; instance: string | null }
+  | { status: "error"; message: string };
+
+function fieldDisplay(
+  config: AppConfig | null,
+  draft: ConfigValues,
+  key: ConfigKey,
+): string {
+  const meta = config?.fields[key];
+  if (meta?.source === "env") return meta.effective ?? "";
+  return draft[key];
+}
+
+function sonarrPingMessage(result: {
+  version: string | null;
+  instance: string | null;
+}): string {
+  const name = result.instance?.trim() || "Sonarr";
+  return result.version ? `Connected to ${name} ${result.version}` : `Connected to ${name}`;
+}
 
 const COOKIE_FIELDS: Record<
   "youtube" | "dropout",
@@ -118,6 +146,10 @@ export function Settings() {
   const [cookieError, setCookieError] = useState<string | null>(null);
   const [run, setRun] = useState<Run>(idleRun);
   const [revealKey, setRevealKey] = useState(false);
+  const [sonarrCheck, setSonarrCheck] = useState<SonarrCheckState>({
+    status: "idle",
+  });
+  const checkGen = useRef(0);
   const [cookies, setCookies] = useState<CookieStatus | null>(null);
   const [cookieModal, setCookieModal] = useState<CookieKind | null>(null);
   const [cookieDraft, setCookieDraft] = useState("");
@@ -218,6 +250,43 @@ export function Settings() {
     if (yamlDirty && !confirmDirtySwitch()) return;
     setTab(next);
     setError(null);
+  };
+
+  const sonarrUrl = fieldDisplay(config, draft, "sonarr_url").trim();
+  const sonarrKey = fieldDisplay(config, draft, "sonarr_api_key").trim();
+  const canCheckSonarr = Boolean(sonarrUrl && sonarrKey);
+
+  useEffect(() => {
+    checkGen.current += 1;
+    setSonarrCheck({ status: "idle" });
+  }, [sonarrUrl, sonarrKey]);
+
+  const checkSonarr = async () => {
+    if (!canCheckSonarr || sonarrCheck.status === "checking") return;
+    const gen = ++checkGen.current;
+    setSonarrCheck({ status: "checking" });
+    try {
+      const result = await apiClient.pingSonarr({
+        sonarr_url: sonarrUrl,
+        sonarr_api_key: sonarrKey,
+      });
+      if (gen !== checkGen.current) return;
+      setSonarrCheck({
+        status: "ok",
+        version: result.version,
+        instance: result.instance,
+      });
+    } catch (err) {
+      if (gen !== checkGen.current) return;
+      if (err instanceof ApiError && err.status === 401) {
+        go("/login");
+        return;
+      }
+      setSonarrCheck({
+        status: "error",
+        message: err instanceof ApiError ? err.message : "Sonarr check failed",
+      });
+    }
   };
 
   const save = async () => {
@@ -384,34 +453,77 @@ export function Settings() {
               <code>[fallback]</code> and are used only when a manifest omits that
               path. Environment variables override both the manifest and this file.
             </p>
-            <h2 class="settings-heading">Path fallbacks</h2>
-            {FALLBACK_FIELDS.map((field) => (
-              <ConfigInput
-                key={field.key}
-                field={field}
-                config={config}
-                draft={draft}
-                revealKey={revealKey}
-                onRevealKey={setRevealKey}
-                onChange={(value) =>
-                  setDraft((current) => ({ ...current, [field.key]: value }))
-                }
-              />
-            ))}
-            <h2 class="settings-heading">This host</h2>
-            {HOST_FIELDS.map((field) => (
-              <ConfigInput
-                key={field.key}
-                field={field}
-                config={config}
-                draft={draft}
-                revealKey={revealKey}
-                onRevealKey={setRevealKey}
-                onChange={(value) =>
-                  setDraft((current) => ({ ...current, [field.key]: value }))
-                }
-              />
-            ))}
+            <section class="settings-section">
+              <h2 class="settings-heading">Path fallbacks</h2>
+              {FALLBACK_FIELDS.map((field) => (
+                <ConfigInput
+                  key={field.key}
+                  field={field}
+                  config={config}
+                  draft={draft}
+                  revealKey={revealKey}
+                  onRevealKey={setRevealKey}
+                  onChange={(value) =>
+                    setDraft((current) => ({ ...current, [field.key]: value }))
+                  }
+                />
+              ))}
+            </section>
+            <section class="settings-section">
+              <h2 class="settings-heading">This host</h2>
+              {HOST_FIELDS.map((field) => (
+                <ConfigInput
+                  key={field.key}
+                  field={field}
+                  config={config}
+                  draft={draft}
+                  revealKey={revealKey}
+                  onRevealKey={setRevealKey}
+                  onChange={(value) =>
+                    setDraft((current) => ({ ...current, [field.key]: value }))
+                  }
+                />
+              ))}
+            </section>
+            <section class="settings-section">
+              <h2 class="settings-heading">Sonarr</h2>
+              <p class="settings-section-lead">
+                Used by Dropout check to match episodes and suggest remaps.
+              </p>
+              {SONARR_FIELDS.map((field) => (
+                <ConfigInput
+                  key={field.key}
+                  field={field}
+                  config={config}
+                  draft={draft}
+                  revealKey={revealKey}
+                  onRevealKey={setRevealKey}
+                  onChange={(value) =>
+                    setDraft((current) => ({ ...current, [field.key]: value }))
+                  }
+                />
+              ))}
+              <div class="settings-sonarr-check">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  disabled={!canCheckSonarr || sonarrCheck.status === "checking"}
+                  onClick={() => void checkSonarr()}
+                >
+                  {sonarrCheck.status === "checking"
+                    ? "Checking…"
+                    : "Check connection"}
+                </button>
+                {sonarrCheck.status === "ok" && (
+                  <span class="settings-check-ok">
+                    {sonarrPingMessage(sonarrCheck)}
+                  </span>
+                )}
+                {sonarrCheck.status === "error" && (
+                  <span class="settings-check-error">{sonarrCheck.message}</span>
+                )}
+              </div>
+            </section>
           </>
         )}
         {tab === "youtube" && (

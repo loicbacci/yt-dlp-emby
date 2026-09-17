@@ -85,12 +85,35 @@ def _raise_http(exc: urllib.error.HTTPError) -> None:
     raise ConfigError(f"Sonarr request failed: HTTP {exc.code}") from exc
 
 
+def ping_sonarr(
+    *,
+    base_url: str,
+    api_key: str,
+    get_json: GetJson | None = None,
+) -> dict[str, Any]:
+    get = get_json or _default_get_json
+    base = base_url.rstrip("/")
+    headers = {"X-Api-Key": api_key, "Accept": "application/json"}
+    try:
+        data = get(f"{base}/api/v3/system/status", headers)
+    except urllib.error.HTTPError as exc:
+        _raise_http(exc)
+    if not isinstance(data, dict):
+        raise ConfigError("Sonarr status was not an object")
+    version = str(data.get("version") or "").strip() or None
+    instance = (
+        str(data.get("instanceName") or data.get("appName") or "").strip() or None
+    )
+    return {"ok": True, "version": version, "instance": instance}
+
+
 def fetch_episodes(
     tvdb_id: int,
     *,
     base_url: str,
     api_key: str,
     get_json: GetJson | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[str, list[SonarrEpisode]]:
     get = get_json or _default_get_json
     base = base_url.rstrip("/")
@@ -106,6 +129,9 @@ def fetch_episodes(
         raise ConfigError(f"Sonarr has no series with tvdb_id={tvdb_id}")
     series_id = first["id"]
     title = str(first.get("title") or "").strip() or f"tvdb_id={tvdb_id}"
+    if extra is not None:
+        extra["title_slug"] = str(first.get("titleSlug") or "").strip() or None
+        extra["id"] = series_id
     try:
         raw_episodes = get(f"{base}/api/v3/episode?seriesId={series_id}", headers)
     except urllib.error.HTTPError as exc:
@@ -135,8 +161,9 @@ def fetch_episodes(
     return title, episodes
 
 
-def _episodes_from_cache(raw: dict) -> tuple[str, list[SonarrEpisode]]:
+def _episodes_from_cache(raw: dict) -> tuple[str, list[SonarrEpisode], str | None]:
     title = str(raw.get("title") or "")
+    title_slug = str(raw.get("title_slug") or "").strip() or None
     items = raw.get("episodes") or []
     episodes: list[SonarrEpisode] = []
     if isinstance(items, list):
@@ -155,7 +182,7 @@ def _episodes_from_cache(raw: dict) -> tuple[str, list[SonarrEpisode]]:
                     air_date=_parse_air_date(item.get("air_date")),
                 )
             )
-    return title, episodes
+    return title, episodes, title_slug
 
 
 def fetch_episodes_cached(
@@ -167,20 +194,44 @@ def fetch_episodes_cached(
     force_refetch: bool = False,
     get_json: GetJson | None = None,
 ) -> tuple[str, list[SonarrEpisode]]:
+    title, episodes, _slug = fetch_episodes_cached_meta(
+        tvdb_id,
+        base_url=base_url,
+        api_key=api_key,
+        cache_path=cache_path,
+        force_refetch=force_refetch,
+        get_json=get_json,
+    )
+    return title, episodes
+
+
+def fetch_episodes_cached_meta(
+    tvdb_id: int,
+    *,
+    base_url: str,
+    api_key: str,
+    cache_path: Path,
+    force_refetch: bool = False,
+    get_json: GetJson | None = None,
+) -> tuple[str, list[SonarrEpisode], str | None]:
     key = str(tvdb_id)
     if not force_refetch:
         cached = load_sonarr_cache(cache_path).get(key)
         if cached is not None:
             return _episodes_from_cache(cached)
+    extra: dict[str, Any] = {}
     title, episodes = fetch_episodes(
         tvdb_id,
         base_url=base_url,
         api_key=api_key,
         get_json=get_json,
+        extra=extra,
     )
+    title_slug = extra.get("title_slug") if isinstance(extra.get("title_slug"), str) else None
     cache = load_sonarr_cache(cache_path)
     cache[key] = {
         "title": title,
+        "title_slug": title_slug,
         "episodes": [
             {
                 "season": item.season,
@@ -192,4 +243,4 @@ def fetch_episodes_cached(
         ],
     }
     save_sonarr_cache(cache_path, cache)
-    return title, episodes
+    return title, episodes, title_slug

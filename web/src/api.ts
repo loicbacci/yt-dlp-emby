@@ -60,6 +60,15 @@ export type DownloadOptions = {
   force?: boolean;
 };
 
+export type DropoutCheckHint = {
+  text: string;
+  kind: string;
+  sure?: boolean;
+  dropout_season?: number | null;
+  dropout_episode?: number | null;
+  series_name?: string | null;
+};
+
 export type DropoutCheck = {
   ok: boolean;
   missing: {
@@ -67,7 +76,7 @@ export type DropoutCheck = {
     episode: number;
     code: string;
     title: string;
-    hints: { text: string; kind: string }[];
+    hints: DropoutCheckHint[];
   }[];
   warnings: { code: string; detail: string }[];
   title_mismatches: { code: string; file_title: string; sonarr_title: string }[];
@@ -190,6 +199,12 @@ export type SonarrEpisode = {
   episode: number;
   title: string;
   air_date: string | null;
+};
+
+export type SonarrPing = {
+  ok: boolean;
+  version: string | null;
+  instance: string | null;
 };
 
 export class ApiError extends Error {
@@ -409,12 +424,17 @@ export const apiClient = {
       `/api/series/${platform}/${slug}/sources/${sourceId}/seasons/${seasonId}/episodes`,
     ),
   getSonarrEpisodes: (tvdbId: number) =>
-    api<{ title: string; episodes: SonarrEpisode[] }>(
+    api<{ title: string; title_slug: string | null; episodes: SonarrEpisode[] }>(
       `/api/sonarr/episodes?tvdb_id=${tvdbId}`,
     ),
   suggestSonarr: (tvdbId: number, title: string) =>
     api<{ suggestions: SonarrEpisode[] }>("/api/sonarr/suggest", {
       method: "POST",
       body: JSON.stringify({ tvdb_id: tvdbId, title }),
+    }),
+  pingSonarr: (values: { sonarr_url: string; sonarr_api_key: string }) =>
+    api<SonarrPing>("/api/sonarr/ping", {
+      method: "POST",
+      body: JSON.stringify(values),
     }),
 };

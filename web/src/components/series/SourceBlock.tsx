@@ -37,10 +37,15 @@ export function SourceBlock({
   return (
     <div class="source-block">
       <div class="source-head">
-        <span class="editor-filename">Source {sourceId + 1}</span>
-        <span class="editor-filename" style={{ flex: 1 }}>
+        <span class="source-kicker">From</span>
+        <a
+          class="source-url"
+          href={source.url}
+          target="_blank"
+          rel="noreferrer"
+        >
           {source.url}
-        </span>
+        </a>
         <button
           type="button"
           class="btn-ghost"

@@ -2,6 +2,12 @@ import { useEffect, useState } from "preact/hooks";
 import { apiClient, type SeriesEpisode, type SonarrEpisode } from "../../api";
 import { formatMapsTo } from "../../seriesView";
 
+export type RemapFields = {
+  to_season: number;
+  to_episode: number;
+  title: string;
+};
+
 export function RemapModal({
   tvdbId,
   episode,
@@ -11,7 +17,7 @@ export function RemapModal({
   tvdbId: number | null;
   episode: SeriesEpisode;
   onClose: () => void;
-  onSave: (fields: { to_season: number; to_episode: number; title: string }) => void;
+  onSave: (fields: RemapFields) => void;
 }) {
   const [toSeason, setToSeason] = useState("");
   const [toEpisode, setToEpisode] = useState("");
@@ -47,7 +53,7 @@ export function RemapModal({
   return (
     <div class="modal-backdrop" role="presentation" onClick={onClose}>
       <form
-        class="modal"
+        class="modal remap-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="remap-title"
@@ -65,8 +71,11 @@ export function RemapModal({
         <h2 id="remap-title" class="modal-title">
           Remap episode
         </h2>
-        <p>
+        <p class="remap-source">
           Dropout E{episode.source_episode} {episode.title}
+        </p>
+        <p class="settings-hint">
+          Choose the Emby / Sonarr slot this Dropout episode should land on.
         </p>
         <label class="settings-field">
           <span class="settings-label">Emby season</span>
@@ -122,11 +131,7 @@ export function RemapModal({
           <button type="button" class="btn-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="submit"
-            class="btn-modal-save"
-            disabled={!ready}
-          >
+          <button type="submit" class="btn-modal-save" disabled={!ready}>
             Save remap
           </button>
         </div>

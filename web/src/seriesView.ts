@@ -1,4 +1,9 @@
-import type { EpisodeFileStatus } from "./api";
+import type {
+  EpisodeFileStatus,
+  SeriesEpisode,
+  SeriesSeason,
+  SeriesSource,
+} from "./api";
 
 export type SeriesPlatform = "youtube" | "dropout";
 
@@ -280,4 +285,126 @@ export function sonarrBadgeLabel(check: {
   }
   if (check.ok) return "ok";
   return "warnings";
+}
+
+export type CatalogEpisode = {
+  sourceId: number;
+  seasonId: number;
+  season: SeriesSeason;
+  episode: SeriesEpisode;
+};
+
+export function catalogEpisodes(
+  sources: SeriesSource[] | undefined,
+  episodeMap: Record<string, SeriesEpisode[]>,
+): CatalogEpisode[] {
+  const rows: CatalogEpisode[] = [];
+  for (const [sourceId, source] of (sources ?? []).entries()) {
+    source.seasons.forEach((season, seasonId) => {
+      const key = seasonFoldKey(sourceId, seasonId);
+      for (const episode of episodeMap[key] ?? []) {
+        rows.push({ sourceId, seasonId, season, episode });
+      }
+    });
+  }
+  return rows;
+}
+
+export function findCatalogEpisode(
+  catalog: CatalogEpisode[],
+  dropoutSeason: number | null | undefined,
+  dropoutEpisode: number,
+): CatalogEpisode | null {
+  const matches = catalog.filter((row) => {
+    if (row.episode.source_episode !== dropoutEpisode) return false;
+    if (dropoutSeason == null) return true;
+    return row.season.dropout === dropoutSeason;
+  });
+  return matches[0] ?? null;
+}
+
+export function catalogEpisodeKey(row: CatalogEpisode): string {
+  return `${row.sourceId}-${row.seasonId}-${row.episode.id}`;
+}
+
+export function filterCatalogEpisodes(
+  catalog: CatalogEpisode[],
+  query: string,
+): CatalogEpisode[] {
+  const q = query.trim().toLowerCase();
+  return catalog.filter((row) => {
+    if (row.episode.skipped) return false;
+    if (!q) return true;
+    const mapped = applySeasonToEpisode(row.season, row.episode);
+    const maps =
+      mapped.mapped_season != null && mapped.mapped_episode != null
+        ? formatMapsTo(mapped.mapped_season, mapped.mapped_episode).toLowerCase()
+        : "";
+    const dropout =
+      row.season.dropout != null ? `season ${row.season.dropout}` : "";
+    return (
+      row.episode.title.toLowerCase().includes(q) ||
+      String(row.episode.source_episode).includes(q) ||
+      `e${row.episode.source_episode}`.includes(q) ||
+      row.season.label.toLowerCase().includes(q) ||
+      dropout.includes(q) ||
+      maps.includes(q)
+    );
+  });
+}
+
+export function remapCandidatesForMissing(
+  catalog: CatalogEpisode[],
+  missing: {
+    title: string;
+    hints: {
+      kind: string;
+      dropout_season?: number | null;
+      dropout_episode?: number | null;
+    }[];
+  },
+): CatalogEpisode[] {
+  const seen = new Set<string>();
+  const rows: CatalogEpisode[] = [];
+  const add = (item: CatalogEpisode | null | undefined) => {
+    if (!item || item.episode.skipped) return;
+    const key = `${item.sourceId}-${item.seasonId}-${item.episode.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(item);
+  };
+  for (const hint of missing.hints) {
+    if (hint.kind !== "origin" || hint.dropout_episode == null) continue;
+    add(findCatalogEpisode(catalog, hint.dropout_season, hint.dropout_episode));
+  }
+  const needle = missing.title.trim().toLowerCase();
+  if (needle) {
+    for (const item of catalog) {
+      const title = item.episode.title.trim().toLowerCase();
+      if (!title) continue;
+      if (title.includes(needle) || needle.includes(title)) add(item);
+    }
+  }
+  return rows;
+}
+
+export function tvdbSeriesUrl(tvdbId: number): string {
+  return `https://thetvdb.com/dereferrer/series/${tvdbId}`;
+}
+
+export function sonarrSeriesUrl(
+  baseUrl: string,
+  titleSlug: string | null | undefined,
+  tvdbId: number,
+): string {
+  const root = baseUrl.replace(/\/+$/, "");
+  if (!root) return "";
+  if (titleSlug) return `${root}/series/${encodeURIComponent(titleSlug)}`;
+  return `${root}/add/new?term=${encodeURIComponent(`tvdb:${tvdbId}`)}`;
+}
+
+export function effectiveConfigValue(
+  field: { file: string | null; effective: string | null } | undefined,
+): string {
+  return (field?.effective || field?.file || "").trim();
 }

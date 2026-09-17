@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, fileStatus, filterSeries, formatMapsTo, isSeasonOpen, parseSeriesPath, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, suggestFolder, uniqueNameError } from "./seriesView";
+import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, fileStatus, filterCatalogEpisodes, filterSeries, findCatalogEpisode, formatMapsTo, isSeasonOpen, parseSeriesPath, remapCandidatesForMissing, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, sonarrSeriesUrl, suggestFolder, tvdbSeriesUrl, uniqueNameError } from "./seriesView";
 
 describe("slugify", () => {
   it("matches python examples", () => {
@@ -252,5 +252,74 @@ describe("sonarrBadgeLabel", () => {
     expect(sonarrBadgeLabel({ ok: true, missing: [] })).toBe("ok");
     expect(sonarrBadgeLabel({ ok: false, missing: [1, 2, 3] })).toBe("3 missing");
     expect(sonarrBadgeLabel({ ok: false, missing: [] })).toBe("warnings");
+  });
+});
+
+describe("catalog remap helpers", () => {
+  const season = {
+    id: "0",
+    dropout: 4,
+    url: "",
+    to_season: 4,
+    enabled: true,
+    only_episodes: null,
+    remaps: [],
+    skip_ids: [],
+    label: "Season 4",
+    sublabel: "",
+    title: null,
+  };
+  const episode = {
+    id: "11",
+    title: "Slug Eater",
+    url: "",
+    source_episode: 11,
+    skipped: false,
+    mapped_season: 4,
+    mapped_episode: 11,
+    mapped_title: "Slug Eater",
+  };
+  const catalog = [
+    { sourceId: 0, seasonId: 0, season, episode },
+  ];
+
+  it("finds a dropout listing", () => {
+    expect(findCatalogEpisode(catalog, 4, 11)?.episode.id).toBe("11");
+    expect(findCatalogEpisode(catalog, 1, 11)).toBeNull();
+  });
+
+  it("builds missing remap candidates from origin hints", () => {
+    const rows = remapCandidatesForMissing(catalog, {
+      title: "Slug Eater",
+      hints: [
+        {
+          kind: "origin",
+          dropout_season: 4,
+          dropout_episode: 11,
+        },
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].episode.title).toBe("Slug Eater");
+  });
+
+  it("filters the catalog by title and episode number", () => {
+    expect(filterCatalogEpisodes(catalog, "slug")).toHaveLength(1);
+    expect(filterCatalogEpisodes(catalog, "e11")).toHaveLength(1);
+    expect(filterCatalogEpisodes(catalog, "pilot")).toHaveLength(0);
+  });
+});
+
+describe("external series urls", () => {
+  it("builds tvdb and sonarr links", () => {
+    expect(tvdbSeriesUrl(361151)).toBe(
+      "https://thetvdb.com/dereferrer/series/361151",
+    );
+    expect(sonarrSeriesUrl("http://sonarr:8989/", "game-changer", 361151)).toBe(
+      "http://sonarr:8989/series/game-changer",
+    );
+    expect(sonarrSeriesUrl("http://sonarr:8989", null, 361151)).toContain(
+      "tvdb%3A361151",
+    );
   });
 });

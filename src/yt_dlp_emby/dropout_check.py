@@ -31,6 +31,9 @@ class Hint:
     text: str
     sure: bool
     kind: str
+    dropout_season: int | None = None
+    dropout_episode: int | None = None
+    series_name: str | None = None
 
 _STOP = frozenset({"the", "a", "an", "of", "and", "to", "for", "in", "on"})
 _CUT_FOR_TIME = re.compile(r"(?:^|[^a-z0-9])season\s*(\d+)\s*:?\s*cut\s*for\s*time", re.I)
@@ -281,7 +284,16 @@ def _missing_suggestions(
         if not exact and not related:
             continue
         origin = _origin_label(series_name, current_name, season, listing)
-        add(Hint(origin if exact else f"maybe {origin}", exact, "origin"))
+        add(
+            Hint(
+                origin if exact else f"maybe {origin}",
+                exact,
+                "origin",
+                dropout_season=season.dropout,
+                dropout_episode=listing.dropout_episode,
+                series_name=None if series_name == current_name else series_name,
+            )
+        )
         if target is None:
             continue
         dest_season, dest_episode, _title = target
@@ -445,7 +457,15 @@ def _run_dropout_check(
 
 
 def _hint_to_dict(hint: Hint) -> dict[str, object]:
-    return {"text": hint.text, "kind": hint.kind, "sure": hint.sure}
+    payload: dict[str, object] = {
+        "text": hint.text,
+        "kind": hint.kind,
+        "sure": hint.sure,
+        "dropout_season": hint.dropout_season,
+        "dropout_episode": hint.dropout_episode,
+        "series_name": hint.series_name,
+    }
+    return payload
 
 
 def check_series_report(

@@ -18,7 +18,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from yt_dlp_emby.config import (
     ConfigError,
     config_target_path,
+    env_value,
     inspect_config_payload,
+    load_config_values,
     write_config,
 )
 from yt_dlp_emby.cookies import (
@@ -57,8 +59,7 @@ from yt_dlp_emby.server.series import (
 )
 from yt_dlp_emby.library import titles_match
 from yt_dlp_emby.dropout_check import titles_related
-from yt_dlp_emby.sonarr import fetch_episodes_cached
-from yt_dlp_emby.config import load_config_values, config_target_path
+from yt_dlp_emby.sonarr import fetch_episodes_cached, fetch_episodes_cached_meta, ping_sonarr
 
 LOG_POLL_SECONDS = 0.2
 LOG_PING_SECONDS = 15.0
@@ -135,6 +136,11 @@ class SonarrSuggestBody(BaseModel):
     title: str
 
 
+class SonarrPingBody(BaseModel):
+    sonarr_url: str | None = None
+    sonarr_api_key: str | None = None
+
+
 def resolve_data_dir(data_dir: Path | None, environ: Mapping[str, str]) -> Path:
     if data_dir is not None:
         return data_dir
@@ -162,6 +168,36 @@ def _series_value_status(exc: BaseException) -> int:
     if "already exists" in msg or "ambiguous" in msg:
         return 409
     return 400
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _resolve_sonarr_credentials(
+    *,
+    environ: Mapping[str, str],
+    data_dir: Path,
+    sonarr_url: str | None = None,
+    sonarr_api_key: str | None = None,
+) -> tuple[str, str]:
+    cfg_path = config_target_path(None, environ, data_dir)
+    cfg = load_config_values(cfg_path) if cfg_path.is_file() else {}
+    url = _first_text(
+        sonarr_url,
+        env_value(environ, "SONARR_URL"),
+        cfg.get("sonarr_url"),
+    )
+    key = _first_text(
+        sonarr_api_key,
+        env_value(environ, "SONARR_API_KEY"),
+        cfg.get("sonarr_api_key"),
+    )
+    return url, key
 
 
 def create_app(
@@ -720,6 +756,32 @@ def create_app(
                 status_code=_series_value_status(exc), detail={"error": str(exc)}
             ) from exc
 
+    @app.post("/api/sonarr/ping")
+    async def post_sonarr_ping(
+        body: SonarrPingBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        url, key = _resolve_sonarr_credentials(
+            environ=request.app.state.environ,
+            data_dir=request.app.state.data_dir,
+            sonarr_url=body.sonarr_url,
+            sonarr_api_key=body.sonarr_api_key,
+        )
+        if not url or not key:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "Sonarr URL and API key are required"},
+            )
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "sonarr_url must start with http:// or https://"},
+            )
+        try:
+            return await asyncio.to_thread(ping_sonarr, base_url=url, api_key=key)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
     @app.get("/api/sonarr/episodes")
     async def get_sonarr_episodes(request: Request, tvdb_id: int) -> dict[str, Any]:
         require_auth(request)
@@ -734,8 +796,8 @@ def create_app(
                 status_code=400, detail={"error": "Sonarr is not configured"}
             )
         try:
-            title, episodes = await asyncio.to_thread(
-                fetch_episodes_cached,
+            title, episodes, title_slug = await asyncio.to_thread(
+                fetch_episodes_cached_meta,
                 tvdb_id,
                 base_url=url,
                 api_key=key,
@@ -745,6 +807,7 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return {
             "title": title,
+            "title_slug": title_slug,
             "episodes": [
                 {
                     "season": ep.season,

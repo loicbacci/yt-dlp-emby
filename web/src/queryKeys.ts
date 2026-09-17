@@ -17,6 +17,7 @@ export const queryKeys = {
   sonarrEpisodes: (tvdbId: number) => ["sonarr-episodes", tvdbId] as const,
   check: (slug: string) => ["series-check", slug] as const,
   layout: (slug: string) => ["series-layout", slug] as const,
+  config: () => ["app-config"] as const,
 };
 
 export const persistQueryRoots = new Set([

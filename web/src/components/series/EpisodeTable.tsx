@@ -1,67 +1,63 @@
-import type { SeriesEpisode } from "../../api";
-import { episodeStatusLabel, formatMapsTo } from "../../seriesView";
+import type { ComponentChildren } from "preact";
+import type { EpisodeFileStatus } from "../../api";
+import { episodeStatusLabel } from "../../seriesView";
+
+export type EpisodeTableRow = {
+  id: string;
+  index: string | number;
+  title: string;
+  mapsTo?: string;
+  status?: EpisodeFileStatus;
+  skipped?: boolean;
+  actions?: ComponentChildren;
+};
 
 export function EpisodeTable({
-  platform,
-  episodes,
-  onSkip,
-  onRemap,
+  rows,
+  indexLabel = "#",
+  showMapsTo = true,
+  empty,
 }: {
-  platform: "youtube" | "dropout";
-  episodes: SeriesEpisode[];
-  onSkip: (episode: SeriesEpisode) => void;
-  onRemap: (episode: SeriesEpisode) => void;
+  rows: EpisodeTableRow[];
+  indexLabel?: string;
+  showMapsTo?: boolean;
+  empty?: string;
 }) {
+  if (rows.length === 0) {
+    return empty ? <p class="settings-hint">{empty}</p> : null;
+  }
+
   return (
     <table class="episode-table">
       <thead>
         <tr>
-          <th>#</th>
+          <th>{indexLabel}</th>
           <th>Title</th>
-          <th>Maps to</th>
+          {showMapsTo && <th>Maps to</th>}
           <th>Status</th>
           <th />
         </tr>
       </thead>
       <tbody>
-        {episodes.map((ep) => {
-          const status = ep.status ?? (ep.skipped ? "skipped" : "unmapped");
+        {rows.map((row) => {
+          const status = row.status ?? (row.skipped ? "skipped" : undefined);
           return (
-            <tr key={ep.id} class={ep.skipped ? "is-skipped" : ""}>
-              <td>{ep.source_episode}</td>
-              <td>{ep.title}</td>
-              <td class="maps-to">
-                {ep.skipped
-                  ? "skipped"
-                  : ep.mapped_season != null && ep.mapped_episode != null
-                    ? formatMapsTo(ep.mapped_season, ep.mapped_episode)
-                    : "—"}
-              </td>
+            <tr key={row.id} class={row.skipped ? "is-skipped" : ""}>
+              <td class="maps-to">{row.index}</td>
+              <td>{row.title}</td>
+              {showMapsTo && (
+                <td class="maps-to">{row.mapsTo ?? "—"}</td>
+              )}
               <td>
-                <span class={`episode-status is-${status}`}>
-                  {episodeStatusLabel(status)}
-                </span>
-              </td>
-              <td>
-                <button
-                  type="button"
-                  class="btn-ghost"
-                  data-testid={`episode-skip-${ep.id}`}
-                  onClick={() => onSkip(ep)}
-                >
-                  {ep.skipped ? "Unskip" : "Skip"}
-                </button>
-                {platform === "dropout" && !ep.skipped && (
-                  <button
-                    type="button"
-                    class="btn-ghost"
-                    data-testid={`episode-remap-${ep.id}`}
-                    onClick={() => onRemap(ep)}
-                  >
-                    Remap
-                  </button>
+                {status ? (
+                  <span class={`episode-status is-${status}`}>
+                    {episodeStatusLabel(status)}
+                  </span>
+                ) : (
+                  "—"
                 )}
               </td>
+              <td>{row.actions}</td>
             </tr>
           );
         })}

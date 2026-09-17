@@ -3,6 +3,7 @@ import { ApiError, type PlanFile, type Run, apiClient, runKeyFor } from "../api"
 import { go } from "../nav";
 import { Header } from "../components/Header";
 import { LogViewer } from "../components/LogViewer";
+import { ConfirmModal } from "../components/ConfirmModal";
 import {
   applyCheck,
   applyProgress,
@@ -60,6 +61,10 @@ export function Dashboard() {
   const [openUpcoming, setOpenUpcoming] = useState<Set<string>>(new Set());
   const [eventsReconnecting, setEventsReconnecting] = useState(false);
   const [downloadTotal, setDownloadTotal] = useState(0);
+  const [pendingDownload, setPendingDownload] = useState<{
+    count: number;
+    ids: string[] | null;
+  } | null>(null);
 
   const tree = useMemo(
     () => (plan ? buildTree(plan as QueuePlanFile) : []),
@@ -197,23 +202,30 @@ export function Dashboard() {
     }
   };
 
-  const onDownload = async () => {
-    if (!plan) {
-      setError("Refresh the queue first");
-      return;
-    }
-    const count = effective.length;
-    if (needsConfirm(count) && !window.confirm(`Download ${count} episodes?`)) return;
+  const startDownload = async (ids: string[] | null, count: number) => {
     setError(null);
     try {
-      setDownloadTotal(effective.length);
+      setDownloadTotal(count);
       setProgress(emptyProgress());
-      const ids = selected.size === 0 ? null : effective;
       applyRun(await apiClient.startDownload({ ids, force }));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Download failed");
       if (err instanceof ApiError && err.status === 401) go("/login");
     }
+  };
+
+  const onDownload = () => {
+    if (!plan) {
+      setError("Refresh the queue first");
+      return;
+    }
+    const count = effective.length;
+    const ids = selected.size === 0 ? null : effective;
+    if (needsConfirm(count)) {
+      setPendingDownload({ count, ids });
+      return;
+    }
+    void startDownload(ids, count);
   };
 
   const onStop = async () => {
@@ -479,6 +491,19 @@ export function Dashboard() {
             {downloadLabel(downloadCount)}
           </button>
         </footer>
+      )}
+      {pendingDownload && (
+        <ConfirmModal
+          title={`Download ${pendingDownload.count} episodes?`}
+          message="This starts a large download. You can stop it from the run bar."
+          confirmLabel={downloadLabel(pendingDownload.count)}
+          onCancel={() => setPendingDownload(null)}
+          onConfirm={() => {
+            const { ids, count } = pendingDownload;
+            setPendingDownload(null);
+            void startDownload(ids, count);
+          }}
+        />
       )}
     </div>
   );

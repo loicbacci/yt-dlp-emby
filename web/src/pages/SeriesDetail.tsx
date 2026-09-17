@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/preact-query";
 import { useSelector } from "@tanstack/preact-store";
 import {
   ApiError,
+  type DropoutCheck,
   type Run,
   type SeriesDetail as SeriesDetailModel,
   type SeriesEpisode,
@@ -12,8 +13,11 @@ import {
 } from "../api";
 import { Header } from "../components/Header";
 import { SeriesDetailSkeleton, Skeleton } from "../components/Skeleton";
+import { UrlField } from "../components/UrlField";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
+import { FindSourceModal } from "../components/series/FindSourceModal";
 import { RemapModal } from "../components/series/RemapModal";
+import { SonarrCheckPanel } from "../components/series/SonarrCheckPanel";
 import { SourceBlock } from "../components/series/SourceBlock";
 import { TvdbSkipPanel } from "../components/series/TvdbSkipPanel";
 import { go } from "../nav";
@@ -26,7 +30,18 @@ import {
   seriesUiStore,
   setSeriesFolds,
 } from "../seriesUiStore";
-import { addTvdbSkip, isSeasonOpen, parseSeriesPath, seasonFoldKey, seasonFoldMap } from "../seriesView";
+import {
+  addTvdbSkip,
+  catalogEpisodes,
+  effectiveConfigValue,
+  isSeasonOpen,
+  parseSeriesPath,
+  remapCandidatesForMissing,
+  seasonFoldKey,
+  seasonFoldMap,
+  sonarrSeriesUrl,
+  tvdbSeriesUrl,
+} from "../seriesView";
 
 const EMPTY_FOLDS: Record<string, boolean> = {};
 
@@ -60,11 +75,15 @@ export function SeriesDetail() {
   const [pendingError, setPendingError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [existing, setExisting] = useState<{ name: string; slug?: string }[]>([]);
-  const [remap, setRemap] = useState<{
-    sourceId: number;
-    seasonId: number;
-    episode: SeriesEpisode;
-  } | null>(null);
+  const [remap, setRemap] = useState<
+    | {
+        sourceId: number;
+        seasonId: number;
+        episode: SeriesEpisode;
+      }
+    | { missing: DropoutCheck["missing"][number] }
+    | null
+  >(null);
 
   const seriesQuery = useQuery({
     queryKey: queryKeys.series(platform, slug),
@@ -93,12 +112,40 @@ export function SeriesDetail() {
     enabled: platform === "dropout" && Boolean(slug) && detail?.tvdb_id != null,
     staleTime: 5 * 60 * 1000,
   });
+  const configQuery = useQuery({
+    queryKey: queryKeys.config(),
+    queryFn: () => apiClient.getConfig(),
+    staleTime: 60 * 1000,
+  });
+  const sonarrMetaQuery = useQuery({
+    queryKey: queryKeys.sonarrEpisodes(detail?.tvdb_id ?? 0),
+    queryFn: () => apiClient.getSonarrEpisodes(detail?.tvdb_id as number),
+    enabled: platform === "dropout" && detail?.tvdb_id != null,
+    staleTime: 30 * 60 * 1000,
+  });
   const layout = layoutQuery.data ?? null;
   const layoutError =
     layoutQuery.error instanceof Error ? layoutQuery.error.message : null;
   const check = checkQuery.data ?? null;
   const checkError =
     checkQuery.error instanceof Error ? checkQuery.error.message : null;
+  const checkLoading =
+    Boolean(detail?.tvdb_id) &&
+    platform === "dropout" &&
+    (checkQuery.isPending || (checkQuery.isFetching && !checkQuery.data));
+  const catalog = useMemo(
+    () => catalogEpisodes(detail?.sources, episodeMap),
+    [detail?.sources, episodeMap],
+  );
+  const sonarrUrl = effectiveConfigValue(configQuery.data?.fields.sonarr_url);
+  const sonarrHref =
+    detail?.tvdb_id != null && sonarrUrl
+      ? sonarrSeriesUrl(
+          sonarrUrl,
+          sonarrMetaQuery.data?.title_slug,
+          detail.tvdb_id,
+        )
+      : "";
 
   const dirty = useMemo(
     () => JSON.stringify(detail) !== JSON.stringify(saved),
@@ -391,6 +438,7 @@ export function SeriesDetail() {
     try {
       await persist(next);
       setRemap(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.check(slug) });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Remap failed");
     }
@@ -429,7 +477,7 @@ export function SeriesDetail() {
           onLogout={() => void logout()}
           onNavigate={navigate}
         />
-        <section class="card series-card">
+        <div class="series-page">
           <a
             href="/series"
             class="header-link"
@@ -443,12 +491,18 @@ export function SeriesDetail() {
           {error ? (
             <div class="validation-error">{error}</div>
           ) : (
-            <SeriesDetailSkeleton />
+            <section class="settings-section">
+              <SeriesDetailSkeleton />
+            </section>
           )}
-        </section>
+        </div>
       </div>
     );
   }
+
+  const catalogView = !(platform === "dropout" && folderView === "emby");
+  const tvdbHref =
+    detail.tvdb_id != null ? tvdbSeriesUrl(detail.tvdb_id) : "";
 
   return (
     <div class="series-shell">
@@ -458,9 +512,9 @@ export function SeriesDetail() {
         onLogout={() => void logout()}
         onNavigate={navigate}
       />
-      <section class="card series-card">
-        <div class="series-toolbar">
-          <div>
+      <div class="series-page">
+        <section class="settings-section series-hero">
+          <div class="series-hero-top">
             <a
               href="/series"
               class="header-link"
@@ -471,16 +525,55 @@ export function SeriesDetail() {
             >
               ← Series
             </a>
-            <h1 class="settings-title">{detail.name}</h1>
-            <div class="series-row-meta">
-              <span>{detail.path}</span>
-              <span>{detail.file}</span>
-              {detail.tvdb_id != null && <span>tvdb {detail.tvdb_id}</span>}
-              {detail.inline && <span>inline</span>}
+            <div class="series-hero-links">
+              {tvdbHref && (
+                <a
+                  class="ext-link"
+                  href={tvdbHref}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  TVDB
+                </a>
+              )}
+              {sonarrHref && (
+                <a
+                  class="ext-link"
+                  href={sonarrHref}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Sonarr
+                </a>
+              )}
             </div>
-            <div class="series-toolbar">
-              <button type="button" class="btn-ghost" onClick={() => setEditOpen(true)}>
-                Edit details
+          </div>
+          <div class="series-hero-row">
+            <div>
+              <h1 class="settings-title">{detail.name}</h1>
+              <p class="series-map-lead">
+                {platform === "youtube" ? "YouTube" : "Dropout"}
+                <span class="map-arrow"> → </span>
+                Emby
+                {detail.path ? ` · ${detail.path}` : ""}
+              </p>
+            </div>
+            <div class="series-toolbar-end">
+              <span
+                class={
+                  detail.platform === "youtube" ? "badge-youtube" : "badge-dropout"
+                }
+              >
+                {detail.platform === "youtube" ? "YouTube" : "Dropout.tv"}
+              </span>
+              {dirty && <span class="editor-unsaved">Unsaved</span>}
+              {flash && !dirty && <span class="saved-flash">Saved</span>}
+              <button
+                type="button"
+                class="btn-ghost"
+                onClick={() => setEditOpen(true)}
+              >
+                Edit
               </button>
               <button
                 type="button"
@@ -489,280 +582,272 @@ export function SeriesDetail() {
               >
                 Delete
               </button>
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={!dirty}
+                onClick={() => void save()}
+              >
+                Save
+              </button>
             </div>
           </div>
-          <div class="series-toolbar-end">
-            <span
-              class={
-                detail.platform === "youtube" ? "badge-youtube" : "badge-dropout"
-              }
-            >
-              {detail.platform === "youtube" ? "YouTube" : "Dropout.tv"}
-            </span>
-            {dirty && <span class="editor-unsaved">Unsaved</span>}
-            {flash && !dirty && <span class="saved-flash">Saved</span>}
-            <button
-              type="button"
-              class="btn-secondary"
-              disabled={!dirty}
-              onClick={() => void save()}
-            >
-              Save
-            </button>
-          </div>
-        </div>
+        </section>
         {platform === "dropout" && (
-          <div class="series-toolbar">
+          <div class="map-switch" role="tablist" aria-label="Mapping view">
             <button
               type="button"
+              role="tab"
+              aria-selected={folderView === "sources"}
               class={folderView === "sources" ? "filter-chip active" : "filter-chip"}
               onClick={() => setFolderView("sources")}
             >
-              Dropout seasons
+              Dropout catalog
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={folderView === "emby"}
               class={folderView === "emby" ? "filter-chip active" : "filter-chip"}
               onClick={() => setFolderView("emby")}
             >
-              Emby folders
+              Emby library
             </button>
           </div>
         )}
-        {platform === "dropout" && folderView === "emby" && layoutError && (
-          <p class="settings-hint">{layoutError}</p>
-        )}
-        {platform === "dropout" && folderView === "emby" && !layout && !layoutError && (
-          <div class="layout-folders" aria-busy="true">
-            <Skeleton width="9rem" height="1em" />
-            <div style={{ marginTop: "10px" }}>
-              <Skeleton width="100%" height="2.2em" />
-            </div>
-            <div style={{ marginTop: "8px" }}>
-              <Skeleton width="80%" height="2.2em" />
-            </div>
-          </div>
-        )}
-        {platform === "dropout" && folderView === "emby" && layout && (
-          <div class="layout-folders">
-            {layout.folders.map((folder) => (
-              <details key={folder.label} open>
-                <summary>{folder.folder ?? folder.label}</summary>
-                <ul>
-                  {folder.episodes.map((ep) => (
-                    <li key={`${ep.code}-${ep.title}`}>
-                      {ep.code ?? "—"} {ep.title}{" "}
-                      <span class="run-meta">{ep.status}</span>
-                      {ep.origin && <span class="run-meta">({ep.origin})</span>}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            ))}
-          </div>
-        )}
-        {!(platform === "dropout" && folderView === "emby") && (
-        <>
-        <h2 class="settings-heading">
-          {platform === "youtube" ? "Playlists" : "Catalog URLs"}
-        </h2>
-        {detail.sources.some((src) => src.seasons.length > 0) && (
-          <div class="series-toolbar">
-            <button
-              type="button"
-              class="btn-ghost"
-              onClick={() => setSeriesFolds(uiKey, seasonFoldMap(detail.sources, true))}
-            >
-              Expand all
-            </button>
-            <button
-              type="button"
-              class="btn-ghost"
-              onClick={() => setSeriesFolds(uiKey, seasonFoldMap(detail.sources, false))}
-            >
-              Collapse all
-            </button>
-          </div>
-        )}
-        <form
-          class="series-toolbar"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void addUrl();
-          }}
-        >
-          <input
-            type="url"
-            class="series-search"
-            placeholder="https://…"
-            value={urlDraft}
-            disabled={addingUrl || runActive}
-            data-testid="source-add"
-            onInput={(e) =>
-              setUrlDraft((e.currentTarget as HTMLInputElement).value)
-            }
-          />
-          <button
-            type="submit"
-            class="btn-secondary"
-            disabled={addingUrl || runActive || !urlDraft.trim()}
-          >
-            Add URL
-          </button>
-        </form>
-        {runActive && (
-          <div class="banner banner-warn">a run is in progress</div>
-        )}
-        {error && <div class="validation-error">{error}</div>}
-        {detail.sources.map((source, sourceId) => (
-          <SourceBlock
-            key={source.id}
-            platform={platform}
-            source={source}
-            sourceId={sourceId}
-            runActive={runActive}
-            episodeMap={episodeMap}
-            loadingMap={loadingMap}
-            onDisk={onDisk}
-            seasonOpen={(seasonId) => isSeasonOpen(seasonFolds, sourceId, seasonId)}
-            onToggleOpen={(seasonId) => {
-              const key = seasonFoldKey(sourceId, seasonId);
-              patchSeriesFold(
-                uiKey,
-                key,
-                !isSeasonOpen(seasonFolds, sourceId, seasonId),
-              );
-            }}
-            onRefresh={() => void refreshSource(sourceId)}
-            onRemove={() => void removeSource(sourceId)}
-            onToggleEnabled={(seasonId) =>
-              void toggleSeasonEnabled(sourceId, seasonId)
-            }
-            onTitleChange={(seasonId, value) =>
-              void updateSeasonTitle(sourceId, seasonId, value)
-            }
-            onSkip={(seasonId, ep) => void toggleSkip(sourceId, seasonId, ep)}
-            onRemap={(seasonId, ep) =>
-              setRemap({ sourceId, seasonId, episode: ep })
-            }
-          />
-        ))}
-        {pendingUrl && (
-          <div class="source-block">
-            <div class="source-head">
-              <span class="editor-filename">{pendingUrl}</span>
-              {pendingError && (
-                <button
-                  type="button"
-                  class="btn-ghost"
-                  onClick={() => {
-                    setPendingUrl(null);
-                    setPendingError(null);
-                  }}
-                >
-                  Dismiss
-                </button>
-              )}
-            </div>
-            <p class="settings-hint">
-              {addingUrl ? "Discovering seasons…" : pendingError ?? ""}
+        {platform === "dropout" && folderView === "emby" && (
+          <section class="settings-section">
+            <h2 class="settings-heading">On disk</h2>
+            <p class="settings-section-lead">
+              How this series lands in Emby after remaps.
             </p>
-          </div>
-        )}
-        {platform === "dropout" && (
-          <TvdbSkipPanel
-            detail={detail}
-            onChange={(tvdb_skip) => {
-              void persist({ ...detail, tvdb_skip }).catch((err) => {
-                setError(
-                  err instanceof ApiError ? err.message : "Update failed",
-                );
-              });
-            }}
-          />
-        )}
-        </>
-        )}
-        {platform === "dropout" && detail.tvdb_id != null && (
-          <section class="sonarr-check" id="sonarr-check">
-            <h2 class="settings-heading">Sonarr check</h2>
-            {checkError && <p class="settings-hint">{checkError}</p>}
-            {check && (
-              <>
-                {check.ok && <p class="saved-flash">ok</p>}
-                {check.missing.length > 0 && (
-                  <>
-                    <h3>Missing</h3>
+            {layoutError && <p class="settings-hint">{layoutError}</p>}
+            {!layout && !layoutError && (
+              <div class="layout-folders" aria-busy="true">
+                <Skeleton width="9rem" height="1em" />
+                <div style={{ marginTop: "10px" }}>
+                  <Skeleton width="100%" height="2.2em" />
+                </div>
+                <div style={{ marginTop: "8px" }}>
+                  <Skeleton width="80%" height="2.2em" />
+                </div>
+              </div>
+            )}
+            {layout && (
+              <div class="layout-folders">
+                {layout.folders.map((folder) => (
+                  <details key={folder.label} open>
+                    <summary>{folder.folder ?? folder.label}</summary>
                     <ul>
-                      {check.missing.map((row) => (
-                        <li key={row.code} class="sonarr-check-row">
-                          <span>
-                            {row.code} {row.title}
-                            {row.hints?.length
-                              ? ` — ${row.hints.map((h) => h.text).join("; ")}`
-                              : ""}
-                          </span>
-                          <button
-                            type="button"
-                            class="btn-ghost"
-                            onClick={() => {
-                              void persist({
-                                ...detail,
-                                tvdb_skip: addTvdbSkip(
-                                  detail.tvdb_skip,
-                                  row.season,
-                                  row.episode,
-                                ),
-                              }).catch((err) => {
-                                setError(
-                                  err instanceof ApiError
-                                    ? err.message
-                                    : "Skip update failed",
-                                );
-                              });
-                            }}
-                          >
-                            Add to skip list
-                          </button>
+                      {folder.episodes.map((ep) => (
+                        <li key={`${ep.code}-${ep.title}`}>
+                          <span class="maps-to">{ep.code ?? "—"}</span> {ep.title}{" "}
+                          <span class="run-meta">{ep.status}</span>
+                          {ep.origin && (
+                            <span class="run-meta">({ep.origin})</span>
+                          )}
                         </li>
                       ))}
                     </ul>
-                  </>
-                )}
-                {check.warnings.length > 0 && (
-                  <>
-                    <h3>Warnings</h3>
-                    <ul>
-                      {check.warnings.map((row) => (
-                        <li key={row.code}>{row.code} {row.detail}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                {check.title_mismatches?.length > 0 && (
-                  <>
-                    <h3>On disk title differs</h3>
-                    <ul>
-                      {check.title_mismatches.map((row) => (
-                        <li key={row.code}>
-                          {row.code} {row.file_title} (Sonarr: {row.sonarr_title})
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </>
+                  </details>
+                ))}
+              </div>
             )}
           </section>
         )}
-      </section>
-      {remap && (
+        {catalogView && (
+          <section class="settings-section">
+            <div class="series-section-head">
+              <div>
+                <h2 class="settings-heading">
+                  {platform === "youtube" ? "Playlists" : "From Dropout"}
+                </h2>
+                <p class="settings-section-lead">
+                  {platform === "youtube"
+                    ? "Playlists downloaded into this series."
+                    : "Catalog URLs and how each season maps into Emby."}
+                </p>
+              </div>
+              {detail.sources.some((src) => src.seasons.length > 0) && (
+                <div class="series-toolbar">
+                  <button
+                    type="button"
+                    class="btn-ghost"
+                    onClick={() =>
+                      setSeriesFolds(uiKey, seasonFoldMap(detail.sources, true))
+                    }
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-ghost"
+                    onClick={() =>
+                      setSeriesFolds(uiKey, seasonFoldMap(detail.sources, false))
+                    }
+                  >
+                    Collapse all
+                  </button>
+                </div>
+              )}
+            </div>
+            <form
+              class="url-add"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void addUrl();
+              }}
+            >
+              <UrlField
+                value={urlDraft}
+                placeholder={
+                  platform === "youtube"
+                    ? "Paste a YouTube playlist or channel URL"
+                    : "Paste a Dropout series or season URL"
+                }
+                disabled={addingUrl || runActive}
+                testId="source-add"
+                onChange={setUrlDraft}
+              />
+              <button
+                type="submit"
+                class="btn-secondary"
+                disabled={addingUrl || runActive || !urlDraft.trim()}
+              >
+                Add
+              </button>
+            </form>
+            {runActive && (
+              <div class="banner banner-warn">a run is in progress</div>
+            )}
+            {error && <div class="validation-error">{error}</div>}
+            {detail.sources.map((source, sourceId) => (
+              <SourceBlock
+                key={source.id}
+                platform={platform}
+                source={source}
+                sourceId={sourceId}
+                runActive={runActive}
+                episodeMap={episodeMap}
+                loadingMap={loadingMap}
+                onDisk={onDisk}
+                seasonOpen={(seasonId) =>
+                  isSeasonOpen(seasonFolds, sourceId, seasonId)
+                }
+                onToggleOpen={(seasonId) => {
+                  const key = seasonFoldKey(sourceId, seasonId);
+                  patchSeriesFold(
+                    uiKey,
+                    key,
+                    !isSeasonOpen(seasonFolds, sourceId, seasonId),
+                  );
+                }}
+                onRefresh={() => void refreshSource(sourceId)}
+                onRemove={() => void removeSource(sourceId)}
+                onToggleEnabled={(seasonId) =>
+                  void toggleSeasonEnabled(sourceId, seasonId)
+                }
+                onTitleChange={(seasonId, value) =>
+                  void updateSeasonTitle(sourceId, seasonId, value)
+                }
+                onSkip={(seasonId, ep) => void toggleSkip(sourceId, seasonId, ep)}
+                onRemap={(seasonId, ep) =>
+                  setRemap({ sourceId, seasonId, episode: ep })
+                }
+              />
+            ))}
+            {pendingUrl && (
+              <div class="source-block">
+                <div class="source-head">
+                  <span class="source-kicker">From</span>
+                  <span class="source-url">{pendingUrl}</span>
+                  {pendingError && (
+                    <button
+                      type="button"
+                      class="btn-ghost"
+                      onClick={() => {
+                        setPendingUrl(null);
+                        setPendingError(null);
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+                <p class="settings-hint">
+                  {addingUrl ? "Discovering seasons…" : pendingError ?? ""}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+        {platform === "dropout" && detail.tvdb_id != null && (
+          <SonarrCheckPanel
+            detail={detail}
+            check={check}
+            checkError={checkError}
+            loading={checkLoading}
+            onSkip={(season, episode) => {
+              void persist({
+                ...detail,
+                tvdb_skip: addTvdbSkip(detail.tvdb_skip, season, episode),
+              }).catch((err) => {
+                setError(
+                  err instanceof ApiError ? err.message : "Skip update failed",
+                );
+              });
+            }}
+            onRemap={(row) => setRemap({ missing: row })}
+          />
+        )}
+        {platform === "dropout" && catalogView && (
+          <section class="settings-section">
+            <TvdbSkipPanel
+              detail={detail}
+              onChange={(tvdb_skip) => {
+                void persist({ ...detail, tvdb_skip }).catch((err) => {
+                  setError(
+                    err instanceof ApiError ? err.message : "Update failed",
+                  );
+                });
+              }}
+            />
+          </section>
+        )}
+      </div>
+      {remap && "episode" in remap && (
         <RemapModal
           tvdbId={detail.tvdb_id}
           episode={remap.episode}
           onClose={() => setRemap(null)}
           onSave={(fields) =>
             void applyRemap(remap.sourceId, remap.seasonId, remap.episode, fields)
+          }
+        />
+      )}
+      {remap && "missing" in remap && (
+        <FindSourceModal
+          target={{
+            season: remap.missing.season,
+            episode: remap.missing.episode,
+            title: remap.missing.title,
+          }}
+          catalog={catalog}
+          suggestions={remapCandidatesForMissing(catalog, remap.missing)}
+          hints={remap.missing.hints}
+          loading={Object.values(loadingMap).some(Boolean)}
+          onClose={() => setRemap(null)}
+          onSave={(source) =>
+            void applyRemap(
+              source.sourceId,
+              source.seasonId,
+              source.episode,
+              {
+                to_season: remap.missing.season,
+                to_episode: remap.missing.episode,
+                title: remap.missing.title,
+              },
+            )
           }
         />
       )}
