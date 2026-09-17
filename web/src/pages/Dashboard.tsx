@@ -9,13 +9,17 @@ import {
   buildTree,
   downloadLabel,
   effectiveDownloadIds,
+  finishedEpisodes,
   formatItemSize,
+  formatProgressStats,
   heroFrom,
+  emptyProgress,
   mergeProgress,
   needsConfirm,
   overlayProgress,
   pendingIds,
   platformLabel,
+  remainingEpisodes,
   runStatsLine,
   searchOpen,
   triState,
@@ -50,13 +54,7 @@ export function Dashboard() {
   const [showForce, setShowForce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listingSeries, setListingSeries] = useState<string | null>(null);
-  const [progress, setProgress] = useState<ProgressState>({
-    currentId: null,
-    percent: null,
-    phase: null,
-    doneIds: new Set(),
-    failedIds: new Set(),
-  });
+  const [progress, setProgress] = useState<ProgressState>(emptyProgress());
   const [openSeries, setOpenSeries] = useState<Set<string>>(new Set());
   const [openSeasons, setOpenSeasons] = useState<Set<string>>(new Set());
   const [openUpcoming, setOpenUpcoming] = useState<Set<string>>(new Set());
@@ -126,13 +124,7 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => {
-    setProgress({
-      currentId: null,
-      percent: null,
-      phase: null,
-      doneIds: new Set(),
-      failedIds: new Set(),
-    });
+    setProgress(emptyProgress());
     setListingSeries(null);
     setEventsReconnecting(false);
     let source: EventSource | null = null;
@@ -186,7 +178,7 @@ export function Dashboard() {
             if (ep.id === progress.currentId) {
               setOpenSeries((s) => new Set(s).add(series.key));
               setOpenUpcoming((s) => new Set(s).add(series.key));
-              setOpenSeasons((s) => new Set(s).add(season.key));
+              setOpenSeasons(new Set([season.key]));
             }
           }
         }
@@ -215,13 +207,7 @@ export function Dashboard() {
     setError(null);
     try {
       setDownloadTotal(effective.length);
-      setProgress({
-        currentId: null,
-        percent: null,
-        phase: null,
-        doneIds: new Set(),
-        failedIds: new Set(),
-      });
+      setProgress(emptyProgress());
       const ids = selected.size === 0 ? null : effective;
       applyRun(await apiClient.startDownload({ ids, force }));
     } catch (err) {
@@ -252,6 +238,7 @@ export function Dashboard() {
     progress,
     downloading ? downloadTotal || allPending.length : allPending.length,
   );
+  const progressStats = downloading ? formatProgressStats(progress) : null;
   const expandedSeasons = useMemo(() => {
     const keys = new Set(openSeasons);
     const q = query.trim();
@@ -390,17 +377,22 @@ export function Dashboard() {
             </button>
           )}
           {downloading && (
-            <div
-              class={`run-hero-bar${progress.percent == null ? " is-indeterminate" : ""}`}
-            >
+            <div class="run-hero-progress">
               <div
-                class="run-hero-fill"
-                style={
-                  progress.percent != null
-                    ? { width: `${progress.percent}%` }
-                    : undefined
-                }
-              />
+                class={`run-hero-bar${progress.percent == null ? " is-indeterminate" : ""}`}
+              >
+                <div
+                  class="run-hero-fill"
+                  style={
+                    progress.percent != null
+                      ? { width: `${progress.percent}%` }
+                      : undefined
+                  }
+                />
+              </div>
+              {progressStats && (
+                <p class="run-hero-metrics">{progressStats}</p>
+              )}
             </div>
           )}
         </section>
@@ -529,6 +521,21 @@ function SeriesRow({
 }) {
   const childIds = series.seasons.flatMap((s) => s.pending.map((e) => e.id));
   const state = triState(selected, childIds);
+  const hideDone = downloading;
+  const upcoming = series.seasons
+    .map((season) => ({
+      season,
+      remaining: remainingEpisodes(season, hideDone),
+    }))
+    .filter((row) => row.remaining.length > 0);
+  const downloadedNow = series.seasons.flatMap((season) =>
+    (hideDone ? finishedEpisodes(season) : []).map((ep) => ({
+      season,
+      ep,
+    })),
+  );
+  const upcomingCount = upcoming.reduce((n, row) => n + row.remaining.length, 0);
+  const diskCount = series.completeSeasons.length + downloadedNow.length;
   if (series.error) {
     return (
       <div class="run-row run-row-series">
@@ -567,13 +574,15 @@ function SeriesRow({
         </button>
         <span class="run-meta">{platformLabel(series.platform)}</span>
         {listing && <span class="run-meta">Listing…</span>}
-        {series.pendingCount > 0 && (
-          <span class="run-meta">{series.pendingCount} new</span>
+        {(hideDone ? upcomingCount : series.pendingCount) > 0 && (
+          <span class="run-meta">
+            {hideDone ? upcomingCount : series.pendingCount} new
+          </span>
         )}
       </div>
       {open && (
         <div class="run-series-body">
-          {series.seasons.length > 0 && (
+          {upcoming.length > 0 && (
             <details
               class="run-upcoming"
               open={upcomingOpen}
@@ -582,14 +591,13 @@ function SeriesRow({
               }
             >
               <summary class="run-upcoming-summary">
-                Upcoming · {series.seasons.length}{" "}
-                {series.seasons.length === 1 ? "season" : "seasons"} ·{" "}
-                {series.pendingCount}{" "}
-                {series.pendingCount === 1 ? "episode" : "episodes"}
+                Upcoming · {upcoming.length}{" "}
+                {upcoming.length === 1 ? "season" : "seasons"} · {upcomingCount}{" "}
+                {upcomingCount === 1 ? "episode" : "episodes"}
               </summary>
-              {series.seasons.map((season) => {
+              {upcoming.map(({ season, remaining }) => {
                 const seasonOpen = openSeasons.has(season.key);
-                const seasonIds = season.pending.map((e) => e.id);
+                const seasonIds = remaining.map((e) => e.id);
                 return (
                   <div key={season.key} class="run-row run-row-season">
                     <div class="run-series-head">
@@ -624,15 +632,15 @@ function SeriesRow({
                         {season.seasonTitle ?? season.folderLabel}
                       </button>
                       <span class="run-meta muted">{season.folderLabel} on disk</span>
-                      <span class="run-meta">{season.pending.length} new</span>
+                      <span class="run-meta">{remaining.length} new</span>
                     </div>
                     {seasonOpen &&
-                      season.pending.map((ep) => {
+                      remaining.map((ep) => {
                         const now = currentId === ep.id;
                         return (
                           <div
                             key={ep.id}
-                            class={`run-row run-row-ep${now ? " is-now" : ""}${ep.status === "done" ? " is-done" : ""}${ep.status === "failed" ? " is-failed" : ""}`}
+                            class={`run-row run-row-ep${now ? " is-now" : ""}${ep.status === "failed" ? " is-failed" : ""}`}
                           >
                             {!downloading && (
                               <input
@@ -653,7 +661,6 @@ function SeriesRow({
                             {now && currentPercent != null && (
                               <span class="run-meta">{Math.round(currentPercent)}%</span>
                             )}
-                            {ep.status === "done" && <span class="run-meta">done</span>}
                             {ep.status === "failed" && (
                               <span class="run-meta run-error">failed</span>
                             )}
@@ -668,16 +675,23 @@ function SeriesRow({
               })}
             </details>
           )}
-          {series.completeSeasons.length > 0 && (
+          {diskCount > 0 && (
             <details class="run-complete queue-complete">
-              <summary>
-                Already on disk ({series.completeSeasons.length} seasons)
-              </summary>
+              <summary>Already on disk ({diskCount})</summary>
               <ul>
                 {series.completeSeasons.map((s) => (
                   <li key={s.folderLabel}>
                     {s.seasonTitle ?? s.folderLabel}
                     <span class="run-meta muted"> · {s.skip} skipped</span>
+                  </li>
+                ))}
+                {downloadedNow.map(({ season, ep }) => (
+                  <li key={ep.id}>
+                    <span class="run-code">{ep.code}</span> {ep.title}
+                    <span class="run-meta muted">
+                      {" "}
+                      · {season.seasonTitle ?? season.folderLabel}
+                    </span>
                   </li>
                 ))}
               </ul>

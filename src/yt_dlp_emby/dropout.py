@@ -235,6 +235,19 @@ def _dest_sort_key(season: int | None) -> tuple[int, int]:
     return (0, season)
 
 
+def sort_download_jobs(jobs: list[tuple]) -> list[tuple]:
+    """Order downloads by Emby dest season/episode (specials last), not Dropout listing."""
+    return sorted(
+        jobs,
+        key=lambda job: (
+            job[0].name.casefold(),
+            job[0].path.casefold(),
+            _dest_sort_key(job[2]),
+            int(job[3]),
+        ),
+    )
+
+
 def print_series_layout(settings: Settings, rows: list[WorkRow]) -> None:
     groups: dict[int | None, list[WorkRow]] = {}
     for row in rows:
@@ -558,9 +571,9 @@ def _run_dropout(
         code = emby_code(to_season, to_episode)
         return allowed_item_id(item_id("dropout", slugify(series_obj.name), code))
 
-    download_jobs = [
-        job for job in jobs if (force or job[6] is None) and _job_allowed(job)
-    ]
+    download_jobs = sort_download_jobs(
+        [job for job in jobs if (force or job[6] is None) and _job_allowed(job)]
+    )
     stats.skipped = len(jobs) - len(download_jobs)
 
     if settings.dry_run:

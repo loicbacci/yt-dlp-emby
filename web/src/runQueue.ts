@@ -61,6 +61,7 @@ export type CompleteSeasonSummary = {
   folderLabel: string;
   seasonTitle: string | null;
   skip: number;
+  destSeason?: number;
 };
 
 export type QueueSeries = {
@@ -241,10 +242,50 @@ export function buildTree(plan: PlanFile): QueueTree {
         folderLabel: meta.folder,
         seasonTitle: meta.season_title,
         skip: meta.skip,
+        destSeason: meta.dest_season,
       });
     }
   }
+  for (const series of bySeries.values()) {
+    sortQueueSeries(series);
+  }
   return [...bySeries.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function destSortKey(season: number | null | undefined): [number, number] {
+  if (season == null) return [2, 0];
+  if (season === 0) return [1, 0];
+  return [0, season];
+}
+
+export function episodeNumberFromCode(code: string): number {
+  const match = /E(\d+)\s*$/i.exec(code.trim());
+  if (!match) return 0;
+  return Number(match[1]);
+}
+
+function compareDest(a: number, b: number): number {
+  const [ag, av] = destSortKey(a);
+  const [bg, bv] = destSortKey(b);
+  return ag - bg || av - bv;
+}
+
+function sortQueueSeries(series: QueueSeries): void {
+  series.seasons.sort((a, b) => compareDest(a.destSeason, b.destSeason));
+  for (const season of series.seasons) {
+    season.pending.sort(
+      (a, b) => episodeNumberFromCode(a.code) - episodeNumberFromCode(b.code),
+    );
+  }
+  series.completeSeasons.sort((a, b) =>
+    compareDest(a.destSeason ?? destSeasonFromFolder(a.folderLabel), b.destSeason ?? destSeasonFromFolder(b.folderLabel)),
+  );
+}
+
+function destSeasonFromFolder(folder: string): number {
+  if (/^specials$/i.test(folder.trim())) return 0;
+  const match = /season\s+(\d+)/i.exec(folder);
+  return match ? Number(match[1]) : 0;
 }
 
 function seriesHasQueueWork(series: QueueSeries): boolean {
@@ -329,6 +370,18 @@ export function applyCheck(
   return next;
 }
 
+export function remainingEpisodes(
+  season: QueueSeason,
+  hideDone: boolean,
+): QueueEpisode[] {
+  if (!hideDone) return season.pending;
+  return season.pending.filter((ep) => ep.status !== "done");
+}
+
+export function finishedEpisodes(season: QueueSeason): QueueEpisode[] {
+  return season.pending.filter((ep) => ep.status === "done");
+}
+
 export function pendingIds(tree: QueueTree): string[] {
   const ids: string[] = [];
   for (const series of tree) {
@@ -395,11 +448,82 @@ export type ProgressState = {
   currentId: string | null;
   percent: number | null;
   phase: string | null;
+  speed: number | null;
+  eta: number | null;
+  bytes: number | null;
+  total: number | null;
   doneIds: Set<string>;
   failedIds: Set<string>;
 };
 
+export function emptyProgress(): ProgressState {
+  return {
+    currentId: null,
+    percent: null,
+    phase: null,
+    speed: null,
+    eta: null,
+    bytes: null,
+    total: null,
+    doneIds: new Set(),
+    failedIds: new Set(),
+  };
+}
+
 const ANSI_RE = /\u001b\[[0-9;]*m/g;
+
+export function parseFiniteNumber(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const parsed = parseFloat(raw.replace(ANSI_RE, "").trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function formatBinaryBytes(num: number | null | undefined): string {
+  if (num == null || !Number.isFinite(num)) return "?";
+  let value = num;
+  for (const unit of ["B", "KiB", "MiB", "GiB"] as const) {
+    if (Math.abs(value) < 1024 || unit === "GiB") {
+      return `${value.toFixed(1)}${unit}`;
+    }
+    value /= 1024;
+  }
+  return `${value.toFixed(1)}GiB`;
+}
+
+export function formatEta(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "--:--";
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+export function formatProgressStats(progress: ProgressState): string | null {
+  const parts: string[] = [];
+  if (progress.phase) parts.push(progress.phase);
+  if (progress.percent != null) parts.push(`${progress.percent.toFixed(1)}%`);
+  if (progress.total != null && progress.total > 0) {
+    parts.push(
+      `${formatBinaryBytes(progress.bytes ?? 0)}/${formatBinaryBytes(progress.total)}`,
+    );
+  } else if (progress.bytes != null && progress.bytes > 0) {
+    parts.push(formatBinaryBytes(progress.bytes));
+  }
+  if (progress.speed != null && Number.isFinite(progress.speed)) {
+    parts.push(`${formatBinaryBytes(progress.speed)}/s`);
+  }
+  if (progress.speed != null || progress.eta != null) {
+    parts.push(`ETA ${formatEta(progress.eta)}`);
+  }
+  return parts.length ? parts.join("  ") : null;
+}
 
 export function parsePercent(raw: unknown, bytes?: unknown, total?: unknown): number | null {
   if (typeof raw === "number" && Number.isFinite(raw)) {
@@ -423,17 +547,15 @@ export function applyProgress(
   event: Record<string, unknown>,
 ): { tree: QueueTree; progress: ProgressState } {
   const kind = event.event as string | undefined;
-  const progress: ProgressState = {
-    currentId: null,
-    percent: null,
-    phase: null,
-    doneIds: new Set(),
-    failedIds: new Set(),
-  };
+  const progress: ProgressState = emptyProgress();
   if (kind === "progress") {
     progress.currentId = (event.id as string) ?? null;
     progress.percent = parsePercent(event.percent, event.bytes, event.total);
     progress.phase = (event.phase as string) ?? null;
+    progress.speed = parseFiniteNumber(event.speed);
+    progress.eta = parseFiniteNumber(event.eta);
+    progress.bytes = parseFiniteNumber(event.bytes);
+    progress.total = parseFiniteNumber(event.total);
     return { tree, progress };
   }
   if (kind === "item_done") {
@@ -448,10 +570,15 @@ export function applyProgress(
 }
 
 export function mergeProgress(current: ProgressState, next: ProgressState): ProgressState {
+  const isProgress = next.percent != null || next.speed != null || next.bytes != null;
   return {
     currentId: next.currentId ?? current.currentId,
     percent: next.percent ?? current.percent,
     phase: next.phase ?? current.phase,
+    speed: isProgress ? next.speed : current.speed,
+    eta: isProgress ? next.eta : current.eta,
+    bytes: next.bytes ?? current.bytes,
+    total: next.total ?? current.total,
     doneIds: new Set([...current.doneIds, ...next.doneIds]),
     failedIds: new Set([...current.failedIds, ...next.failedIds]),
   };
@@ -532,18 +659,15 @@ export function heroFrom(
   }
   if (run.phase === "downloading" && progress.currentId) {
     const hit = episodeForId(tree, progress.currentId);
-    const pct =
-      progress.percent != null ? ` · ${Math.round(progress.percent)}%` : "";
-    const phase = progress.phase ? ` · ${progress.phase}` : "";
     if (hit) {
       const title = hit.season.seasonTitle ?? hit.season.folderLabel;
       return {
         heading: `${hit.series.name} · ${title}`,
-        sub: `${hit.ep.code} ${hit.ep.title}${pct}${phase}`,
+        sub: `${hit.ep.code} ${hit.ep.title}`,
       };
     }
     const code = progress.currentId.split("|")[2] ?? progress.currentId;
-    return { heading: "Downloading", sub: `${code}${pct}${phase}` };
+    return { heading: "Downloading", sub: code };
   }
   if (run.phase === "downloading") {
     return { heading: "Downloading", sub: listingSeries ?? "Starting…" };

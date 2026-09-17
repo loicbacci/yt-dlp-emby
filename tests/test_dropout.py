@@ -10,6 +10,7 @@ from yt_dlp_emby.dropout import (
     layout_series_groups,
     resolve_emby_target,
     run_dropout,
+    sort_download_jobs,
 )
 from yt_dlp_emby.dropout_manifest import (
     DropoutSeries,
@@ -92,6 +93,31 @@ def test_load_manifest_series_url_and_remap(tmp_path: Path) -> None:
     assert remap.title is None
     assert source.seasons[0].only_episodes is None
     assert source.seasons[1].only_episodes is None
+
+
+def test_sort_download_jobs_follows_emby_dest_order() -> None:
+    series = DropoutSeries(name="Dimension 20", path="Dimension 20", sources=())
+    listing = DropoutListing(url="https://example/x", title="Ep", dropout_episode=1)
+
+    def job(season: int, episode: int):
+        return (series, listing, season, episode, Path("."), "stem", None)
+
+    ordered = sort_download_jobs(
+        [
+            job(0, 2),
+            job(11, 2),
+            job(0, 1),
+            job(11, 1),
+            job(12, 1),
+        ]
+    )
+    assert [(item[2], item[3]) for item in ordered] == [
+        (11, 1),
+        (11, 2),
+        (12, 1),
+        (0, 1),
+        (0, 2),
+    ]
 
 
 def test_load_manifest_only_episodes(tmp_path: Path) -> None:

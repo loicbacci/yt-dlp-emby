@@ -5,7 +5,11 @@ import {
   buildTree,
   downloadLabel,
   effectiveDownloadIds,
+  emptyProgress,
+  formatBinaryBytes,
+  formatEta,
   formatItemSize,
+  formatProgressStats,
   heroFrom,
   itemId,
   overlayProgress,
@@ -13,6 +17,8 @@ import {
   needsConfirm,
   partitionSeasons,
   pendingIds,
+  remainingEpisodes,
+  finishedEpisodes,
   groupByDestSeason,
   runStatsLine,
   sourcesFor,
@@ -183,6 +189,134 @@ describe("buildTree", () => {
     const yt = tree.find((s) => s.slug === "professor-messer");
     expect(yt?.seasons).toHaveLength(1);
   });
+
+  it("orders dest seasons like Sonarr (specials last)", () => {
+    const tree = buildTree({
+      generated_at: null,
+      force: false,
+      sources: {
+        dropout: {
+          ok: true,
+          error: null,
+          seasons: [
+            {
+              platform: "dropout",
+              slug: "dimension-20",
+              series: "Dimension 20",
+              dest_season: 0,
+              season_title: null,
+              folder: "Specials",
+              download: 2,
+              skip: 0,
+              unmapped: 0,
+              replace: 0,
+            },
+            {
+              platform: "dropout",
+              slug: "dimension-20",
+              series: "Dimension 20",
+              dest_season: 12,
+              season_title: "Shriek Week",
+              folder: "Season 12",
+              download: 1,
+              skip: 0,
+              unmapped: 0,
+              replace: 0,
+            },
+            {
+              platform: "dropout",
+              slug: "dimension-20",
+              series: "Dimension 20",
+              dest_season: 11,
+              season_title: "The Seven",
+              folder: "Season 11",
+              download: 2,
+              skip: 0,
+              unmapped: 0,
+              replace: 0,
+            },
+          ],
+          items: [
+            {
+              id: "dropout|dimension-20|S00E02",
+              action: "download",
+              code: "S00E02",
+              title: "Special 2",
+              dest_season: 0,
+              season_title: null,
+              folder: "Specials",
+              size: null,
+              series: "Dimension 20",
+              slug: "dimension-20",
+              platform: "dropout",
+            },
+            {
+              id: "dropout|dimension-20|S11E02",
+              action: "download",
+              code: "S11E02",
+              title: "Seven 2",
+              dest_season: 11,
+              season_title: "The Seven",
+              folder: "Season 11",
+              size: null,
+              series: "Dimension 20",
+              slug: "dimension-20",
+              platform: "dropout",
+            },
+            {
+              id: "dropout|dimension-20|S12E01",
+              action: "download",
+              code: "S12E01",
+              title: "Shriek 1",
+              dest_season: 12,
+              season_title: "Shriek Week",
+              folder: "Season 12",
+              size: null,
+              series: "Dimension 20",
+              slug: "dimension-20",
+              platform: "dropout",
+            },
+            {
+              id: "dropout|dimension-20|S11E01",
+              action: "download",
+              code: "S11E01",
+              title: "Seven 1",
+              dest_season: 11,
+              season_title: "The Seven",
+              folder: "Season 11",
+              size: null,
+              series: "Dimension 20",
+              slug: "dimension-20",
+              platform: "dropout",
+            },
+            {
+              id: "dropout|dimension-20|S00E01",
+              action: "download",
+              code: "S00E01",
+              title: "Special 1",
+              dest_season: 0,
+              season_title: null,
+              folder: "Specials",
+              size: null,
+              series: "Dimension 20",
+              slug: "dimension-20",
+              platform: "dropout",
+            },
+          ],
+        },
+      },
+    });
+    const d20 = tree.find((s) => s.slug === "dimension-20");
+    expect(d20?.seasons.map((s) => s.destSeason)).toEqual([11, 12, 0]);
+    expect(d20?.seasons[0].pending.map((e) => e.code)).toEqual(["S11E01", "S11E02"]);
+    expect(pendingIds(tree)).toEqual([
+      "dropout|dimension-20|S11E01",
+      "dropout|dimension-20|S11E02",
+      "dropout|dimension-20|S12E01",
+      "dropout|dimension-20|S00E01",
+      "dropout|dimension-20|S00E02",
+    ]);
+  });
 });
 
 describe("visibleSeries", () => {
@@ -339,6 +473,26 @@ describe("platformLabel", () => {
   });
 });
 
+describe("remainingEpisodes", () => {
+  it("hides finished rows during a download", () => {
+    const tree = buildTree(d20Plan);
+    const season = tree.find((s) => s.slug === "dimension-20")!.seasons[0];
+    const overlay = overlayProgress(tree, {
+      ...emptyProgress(),
+      currentId: season.pending[1].id,
+      percent: 40,
+      phase: "video",
+      doneIds: new Set([season.pending[0].id]),
+    });
+    const live = overlay.find((s) => s.slug === "dimension-20")!.seasons[0];
+    expect(remainingEpisodes(live, true).map((e) => e.code)).toEqual([
+      "S21E02",
+      "S21E03",
+    ]);
+    expect(finishedEpisodes(live).map((e) => e.code)).toEqual(["S21E01"]);
+  });
+});
+
 describe("groupByDestSeason", () => {
   it("orders specials last", () => {
     const grouped = groupByDestSeason([
@@ -362,6 +516,23 @@ describe("applyProgress", () => {
     expect(progress.currentId).toBe("dropout|dimension-20|S21E01");
   });
 
+  it("keeps speed and eta from the event", () => {
+    const { progress } = applyProgress([], {
+      event: "progress",
+      id: "dropout|x|S01E01",
+      percent: 20,
+      phase: "video",
+      speed: 51009899.8,
+      eta: 60.1,
+      bytes: 769206961,
+      total: 3671230871,
+    });
+    expect(progress.speed).toBeCloseTo(51009899.8);
+    expect(progress.eta).toBeCloseTo(60.1);
+    expect(progress.bytes).toBe(769206961);
+    expect(progress.total).toBe(3671230871);
+  });
+
   it("uses bytes when percent is missing", () => {
     const { progress } = applyProgress([], {
       event: "progress",
@@ -377,11 +548,11 @@ describe("overlayProgress", () => {
   it("marks the current and finished episodes", () => {
     const tree = buildTree(d20Plan);
     const overlay = overlayProgress(tree, {
+      ...emptyProgress(),
       currentId: "dropout|dimension-20|S21E02",
       percent: 40,
       phase: "video",
       doneIds: new Set(["dropout|dimension-20|S21E01"]),
-      failedIds: new Set(),
     });
     const eps = overlay[0].seasons[0].pending;
     expect(eps.find((e) => e.id.endsWith("E01"))?.status).toBe("done");
@@ -396,18 +567,36 @@ describe("heroFrom", () => {
       { phase: "downloading", source: "dropout" },
       tree,
       {
+        ...emptyProgress(),
         currentId: "dropout|dimension-20|S21E01",
         percent: 12.5,
         phase: "video",
-        doneIds: new Set(),
-        failedIds: new Set(),
       },
       null,
       3,
     );
     expect(hero.heading).toContain("Dimension 20");
     expect(hero.sub).toContain("S21E01");
-    expect(hero.sub).toContain("13%");
+    expect(hero.sub).not.toContain("%");
+  });
+});
+
+describe("formatProgressStats", () => {
+  it("matches the terminal download line fields", () => {
+    expect(formatBinaryBytes(48.7 * 1024 * 1024)).toBe("48.7MiB");
+    expect(formatEta(61)).toBe("01:01");
+    expect(formatEta(null)).toBe("--:--");
+    expect(
+      formatProgressStats({
+        ...emptyProgress(),
+        percent: 12.5,
+        phase: "video",
+        speed: 48.7 * 1024 * 1024,
+        eta: 60,
+        bytes: 769.2 * 1024 * 1024,
+        total: 3.4 * 1024 * 1024 * 1024,
+      }),
+    ).toBe("video  12.5%  769.2MiB/3.4GiB  48.7MiB/s  ETA 01:00");
   });
 });
 
@@ -417,11 +606,11 @@ describe("runStatsLine", () => {
       runStatsLine(
         { phase: "downloading", source: "dropout" },
         {
+          ...emptyProgress(),
           currentId: "a",
           percent: 10,
           phase: "video",
           doneIds: new Set(["a"]),
-          failedIds: new Set(),
         },
         4,
       ),
