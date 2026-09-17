@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { SeriesEpisode, SeriesSeason, Source } from "../../api";
-import { applySeasonToEpisode, fileStatus, formatMapsTo, seasonMissingLabel } from "../../seriesView";
+import { applySeasonToEpisode, fileStatus, formatMapsTo, remapKind, seasonMissingLabel } from "../../seriesView";
 import { EpisodeTable } from "./EpisodeTable";
 import { EpisodeTableSkeleton, Skeleton } from "../Skeleton";
 
@@ -119,6 +119,12 @@ export function SeasonAccordion({
                       : "—",
                   status,
                   skipped: ep.skipped,
+                  rowClass:
+                    remapKind(season, ep) === "other-season"
+                      ? "is-remap-other"
+                      : remapKind(season, ep) === "same-season"
+                        ? "is-remap-same"
+                        : undefined,
                   actions: (
                     <>
                       <button

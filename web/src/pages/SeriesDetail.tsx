@@ -12,9 +12,10 @@ import {
   apiClient,
 } from "../api";
 import { Header } from "../components/Header";
-import { SeriesDetailSkeleton, Skeleton } from "../components/Skeleton";
+import { SeriesDetailSkeleton } from "../components/Skeleton";
 import { UrlField } from "../components/UrlField";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
+import { DestMapPanel } from "../components/series/DestMapPanel";
 import { FindSourceModal } from "../components/series/FindSourceModal";
 import { RemapModal } from "../components/series/RemapModal";
 import { SonarrCheckPanel } from "../components/series/SonarrCheckPanel";
@@ -32,9 +33,12 @@ import {
 } from "../seriesUiStore";
 import {
   addTvdbSkip,
+  applyPackRemapsToSources,
+  buildDestMap,
   catalogEpisodes,
   effectiveConfigValue,
   isSeasonOpen,
+  packDestSeasonRemaps,
   parseSeriesPath,
   remapCandidatesForMissing,
   seasonFoldKey,
@@ -64,7 +68,7 @@ export function SeriesDetail() {
   const { platform, slug } = parsed;
 
   const [run, setRun] = useState<Run>(idleRun);
-  const [folderView, setFolderView] = useState<"sources" | "emby">("sources");
+  const [folderView, setFolderView] = useState<"sources" | "emby">("emby");
   const [detail, setDetail] = useState<SeriesDetailModel | null>(null);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,11 +105,6 @@ export function SeriesDetail() {
     slug,
     seriesQuery.data?.sources,
   );
-  const layoutQuery = useQuery({
-    queryKey: queryKeys.layout(slug),
-    queryFn: () => apiClient.getDropoutLayout(slug),
-    enabled: platform === "dropout" && folderView === "emby" && Boolean(slug),
-  });
   const checkQuery = useQuery({
     queryKey: [...queryKeys.check(slug), JSON.stringify(detail?.tvdb_skip ?? [])],
     queryFn: () => apiClient.getDropoutCheck(slug),
@@ -123,9 +122,6 @@ export function SeriesDetail() {
     enabled: platform === "dropout" && detail?.tvdb_id != null,
     staleTime: 30 * 60 * 1000,
   });
-  const layout = layoutQuery.data ?? null;
-  const layoutError =
-    layoutQuery.error instanceof Error ? layoutQuery.error.message : null;
   const check = checkQuery.data ?? null;
   const checkError =
     checkQuery.error instanceof Error ? checkQuery.error.message : null;
@@ -136,6 +132,11 @@ export function SeriesDetail() {
   const catalog = useMemo(
     () => catalogEpisodes(detail?.sources, episodeMap),
     [detail?.sources, episodeMap],
+  );
+  const destMap = useMemo(
+    () =>
+      buildDestMap(catalog, sonarrMetaQuery.data?.episodes, onDisk),
+    [catalog, sonarrMetaQuery.data?.episodes, onDisk],
   );
   const sonarrUrl = effectiveConfigValue(configQuery.data?.fields.sonarr_url);
   const sonarrHref =
@@ -444,6 +445,22 @@ export function SeriesDetail() {
     }
   };
 
+  const applyPack = async (destSeason: number) => {
+    if (!detail) return;
+    const changes = packDestSeasonRemaps(destSeason, catalog);
+    if (!changes.length) return;
+    const next: SeriesDetailModel = {
+      ...detail,
+      sources: applyPackRemapsToSources(detail.sources, changes),
+    };
+    try {
+      await persist(next);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.check(slug) });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Pack failed");
+    }
+  };
+
   const deleteSeries = async () => {
     if (!detail) return;
     const target = detail.inline ? `the ${detail.file} entry` : detail.file;
@@ -616,44 +633,32 @@ export function SeriesDetail() {
           </div>
         )}
         {platform === "dropout" && folderView === "emby" && (
-          <section class="settings-section">
-            <h2 class="settings-heading">On disk</h2>
-            <p class="settings-section-lead">
-              How this series lands in Emby after remaps.
-            </p>
-            {layoutError && <p class="settings-hint">{layoutError}</p>}
-            {!layout && !layoutError && (
-              <div class="layout-folders" aria-busy="true">
-                <Skeleton width="9rem" height="1em" />
-                <div style={{ marginTop: "10px" }}>
-                  <Skeleton width="100%" height="2.2em" />
-                </div>
-                <div style={{ marginTop: "8px" }}>
-                  <Skeleton width="80%" height="2.2em" />
-                </div>
-              </div>
-            )}
-            {layout && (
-              <div class="layout-folders">
-                {layout.folders.map((folder) => (
-                  <details key={folder.label} open>
-                    <summary>{folder.folder ?? folder.label}</summary>
-                    <ul>
-                      {folder.episodes.map((ep) => (
-                        <li key={`${ep.code}-${ep.title}`}>
-                          <span class="maps-to">{ep.code ?? "—"}</span> {ep.title}{" "}
-                          <span class="run-meta">{ep.status}</span>
-                          {ep.origin && (
-                            <span class="run-meta">({ep.origin})</span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                ))}
-              </div>
-            )}
-          </section>
+          <DestMapPanel
+            destMap={destMap}
+            loading={
+              Object.values(loadingMap).some(Boolean) ||
+              (detail.tvdb_id != null && sonarrMetaQuery.isPending)
+            }
+            onRemap={(occupant) =>
+              setRemap({
+                sourceId: occupant.row.sourceId,
+                seasonId: occupant.row.seasonId,
+                episode: occupant.row.episode,
+              })
+            }
+            onFind={(slot) =>
+              setRemap({
+                missing: {
+                  season: slot.destSeason,
+                  episode: slot.destEpisode,
+                  code: slot.code,
+                  title: slot.title,
+                  hints: [],
+                },
+              })
+            }
+            onPack={(destSeason) => void applyPack(destSeason)}
+          />
         )}
         {catalogView && (
           <section class="settings-section">

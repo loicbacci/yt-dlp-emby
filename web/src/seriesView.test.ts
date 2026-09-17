@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addTvdbSkip, applySeasonToEpisode, countLabel, emptyListMessage, fileStatus, filterCatalogEpisodes, filterSeries, findCatalogEpisode, formatMapsTo, isSeasonOpen, parseSeriesPath, remapCandidatesForMissing, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, sonarrSeriesUrl, suggestFolder, tvdbSeriesUrl, uniqueNameError } from "./seriesView";
+import { addTvdbSkip, applyPackRemapsToSources, applySeasonToEpisode, buildDestMap, countLabel, emptyListMessage, fileStatus, filterCatalogEpisodes, filterSeries, findCatalogEpisode, formatMapsTo, isSeasonOpen, originLabel, packDestSeasonRemaps, parseSeriesPath, remapCandidatesForMissing, remapKind, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, sonarrSeriesUrl, suggestFolder, tvdbSeriesUrl, uniqueNameError } from "./seriesView";
 
 describe("slugify", () => {
   it("matches python examples", () => {
@@ -321,5 +321,130 @@ describe("external series urls", () => {
     expect(sonarrSeriesUrl("http://sonarr:8989", null, 361151)).toContain(
       "tvdb%3A361151",
     );
+  });
+});
+
+describe("dest-order map", () => {
+  const season = {
+    id: "0",
+    dropout: 3,
+    url: "https://www.dropout.tv/smartypants/season/3",
+    to_season: 3,
+    enabled: true,
+    only_episodes: null,
+    remaps: [
+      { dropout_episode: 2, to_season: 0, to_episode: 2, title: "Special A" },
+      { dropout_episode: 4, to_season: 0, to_episode: 4, title: "Special B" },
+    ],
+    skip_ids: [],
+    label: "Season 3",
+    sublabel: "",
+    title: null,
+  };
+  const listing = (n: number, title: string) => ({
+    id: String(n),
+    title,
+    url: "",
+    source_episode: n,
+    skipped: false,
+    mapped_season: 3,
+    mapped_episode: n,
+    mapped_title: title,
+  });
+  const catalog = [1, 2, 3, 4, 5].map((n) => ({
+    sourceId: 0,
+    seasonId: 0,
+    season,
+    episode: listing(n, `Episode ${n}`),
+  }));
+  const sonarr = [1, 2, 3, 4, 5].map((n) => ({
+    season: 3,
+    episode: n,
+    title: `Library ${n}`,
+  }));
+
+  it("colors remaps and leaves dest holes after specials", () => {
+    expect(remapKind(season, catalog[1].episode)).toBe("other-season");
+    expect(remapKind(season, catalog[2].episode)).toBe("default");
+    expect(originLabel(catalog[0])).toBe("Dropout 3 · E1");
+
+    const dest = buildDestMap(catalog, sonarr, new Set());
+    const s3 = dest.seasons.find((group) => group.destSeason === 3);
+    const specials = dest.seasons.find((group) => group.destSeason === 0);
+    expect(s3?.holes).toBe(2);
+    expect(s3?.packable).toBe(true);
+    expect(s3?.slots.map((slot) => [slot.destEpisode, slot.occupants.length])).toEqual([
+      [1, 1],
+      [2, 0],
+      [3, 1],
+      [4, 0],
+      [5, 1],
+    ]);
+    expect(specials?.slots.map((slot) => slot.destEpisode)).toEqual([2, 4]);
+    expect(specials?.slots.every((slot) => slot.occupants[0]?.kind === "other-season")).toBe(
+      true,
+    );
+  });
+
+  it("packs remaining native listings into consecutive dest numbers", () => {
+    const changes = packDestSeasonRemaps(3, catalog);
+    expect(changes).toEqual([
+      {
+        sourceId: 0,
+        seasonId: 0,
+        dropout_episode: 3,
+        to_season: 3,
+        to_episode: 2,
+        title: "Episode 3",
+        clear: false,
+      },
+      {
+        sourceId: 0,
+        seasonId: 0,
+        dropout_episode: 5,
+        to_season: 3,
+        to_episode: 3,
+        title: "Episode 5",
+        clear: false,
+      },
+    ]);
+
+    const packedSources = applyPackRemapsToSources(
+      [
+        {
+          id: "0",
+          url: season.url,
+          error: null,
+          seasons: [season],
+        },
+      ],
+      changes,
+    );
+    const packedSeason = packedSources[0].seasons[0];
+    expect(packedSeason.remaps).toEqual([
+      { dropout_episode: 2, to_season: 0, to_episode: 2, title: "Special A" },
+      { dropout_episode: 4, to_season: 0, to_episode: 4, title: "Special B" },
+      {
+        dropout_episode: 3,
+        to_season: 3,
+        to_episode: 2,
+        title: "Episode 3",
+      },
+      {
+        dropout_episode: 5,
+        to_season: 3,
+        to_episode: 3,
+        title: "Episode 5",
+      },
+    ]);
+    expect(remapKind(packedSeason, catalog[2].episode)).toBe("same-season");
+
+    const packedCatalog = catalog.map((row) => ({ ...row, season: packedSeason }));
+    const dest = buildDestMap(packedCatalog, sonarr, new Set());
+    const s3 = dest.seasons.find((group) => group.destSeason === 3);
+    expect(s3?.slots.filter((slot) => slot.occupants.length > 0).map((slot) => slot.destEpisode)).toEqual(
+      [1, 2, 3],
+    );
+    expect(s3?.packable).toBe(false);
   });
 });

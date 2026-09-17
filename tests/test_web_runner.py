@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from yt_dlp_emby.server.runner import RunManager, default_command
+from yt_dlp_emby.server.runner import RunManager, default_command, format_spawn_command
 
 pytestmark = pytest.mark.web
 
@@ -340,8 +340,9 @@ def test_web_run_enables_color(tmp_path) -> None:
         await runner.start("youtube")
         await _wait_exited(runner)
         lines = [item.line for item in runner.lines_after(0)]
-        assert lines[0] == "1"
-        assert lines[1] == "<unset>"
+        output = [line for line in lines if not line.startswith("$ ")]
+        assert output[0] == "1"
+        assert output[1] == "<unset>"
 
     asyncio.run(run())
 
@@ -370,4 +371,28 @@ def test_events_poll_completes_partial_line(tmp_path) -> None:
     events = runner.events_after(0)
     assert len(events) == 1
     assert events[0].event["percent"] == 41
+
+
+def test_format_spawn_command_quotes_and_env() -> None:
+    line = format_spawn_command(
+        ["/usr/bin/python", "-m", "yt_dlp_emby", "dropout", "download"],
+        {"YT_DLP_EMBY_ONLY": "/data/download-only.json"},
+    )
+    assert line.startswith("$ YT_DLP_EMBY_ONLY=/data/download-only.json ")
+    assert "-m yt_dlp_emby dropout download" in line
+
+
+def test_spawn_logs_command(tmp_path) -> None:
+    _write_youtube_manifest(tmp_path)
+
+    async def run() -> None:
+        runner = RunManager(tmp_path, command_factory=_factory("print('done')"))
+        await runner.start("youtube")
+        await _wait_exited(runner)
+        lines = [item.line for item in runner.lines_after(0)]
+        assert lines[0].startswith("$ ")
+        assert "-c" in lines[0]
+        assert "done" in lines
+
+    asyncio.run(run())
 

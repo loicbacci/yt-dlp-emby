@@ -25,6 +25,7 @@ import {
   searchOpen,
   triState,
   upToDateSeries,
+  seriesInActiveDownload,
   visibleSeries,
   type PlanFile as QueuePlanFile,
   type ProgressState,
@@ -65,6 +66,9 @@ export function Dashboard() {
     count: number;
     ids: string[] | null;
   } | null>(null);
+  const [activeDownloadIds, setActiveDownloadIds] = useState<Set<string> | null>(
+    null,
+  );
 
   const tree = useMemo(
     () => (plan ? buildTree(plan as QueuePlanFile) : []),
@@ -73,16 +77,23 @@ export function Dashboard() {
   const treeRef = useRef(tree);
   treeRef.current = tree;
   const displayTree = useMemo(() => overlayProgress(tree, progress), [tree, progress]);
-  const visible = useMemo(() => visibleSeries(displayTree, query), [displayTree, query]);
-  const upToDate = useMemo(() => upToDateSeries(displayTree, query), [displayTree, query]);
+  const busy = run.status === "running" || run.status === "stopping";
+  const planning = run.phase === "planning";
+  const downloading = run.phase === "downloading";
+  const visible = useMemo(() => {
+    const rows = visibleSeries(displayTree, query);
+    if (!downloading || !activeDownloadIds) return rows;
+    return rows.filter((series) => seriesInActiveDownload(series, activeDownloadIds));
+  }, [displayTree, query, downloading, activeDownloadIds]);
+  const upToDate = useMemo(() => {
+    if (downloading) return [];
+    return upToDateSeries(displayTree, query);
+  }, [displayTree, query, downloading]);
   const allPending = useMemo(() => pendingIds(tree), [tree]);
   const effective = useMemo(
     () => effectiveDownloadIds(selected, allPending),
     [selected, allPending],
   );
-  const busy = run.status === "running" || run.status === "stopping";
-  const planning = run.phase === "planning";
-  const downloading = run.phase === "downloading";
 
   const applyRun = (next: Run) => {
     setRun(next);
@@ -207,8 +218,10 @@ export function Dashboard() {
     try {
       setDownloadTotal(count);
       setProgress(emptyProgress());
+      setActiveDownloadIds(new Set(ids ?? allPending));
       applyRun(await apiClient.startDownload({ ids, force }));
     } catch (err) {
+      setActiveDownloadIds(null);
       setError(err instanceof ApiError ? err.message : "Download failed");
       if (err instanceof ApiError && err.status === 401) go("/login");
     }

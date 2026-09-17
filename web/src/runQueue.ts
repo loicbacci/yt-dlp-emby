@@ -328,6 +328,17 @@ export function visibleSeries(tree: QueueTree, query: string): QueueSeries[] {
   return tree.filter((s) => seriesMatches(s, q));
 }
 
+export function seriesInActiveDownload(
+  series: QueueSeries,
+  downloadIds: ReadonlySet<string>,
+): boolean {
+  return series.seasons.some((season) =>
+    season.pending.some(
+      (ep) => downloadIds.has(ep.id) && ep.status !== "done",
+    ),
+  );
+}
+
 export function upToDateSeries(tree: QueueTree, query: string): QueueSeries[] {
   const q = query.trim();
   const complete = tree.filter(

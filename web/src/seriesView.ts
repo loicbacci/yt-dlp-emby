@@ -212,6 +212,253 @@ export function episodeStatusLabel(status: EpisodeFileStatus): string {
   return "skipped";
 }
 
+export type RemapKind = "default" | "skip" | "same-season" | "other-season";
+
+export function defaultDestSeason(season: {
+  to_season: number | null;
+  dropout: number | null;
+}): number | null {
+  if (season.to_season != null) return season.to_season;
+  return season.dropout;
+}
+
+export function remapKind(
+  season: SeriesSeason,
+  episode: SeriesEpisode,
+): RemapKind {
+  const mapped = applySeasonToEpisode(season, episode);
+  if (mapped.skipped) return "skip";
+  const remap = season.remaps.find(
+    (item) => item.dropout_episode === episode.source_episode && !item.skip,
+  );
+  if (!remap || remap.to_season == null) return "default";
+  const dest = defaultDestSeason(season);
+  return remap.to_season === dest ? "same-season" : "other-season";
+}
+
+export function originLabel(row: CatalogEpisode): string {
+  const dropout =
+    row.season.dropout != null ? `Dropout ${row.season.dropout}` : row.season.label;
+  return `${dropout} · E${row.episode.source_episode}`;
+}
+
+export type DestOccupant = {
+  row: CatalogEpisode;
+  mapped: SeriesEpisode;
+  kind: RemapKind;
+  status: EpisodeFileStatus;
+};
+
+export type DestSlot = {
+  destSeason: number;
+  destEpisode: number;
+  code: string;
+  title: string;
+  sonarr: boolean;
+  occupants: DestOccupant[];
+};
+
+export type DestSeasonGroup = {
+  destSeason: number;
+  label: string;
+  slots: DestSlot[];
+  holes: number;
+  conflicts: number;
+  packable: boolean;
+};
+
+export type DestMap = {
+  seasons: DestSeasonGroup[];
+  leftovers: DestOccupant[];
+};
+
+export function buildDestMap(
+  catalog: CatalogEpisode[],
+  sonarr: { season: number; episode: number; title: string }[] | null | undefined,
+  onDisk: ReadonlySet<string>,
+): DestMap {
+  const leftovers: DestOccupant[] = [];
+  const bySlot = new Map<string, DestOccupant[]>();
+  for (const row of catalog) {
+    const mapped = applySeasonToEpisode(row.season, row.episode);
+    const kind = remapKind(row.season, row.episode);
+    const status = fileStatus(mapped, onDisk);
+    const occupant: DestOccupant = { row, mapped, kind, status };
+    if (
+      mapped.skipped ||
+      mapped.mapped_season == null ||
+      mapped.mapped_episode == null
+    ) {
+      leftovers.push(occupant);
+      continue;
+    }
+    const key = diskSlotKey(mapped.mapped_season, mapped.mapped_episode);
+    const list = bySlot.get(key);
+    if (list) list.push(occupant);
+    else bySlot.set(key, [occupant]);
+  }
+
+  const sonarrBySeason = new Map<number, { episode: number; title: string }[]>();
+  for (const item of sonarr ?? []) {
+    const list = sonarrBySeason.get(item.season) ?? [];
+    list.push({ episode: item.episode, title: item.title });
+    sonarrBySeason.set(item.season, list);
+  }
+
+  const destSeasons = new Set<number>();
+  for (const key of bySlot.keys()) {
+    destSeasons.add(Number(key.split("-")[0]));
+  }
+  for (const season of sonarrBySeason.keys()) destSeasons.add(season);
+
+  const seasons: DestSeasonGroup[] = [...destSeasons]
+    .sort((a, b) => Number(a === 0) - Number(b === 0) || a - b)
+    .map((destSeason) => {
+      const sonarrEps = (sonarrBySeason.get(destSeason) ?? []).slice().sort(
+        (a, b) => a.episode - b.episode,
+      );
+      const episodeNums = new Set<number>();
+      for (const item of sonarrEps) episodeNums.add(item.episode);
+      for (const key of bySlot.keys()) {
+        const [seasonRaw, episodeRaw] = key.split("-");
+        if (Number(seasonRaw) === destSeason) episodeNums.add(Number(episodeRaw));
+      }
+      const titles = new Map(sonarrEps.map((item) => [item.episode, item.title]));
+      const slots: DestSlot[] = [...episodeNums]
+        .sort((a, b) => a - b)
+        .map((destEpisode) => {
+          const occupants = bySlot.get(diskSlotKey(destSeason, destEpisode)) ?? [];
+          const title =
+            titles.get(destEpisode) ||
+            occupants[0]?.mapped.mapped_title ||
+            occupants[0]?.row.episode.title ||
+            "";
+          return {
+            destSeason,
+            destEpisode,
+            code: formatMapsTo(destSeason, destEpisode),
+            title,
+            sonarr: titles.has(destEpisode),
+            occupants,
+          };
+        });
+      const pack = packDestSeasonRemaps(destSeason, catalog);
+      return {
+        destSeason,
+        label: seasonHeading(destSeason),
+        slots,
+        holes: slots.filter((slot) => slot.sonarr && slot.occupants.length === 0)
+          .length,
+        conflicts: slots.filter((slot) => slot.occupants.length > 1).length,
+        packable: pack.length > 0,
+      };
+    });
+
+  return { seasons, leftovers };
+}
+
+export type PackRemap = {
+  sourceId: number;
+  seasonId: number;
+  dropout_episode: number;
+  to_season: number;
+  to_episode: number;
+  title: string;
+  clear: boolean;
+};
+
+export function packDestSeasonRemaps(
+  destSeason: number,
+  catalog: CatalogEpisode[],
+): PackRemap[] {
+  const native = catalog
+    .map((row) => ({ row, mapped: applySeasonToEpisode(row.season, row.episode) }))
+    .filter(({ row, mapped }) => {
+      if (mapped.skipped) return false;
+      if (mapped.mapped_season !== destSeason) return false;
+      return defaultDestSeason(row.season) === destSeason;
+    })
+    .sort(
+      (a, b) =>
+        a.row.episode.source_episode - b.row.episode.source_episode ||
+        a.row.sourceId - b.row.sourceId ||
+        a.row.seasonId - b.row.seasonId,
+    );
+
+  const changes: PackRemap[] = [];
+  native.forEach(({ row, mapped }, index) => {
+    const toEpisode = index + 1;
+    const dest = defaultDestSeason(row.season);
+    const isDefault = dest === destSeason && row.episode.source_episode === toEpisode;
+    const already =
+      mapped.mapped_season === destSeason && mapped.mapped_episode === toEpisode;
+    const remap = row.season.remaps.find(
+      (item) => item.dropout_episode === row.episode.source_episode && !item.skip,
+    );
+    if (already && isDefault) {
+      if (remap) {
+        changes.push({
+          sourceId: row.sourceId,
+          seasonId: row.seasonId,
+          dropout_episode: row.episode.source_episode,
+          to_season: destSeason,
+          to_episode: toEpisode,
+          title: mapped.mapped_title || row.episode.title,
+          clear: true,
+        });
+      }
+      return;
+    }
+    if (already) return;
+    changes.push({
+      sourceId: row.sourceId,
+      seasonId: row.seasonId,
+      dropout_episode: row.episode.source_episode,
+      to_season: destSeason,
+      to_episode: toEpisode,
+      title: mapped.mapped_title || row.episode.title,
+      clear: false,
+    });
+  });
+  return changes;
+}
+
+export function applyPackRemapsToSources(
+  sources: SeriesSource[],
+  changes: PackRemap[],
+): SeriesSource[] {
+  if (!changes.length) return sources;
+  return sources.map((src, sid) => {
+    const forSource = changes.filter((change) => change.sourceId === sid);
+    if (!forSource.length) return src;
+    return {
+      ...src,
+      seasons: src.seasons.map((season, seasonId) => {
+        const forSeason = forSource.filter((change) => change.seasonId === seasonId);
+        if (!forSeason.length) return season;
+        let remaps = season.remaps;
+        for (const change of forSeason) {
+          remaps = remaps.filter(
+            (item) => item.dropout_episode !== change.dropout_episode,
+          );
+          if (!change.clear) {
+            remaps = [
+              ...remaps,
+              {
+                dropout_episode: change.dropout_episode,
+                to_season: change.to_season,
+                to_episode: change.to_episode,
+                title: change.title || undefined,
+              },
+            ];
+          }
+        }
+        return { ...season, remaps };
+      }),
+    };
+  });
+}
+
 export type TvdbSkipBlock = { season: number; episodes: number[] };
 
 export function addTvdbSkip(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import signal
 import sys
 from collections import deque
@@ -109,6 +110,14 @@ def default_command(
     if staging and action == "download":
         argv.extend(["--staging", staging])
     return argv
+
+
+def format_spawn_command(
+    argv: list[str], extra_env: Mapping[str, str] | None = None
+) -> str:
+    parts = [f"{key}={shlex.quote(value)}" for key, value in (extra_env or {}).items()]
+    parts.append(shlex.join(argv))
+    return "$ " + " ".join(parts)
 
 
 def sources_for_download(ids: list[str] | None, plan: dict[str, Any]) -> list[str]:
@@ -491,6 +500,11 @@ class RunManager:
             old_dir=env.get("YT_DLP_EMBY_OLD_DIR") or env.get("YT_EMBY_OLD_DIR"),
             staging=env.get("YT_DLP_EMBY_STAGING") or env.get("YT_EMBY_STAGING"),
         )
+        extra_env = {}
+        only = env.get("YT_DLP_EMBY_ONLY")
+        if only:
+            extra_env["YT_DLP_EMBY_ONLY"] = only
+        self._append_line(format_spawn_command(argv, extra_env))
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(self.data_dir),

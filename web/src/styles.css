@@ -1368,6 +1368,63 @@ a.source-url:hover {
   text-decoration: line-through;
 }
 
+.episode-table tr.is-remap-same td:first-child,
+.episode-table tr.is-remap-other td:first-child,
+.episode-table tr.is-dest-hole td:first-child,
+.episode-table tr.is-dest-conflict td:first-child {
+  box-shadow: inset 3px 0 0 currentColor;
+}
+
+.episode-table tr.is-remap-same {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+.episode-table tr.is-remap-other {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.episode-table tr.is-dest-hole {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.episode-table tr.is-dest-conflict {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.origin-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dest-season {
+  margin-bottom: 10px;
+}
+
+.dest-season > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  cursor: pointer;
+  padding: 8px 0;
+  list-style: none;
+}
+
+.dest-season > summary::-webkit-details-marker {
+  display: none;
+}
+
 .season-has-missing {
   color: var(--warn);
 }

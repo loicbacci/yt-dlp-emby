@@ -6,9 +6,11 @@ export type EpisodeTableRow = {
   id: string;
   index: string | number;
   title: string;
+  from?: ComponentChildren;
   mapsTo?: string;
   status?: EpisodeFileStatus;
   skipped?: boolean;
+  rowClass?: string;
   actions?: ComponentChildren;
 };
 
@@ -16,11 +18,13 @@ export function EpisodeTable({
   rows,
   indexLabel = "#",
   showMapsTo = true,
+  showFrom = false,
   empty,
 }: {
   rows: EpisodeTableRow[];
   indexLabel?: string;
   showMapsTo?: boolean;
+  showFrom?: boolean;
   empty?: string;
 }) {
   if (rows.length === 0) {
@@ -33,6 +37,7 @@ export function EpisodeTable({
         <tr>
           <th>{indexLabel}</th>
           <th>Title</th>
+          {showFrom && <th>From</th>}
           {showMapsTo && <th>Maps to</th>}
           <th>Status</th>
           <th />
@@ -42,9 +47,15 @@ export function EpisodeTable({
         {rows.map((row) => {
           const status = row.status ?? (row.skipped ? "skipped" : undefined);
           return (
-            <tr key={row.id} class={row.skipped ? "is-skipped" : ""}>
+            <tr
+              key={row.id}
+              class={[row.skipped && "is-skipped", row.rowClass]
+                .filter(Boolean)
+                .join(" ")}
+            >
               <td class="maps-to">{row.index}</td>
               <td>{row.title}</td>
+              {showFrom && <td class="run-meta">{row.from ?? "—"}</td>}
               {showMapsTo && (
                 <td class="maps-to">{row.mapsTo ?? "—"}</td>
               )}

@@ -21,6 +21,7 @@ import {
   finishedEpisodes,
   groupByDestSeason,
   runStatsLine,
+  seriesInActiveDownload,
   sourcesFor,
   triState,
   upToDateSeries,
@@ -490,6 +491,28 @@ describe("remainingEpisodes", () => {
       "S21E03",
     ]);
     expect(finishedEpisodes(live).map((e) => e.code)).toEqual(["S21E01"]);
+  });
+});
+
+describe("seriesInActiveDownload", () => {
+  it("hides series that are not in the current download set", () => {
+    const tree = buildTree(d20Plan);
+    const d20 = tree.find((s) => s.slug === "dimension-20")!;
+    const youtube = tree.find((s) => s.platform === "youtube");
+    const ids = new Set(d20.seasons.flatMap((season) => season.pending.map((ep) => ep.id)));
+    expect(seriesInActiveDownload(d20, ids)).toBe(true);
+    if (youtube) expect(seriesInActiveDownload(youtube, ids)).toBe(false);
+  });
+
+  it("hides a series after its selected episodes finish", () => {
+    const tree = buildTree(d20Plan);
+    const overlay = overlayProgress(tree, {
+      ...emptyProgress(),
+      doneIds: new Set(pendingIds(tree).filter((id) => id.includes("dimension-20"))),
+    });
+    const d20 = overlay.find((s) => s.slug === "dimension-20")!;
+    const ids = new Set(pendingIds(tree).filter((id) => id.includes("dimension-20")));
+    expect(seriesInActiveDownload(d20, ids)).toBe(false);
   });
 });
 
