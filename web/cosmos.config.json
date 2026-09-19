@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/react-cosmos/config.schema.json",
+  "plugins": ["react-cosmos-plugin-vite"],
+  "lazy": true,
+  "dom": {
+    "containerQuerySelector": "#app"
+  },
+  "globalImports": ["./src/mockups/mockup.css"],
+  "staticPath": "public",
+  "vite": {
+    "configPath": "./vite.config.ts"
+  },
+  "ui": {
+    "router": {
+      "initialFixtureId": {
+        "path": "src/mockups/Downloads.fixture.tsx",
+        "name": "Idle"
+      }
+    },
+    "rendererPreview": {
+      "backgroundColor": "#121015"
+    },
+    "responsivePreview": {
+      "devices": [
+        { "label": "iPhone SE", "width": 375, "height": 667 },
+        { "label": "iPad mini", "width": 744, "height": 1133 },
+        { "label": "Desktop", "width": 1440, "height": 900 }
+      ]
+    }
+  }
+}

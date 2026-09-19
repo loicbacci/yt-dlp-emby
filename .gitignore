@@ -51,5 +51,6 @@ cache/
 # Web UI
 web/node_modules/
 web/dist/
+web/cosmos-export/
 src/yt_dlp_emby/server/static/
 .yt-dlp-emby-auth.json
