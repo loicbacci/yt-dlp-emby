@@ -19,6 +19,7 @@ export type SeriesSummary = {
   season_count: number;
   missing_count?: number | null;
   listings_complete?: boolean;
+  poster_url?: string;
 };
 
 const slugPattern = /[^a-z0-9]+/g;
@@ -60,6 +61,15 @@ export function formatMapsTo(season: number, episode: number): string {
   const s = String(season).padStart(2, "0");
   const e = String(episode).padStart(2, "0");
   return `S${s}E${e}`;
+}
+
+export function shortUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}${parsed.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return url;
+  }
 }
 
 export function seasonHeading(toSeason: number): string {

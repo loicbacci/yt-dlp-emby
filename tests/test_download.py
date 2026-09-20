@@ -117,10 +117,23 @@ def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest
         def __exit__(self, *args: object) -> bool:
             return False
 
+        processed = False
+
         def extract_info(self, url: str, download: bool = True) -> dict:
+            assert download is False
+            return {
+                "id": "vid1",
+                "title": "Intro",
+                "description": "Plot",
+                "vcodec": "avc1",
+                "acodec": "mp4a",
+            }
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
             assert download is True
+            type(self).processed = True
             _touch_mkv(self.opts_seen)
-            return {"id": "vid1", "title": "Intro", "description": "Plot"}
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
@@ -130,6 +143,7 @@ def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest
         quiet=True,
     )
     info = download_video("https://www.youtube.com/watch?v=vid1", tmp_path / "ep", settings)
+    assert FakeYDL.processed is True
     assert info["id"] == "vid1"
     assert info["description"] == "Plot"
     assert FakeYDL.opts_seen["writesubtitles"] is True
@@ -157,8 +171,15 @@ def test_download_video_all_subtitle_langs(tmp_path: Path, monkeypatch: pytest.M
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            _touch_mkv(self.opts_seen)
-            return {"id": "vid1"}
+            info = {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
@@ -192,8 +213,15 @@ def test_download_video_passes_cookiefile(tmp_path: Path, monkeypatch: pytest.Mo
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            _touch_mkv(self.opts_seen)
-            return {"id": "vid1"}
+            info = {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     cookies = tmp_path / "cookies.txt"
@@ -229,8 +257,15 @@ def test_download_video_does_not_let_ydl_empty_cookiefile(
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            _touch_mkv(self.opts)
-            return {"id": "vid1"}
+            info = {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+            if download:
+                _touch_mkv(self.opts)
+            return info
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            if download:
+                _touch_mkv(self.opts)
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", WipingYDL)
     cookies = tmp_path / "cookies.txt"
@@ -265,8 +300,15 @@ def test_download_video_enables_node_js_runtime(
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            _touch_mkv(self.opts_seen)
-            return {"id": "vid1"}
+            info = {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     monkeypatch.setattr("yt_dlp_emby.extract.find_node", lambda: "/usr/bin/node")
@@ -307,8 +349,15 @@ def test_download_video_accepts_titles_with_dots_in_name(
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            _touch_mkv(self.opts_seen)
-            return {"id": "vid1"}
+            info = {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            if download:
+                _touch_mkv(self.opts_seen)
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
@@ -343,7 +392,10 @@ def test_download_video_pt_title_fails_when_only_wrong_with_suffix_mkv_exists(
             return False
 
         def extract_info(self, url: str, download: bool = True) -> dict:
-            return {"id": "vid1"}
+            return {"id": "vid1", "vcodec": "avc1", "acodec": "mp4a"}
+
+        def process_ie_result(self, info: dict, download: bool = True) -> dict:
+            return info
 
     monkeypatch.setattr("yt_dlp_emby.download.YoutubeDL", FakeYDL)
     settings = Settings(
@@ -404,7 +456,7 @@ def test_download_video_empty_info_is_not_auth_error(
     except YoutubeAuthError:
         raise AssertionError("empty extract_info must not be treated as a bot check")
     except RuntimeError as exc:
-        assert "did not produce an mkv" in str(exc)
+        assert "did not produce an mkv" in str(exc) or "extract_info returned no metadata" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
 

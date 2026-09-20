@@ -48,6 +48,10 @@ from yt_dlp_emby.youtube_manifest import (
 PLATFORMS = frozenset({"youtube", "dropout"})
 
 
+def series_poster_url(platform: str, slug: str) -> str:
+    return f"/api/series/{platform}/{slug}/poster"
+
+
 def resolve_shows_dir(data_dir: Path, environ: Mapping[str, str]) -> Path:
     config_path = config_target_path(None, environ, data_dir)
     values = load_config_values(config_path) if config_path.is_file() else {}
@@ -307,6 +311,7 @@ def _dropout_series_to_detail(
         "season_count": enabled_seasons,
         "tvdb_skip": tvdb_skip,
         "sources": sources,
+        "poster_url": series_poster_url(loc.platform, loc.slug),
     }
 
 
@@ -355,6 +360,7 @@ def _youtube_series_to_detail(
         "season_count": enabled,
         "tvdb_skip": [],
         "sources": sources,
+        "poster_url": series_poster_url(loc.platform, loc.slug),
     }
 
 
@@ -383,6 +389,7 @@ def list_series(
                 "listings_complete": _dropout_listings_complete(
                     series, dropout_cache
                 ),
+                "poster_url": series_poster_url(detail["platform"], detail["slug"]),
             }
         )
     for loc, series in _iter_youtube_entries(data_dir):
@@ -400,6 +407,7 @@ def list_series(
                 "season_count": detail["season_count"],
                 "missing_count": None,
                 "listings_complete": False,
+                "poster_url": series_poster_url(detail["platform"], detail["slug"]),
             }
         )
     items.sort(key=lambda row: row["name"].casefold())
@@ -1042,6 +1050,34 @@ def _dropout_listings_complete(
     return True
 
 
+def _hydrate_dropout_listings_force(
+    data_dir: Path,
+    series: DropoutSeries,
+    environ: Mapping[str, str],
+    cache: dict[str, list[dict]],
+) -> tuple[dict[str, list[dict]], str | None]:
+    from yt_dlp_emby.auth import DropoutAuthError
+    from yt_dlp_emby.cache import dropout_listings_to_cache
+    from yt_dlp_emby.dropout_manifest import season_page_url
+
+    cookie = str(_cookie_path_for_platform(data_dir, "dropout", environ))
+    auth_error: str | None = None
+    for source in series.sources:
+        for season_obj in source.seasons:
+            if not season_obj.enabled:
+                continue
+            page = season_page_url(source, season_obj)
+            try:
+                listings = extract_dropout_season(page, cookiefile=cookie)
+            except DropoutAuthError as exc:
+                return cache, str(exc)
+            except Exception:
+                continue
+            cache[page] = dropout_listings_to_cache(listings)
+            _write_listing_cache(data_dir, cache)
+    return cache, auth_error
+
+
 def _hydrate_dropout_listings(
     data_dir: Path,
     series: DropoutSeries,
@@ -1140,6 +1176,146 @@ def series_missing_status(
         ),
         "complete": _dropout_listings_complete(series, cache),
     }
+
+
+def series_poster_bytes(
+    data_dir: Path,
+    platform: str,
+    slug: str,
+    *,
+    environ: Mapping[str, str],
+) -> bytes | None:
+    detail = get_series(data_dir, platform, slug)
+    tvdb_id = detail.get("tvdb_id")
+    config_path = config_target_path(None, environ, data_dir)
+    cfg = load_config_values(config_path) if config_path.is_file() else {}
+    sonarr_url = (env_value(environ, "SONARR_URL") or cfg.get("sonarr_url") or "").strip()
+    sonarr_key = (
+        env_value(environ, "SONARR_API_KEY") or cfg.get("sonarr_api_key") or ""
+    ).strip()
+    if isinstance(tvdb_id, int) and sonarr_url and sonarr_key:
+        from yt_dlp_emby.sonarr import fetch_sonarr_poster
+
+        art = fetch_sonarr_poster(
+            tvdb_id, base_url=sonarr_url, api_key=sonarr_key
+        )
+        if art:
+            return art
+    series_path = str(detail.get("path") or "")
+    if not series_path:
+        return None
+    data, _ = _load_root_yaml(data_dir, platform)
+    from yt_dlp_emby.config import resolve_settings
+
+    try:
+        settings = resolve_settings(
+            environ=environ,
+            cwd=data_dir,
+            manifest_library=str(data.get("library")) if data and data.get("library") else None,
+            manifest_old_dir=str(data.get("old_dir")) if data and data.get("old_dir") else None,
+            use_default_config=(data_dir / "config.toml").is_file(),
+            auto_cookies=False,
+        )
+        poster = settings.library / series_path / "poster.jpg"
+        if poster.is_file():
+            return poster.read_bytes()
+    except (ConfigError, FFmpegNotFoundError, OSError, ValueError):
+        return None
+    return None
+
+
+def _refresh_sonarr_cache(
+    data_dir: Path,
+    platform: str,
+    tvdb_id: int,
+    *,
+    environ: Mapping[str, str],
+) -> None:
+    config_path = config_target_path(None, environ, data_dir)
+    cfg = load_config_values(config_path) if config_path.is_file() else {}
+    sonarr_url = (env_value(environ, "SONARR_URL") or cfg.get("sonarr_url") or "").strip()
+    sonarr_key = (
+        env_value(environ, "SONARR_API_KEY") or cfg.get("sonarr_api_key") or ""
+    ).strip()
+    if not sonarr_url or not sonarr_key:
+        return
+    from yt_dlp_emby.sonarr import fetch_episodes_cached, sonarr_cache_path
+
+    _, path = _load_root_yaml(data_dir, platform)
+    fetch_episodes_cached(
+        tvdb_id,
+        base_url=sonarr_url,
+        api_key=sonarr_key,
+        cache_path=sonarr_cache_path(path),
+        force_refetch=True,
+    )
+
+
+def refresh_series_metadata(
+    data_dir: Path,
+    platform: str,
+    slug: str,
+    *,
+    environ: Mapping[str, str],
+    force: bool = True,
+) -> str | None:
+    """Refresh listings, playlists, and Sonarr cache for one series. Returns error text."""
+    _loc, series = _find_locator(data_dir, platform, slug)
+    listing_error: str | None = None
+    if platform == "dropout":
+        assert isinstance(series, DropoutSeries)
+        cache = _dropout_listing_cache(data_dir)
+        _cache, listing_error = _hydrate_dropout_listings_force(
+            data_dir, series, environ, cache
+        )
+    else:
+        assert isinstance(series, YoutubeSeries)
+        cookie = str(_cookie_path_for_platform(data_dir, platform, environ))
+        for pl in series.playlists:
+            if pl.url:
+                try:
+                    extract_playlist(pl.url, cookiefile=cookie)
+                except Exception:
+                    continue
+    detail = get_series(data_dir, platform, slug)
+    tvdb_id = detail.get("tvdb_id")
+    if isinstance(tvdb_id, int) and force:
+        try:
+            _refresh_sonarr_cache(data_dir, platform, tvdb_id, environ=environ)
+        except Exception:
+            pass
+    return listing_error
+
+
+def refresh_series_batch(
+    data_dir: Path,
+    items: list[dict[str, str]],
+    *,
+    environ: Mapping[str, str],
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for item in items:
+        platform = str(item.get("platform") or "")
+        slug = str(item.get("slug") or "")
+        if platform not in PLATFORMS or not slug:
+            results.append(
+                {"platform": platform, "slug": slug, "error": "invalid item"}
+            )
+            continue
+        try:
+            error = refresh_series_metadata(
+                data_dir, platform, slug, environ=environ, force=True
+            )
+            results.append({"platform": platform, "slug": slug, "error": error})
+        except KeyError:
+            results.append(
+                {"platform": platform, "slug": slug, "error": "not found"}
+            )
+        except Exception as exc:
+            results.append(
+                {"platform": platform, "slug": slug, "error": str(exc)}
+            )
+    return {"ok": True, "results": results}
 
 
 def series_disk_status(

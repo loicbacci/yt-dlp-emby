@@ -71,10 +71,10 @@ def emit(payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
 
 
-def emit_progress(payload: dict[str, Any]) -> None:
+def emit_progress(payload: dict[str, Any], *, force: bool = False) -> None:
     global _last_progress_at
     now = time.monotonic()
-    if now - _last_progress_at < _PROGRESS_MIN_INTERVAL:
+    if not force and now - _last_progress_at < _PROGRESS_MIN_INTERVAL:
         return
     _last_progress_at = now
     emit(payload)

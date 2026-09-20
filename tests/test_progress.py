@@ -18,6 +18,7 @@ from yt_dlp_emby.progress import (
     format_progress_line,
     format_size_estimate,
     parse_playlist_item,
+    plan_download_steps,
     render_bar,
     stream_label,
     strip_ansi,
@@ -78,21 +79,56 @@ def test_progress_line_includes_stream_label() -> None:
             "speed": 1024,
             "eta": 1,
         },
-        label="video",
+        label="Video",
     )
-    assert line.startswith("video  ")
+    assert line.startswith("Video  ")
     assert "50.0%" in line
 
 
 def test_stream_label_video_audio_subs() -> None:
     assert (
-        stream_label({"info_dict": {"vcodec": "avc1", "acodec": "none"}}) == "video"
+        stream_label({"info_dict": {"vcodec": "avc1", "acodec": "none"}}) == "Video"
     )
     assert (
-        stream_label({"info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"}}) == "audio"
+        stream_label({"info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"}}) == "Audio"
     )
-    assert stream_label({"filename": "ep.en.srt", "info_dict": {"language": "en"}}) == "en.srt"
-    assert stream_label({"filename": "ep.mkv"}) == "download"
+    assert (
+        stream_label({"filename": "ep.en.srt", "info_dict": {"language": "en"}})
+        == "English subs"
+    )
+    assert stream_label({"info_dict": {"vcodec": "avc1", "acodec": "mp4a"}}) == "Video+Audio"
+
+
+def test_plan_download_steps_split_with_subs() -> None:
+    info = {
+        "requested_subtitles": {"en": {}},
+        "requested_formats": [
+            {"vcodec": "avc1", "acodec": "none"},
+            {"vcodec": "none", "acodec": "mp4a"},
+        ],
+    }
+    steps = plan_download_steps(info, copy=True)
+    assert steps[0] == "English subs"
+    assert "Video" in steps and "Audio" in steps
+    assert steps.index("Merge") > steps.index("Audio")
+    assert steps[-2:] == ["Remux", "Copy to library"]
+
+
+def test_plan_download_steps_combined() -> None:
+    info = {
+        "requested_formats": [{"vcodec": "avc1", "acodec": "mp4a"}],
+    }
+    steps = plan_download_steps(info, copy=True)
+    assert "Video+Audio" in steps
+    assert "Merge" not in steps
+    assert steps[-2:] == ["Remux", "Copy to library"]
+
+
+def test_plan_download_steps_no_subs() -> None:
+    info = {"requested_formats": [{"vcodec": "avc1", "acodec": "none"}]}
+    steps = plan_download_steps(info, copy=True)
+    assert "English subs" not in steps
+    assert steps[-2:] == ["Remux", "Copy to library"]
 
 
 def test_format_copy_line() -> None:
@@ -148,6 +184,40 @@ def test_progress_hook_emits_numeric_percent(tmp_path, monkeypatch) -> None:
     assert rows[0]["id"] == "dropout|x|S01E01"
 
 
+def test_progress_hook_emits_step_fields(tmp_path, monkeypatch) -> None:
+    import json
+    import os
+
+    from yt_dlp_emby.events import read_events_path, reset_runtime, set_current_item_id
+
+    reset_runtime()
+    target = tmp_path / "ev.jsonl"
+    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
+    read_events_path(os.environ)
+    set_current_item_id("dropout|x|S01E01")
+    bar = DownloadProgress(enabled=True, stream=StringIO(), live=False)
+    bar.set_steps(["English subs", "Video", "Remux", "Copy to library"])
+    bar.hook(
+        {
+            "status": "downloading",
+            "downloaded_bytes": 10,
+            "total_bytes": 100,
+            "info_dict": {"vcodec": "none", "acodec": "none", "language": "en"},
+            "filename": "ep.en.srt",
+        }
+    )
+    bar.close()
+    rows = [
+        json.loads(line)
+        for line in target.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    progress_rows = [row for row in rows if row.get("event") == "progress"]
+    assert progress_rows
+    assert progress_rows[0]["step"] == 0
+    assert "English subs" in progress_rows[0]["steps"]
+
+
 def test_progress_hook_writes_carriage_return() -> None:
     stream = StringIO()
     bar = DownloadProgress(enabled=True, stream=stream, live=True)
@@ -163,7 +233,7 @@ def test_progress_hook_writes_carriage_return() -> None:
     )
     output = stream.getvalue()
     assert output.startswith("\r")
-    assert "video" in output
+    assert "Video" in output
     assert "50.0%" in output
     bar.hook(
         {
@@ -171,7 +241,7 @@ def test_progress_hook_writes_carriage_return() -> None:
             "info_dict": {"vcodec": "avc1", "acodec": "none"},
         }
     )
-    assert "video  complete" in stream.getvalue()
+    assert "Video  complete" in stream.getvalue()
     bar.close()
     assert stream.getvalue().endswith("\n")
 
@@ -191,7 +261,7 @@ def test_progress_non_tty_writes_newlines() -> None:
     )
     output = stream.getvalue()
     assert "\r" not in output
-    assert "audio" in output
+    assert "Audio" in output
     assert output.endswith("\n")
 
 

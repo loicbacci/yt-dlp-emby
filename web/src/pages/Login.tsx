@@ -20,7 +20,6 @@ export function Login() {
     <div class="auth-page">
       <div class="auth-card">
         <div class="brand" style={{ marginBottom: "16px" }}>
-          <span class="brand-bar" />
           <span>yt-dlp-emby</span>
         </div>
         <h1>Sign in</h1>

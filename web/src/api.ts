@@ -178,6 +178,7 @@ export type SeriesDetail = {
   season_count: number;
   tvdb_skip: { season: number; episodes: number[] }[];
   sources: SeriesSource[];
+  poster_url?: string;
 };
 
 export type EpisodeFileStatus = "downloaded" | "missing" | "skipped" | "unmapped";
@@ -411,6 +412,11 @@ export const apiClient = {
     api<SeriesDetail>(`/api/series/${platform}/${slug}/sources/${sourceId}/refresh`, {
       method: "POST",
     }),
+  refreshSeries: (items: { platform: Source; slug: string }[]) =>
+    api<{ ok: boolean; results: { platform: string; slug: string; error: string | null }[] }>(
+      "/api/series/refresh",
+      { method: "POST", body: JSON.stringify({ items }) },
+    ),
   getSeriesEpisodes: (
     platform: Source,
     slug: string,

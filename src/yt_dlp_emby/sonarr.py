@@ -185,6 +185,38 @@ def _episodes_from_cache(raw: dict) -> tuple[str, list[SonarrEpisode], str | Non
     return title, episodes, title_slug
 
 
+def fetch_sonarr_poster(
+    tvdb_id: int,
+    *,
+    base_url: str,
+    api_key: str,
+    get_json: GetJson | None = None,
+) -> bytes | None:
+    get = get_json or _default_get_json
+    base = base_url.rstrip("/")
+    headers = {"X-Api-Key": api_key}
+    try:
+        series_list = get(f"{base}/api/v3/series?tvdbId={tvdb_id}", headers)
+    except (urllib.error.HTTPError, ConfigError):
+        return None
+    if not isinstance(series_list, list) or not series_list:
+        return None
+    first = series_list[0]
+    if not isinstance(first, dict) or first.get("id") is None:
+        return None
+    series_id = first["id"]
+    for path in (f"{base}/MediaCover/{series_id}/poster.jpg", f"{base}/api/v3/mediacover/{series_id}/poster.jpg"):
+        request = urllib.request.Request(path, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+                data = response.read()
+        except (urllib.error.HTTPError, OSError):
+            continue
+        if data:
+            return data
+    return None
+
+
 def fetch_episodes_cached(
     tvdb_id: int,
     *,

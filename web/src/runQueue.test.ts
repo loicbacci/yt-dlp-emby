@@ -12,6 +12,7 @@ import {
   formatProgressStats,
   heroFrom,
   itemId,
+  mergeProgress,
   overlayProgress,
   platformLabel,
   needsConfirm,
@@ -411,7 +412,7 @@ describe("selection helpers", () => {
   });
 
   it("downloadLabel always has a number", () => {
-    expect(downloadLabel(294)).toBe("Download 294");
+    expect(downloadLabel(294)).toBe("Download 294 episodes");
   });
 
   it("needsConfirm at 25", () => {
@@ -619,7 +620,37 @@ describe("formatProgressStats", () => {
         bytes: 769.2 * 1024 * 1024,
         total: 3.4 * 1024 * 1024 * 1024,
       }),
-    ).toBe("video  12.5%  769.2MiB/3.4GiB  48.7MiB/s  ETA 01:00");
+    ).toBe("video · 769.2MiB/3.4GiB · 48.7MiB/s");
+  });
+});
+
+describe("mergeProgress steps", () => {
+  it("keeps step index when local percent resets", () => {
+    const tree = buildTree(d20Plan);
+    const first = applyProgress(tree, {
+      event: "item_steps",
+      id: "dropout|dimension-20|S21E01",
+      steps: ["English subs", "Video"],
+    }).progress;
+    const second = applyProgress(tree, {
+      event: "progress",
+      id: "dropout|dimension-20|S21E01",
+      step: 0,
+      steps: ["English subs", "Video"],
+      percent: 100,
+    }).progress;
+    const third = applyProgress(tree, {
+      event: "progress",
+      id: "dropout|dimension-20|S21E01",
+      step: 1,
+      steps: ["English subs", "Video"],
+      percent: 5,
+    }).progress;
+    const merged = mergeProgress(mergeProgress(emptyProgress(), first), third);
+    const withSecond = mergeProgress(mergeProgress(merged, second), third);
+    expect(withSecond.step).toBe(1);
+    expect(withSecond.currentId).toBe("dropout|dimension-20|S21E01");
+    expect(withSecond.steps).toHaveLength(2);
   });
 });
 

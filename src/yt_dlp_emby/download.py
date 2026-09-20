@@ -16,7 +16,7 @@ from yt_dlp_emby.auth import YoutubeAuthError, auth_error_from_exception
 from yt_dlp_emby.config import Settings
 from yt_dlp_emby.cookies import sandbox_cookiefile
 from yt_dlp_emby.extract import js_runtime_opts
-from yt_dlp_emby.progress import DownloadProgress, copy_with_progress
+from yt_dlp_emby.progress import DownloadProgress, copy_with_progress, plan_download_steps
 
 DEFAULT_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/bv+ba/b"
 LOW_RES_FORMAT = "worst[height<=144]/worst"
@@ -233,7 +233,7 @@ def promote_episode(
             continue
         if path.stat().st_size == 0:
             continue
-        label = "copy" if rest == ".mkv" else rest.lstrip(".-") or "copy"
+        label = "Copy to library" if rest == ".mkv" else rest.lstrip(".-") or "Copy to library"
         copy_to_library(
             path,
             dest_stem.parent / f"{dest_stem.name}{rest}",
@@ -294,7 +294,20 @@ def download_video(
             opts["cookiefile"] = cookiefile
         try:
             with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    progress.close()
+                    blob = "\n".join(log.errors)
+                    auth = auth_error_from_exception(
+                        url, RuntimeError(blob or "download failed")
+                    )
+                    if auth is not None:
+                        raise auth
+                    raise RuntimeError(
+                        blob.strip() or "extract_info returned no metadata"
+                    )
+                progress.set_steps(plan_download_steps(info, copy=True))
+                info = ydl.process_ie_result(info, download=True)
         except Exception as exc:
             progress.close()
             auth = auth_error_from_exception(url, exc)

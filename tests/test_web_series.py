@@ -627,3 +627,135 @@ def test_check_uses_file_stem_when_name_has_apostrophe(tmp_path) -> None:
     assert check.json()["ok"] is True
     layout = client.get("/api/series/dropout/dimension-20-adventuring-party/layout")
     assert layout.status_code == 200, layout.text
+
+
+def test_series_list_includes_poster_url(tmp_path) -> None:
+    client = _authed(tmp_path)
+    client.post(
+        "/api/series",
+        json={
+            "name": "Game Changer",
+            "platform": "dropout",
+            "path": "Game Changer [tvdbid=1]",
+            "tvdb_id": 1,
+        },
+    )
+    listed = client.get("/api/series").json()["series"]
+    assert listed[0]["poster_url"] == "/api/series/dropout/game-changer/poster"
+
+
+def test_poster_requires_auth(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path, environ={}))
+    assert client.get("/api/series/dropout/x/poster").status_code == 401
+
+
+def test_poster_404_without_art(tmp_path) -> None:
+    client = _authed(tmp_path)
+    client.post(
+        "/api/series",
+        json={"name": "Solo", "platform": "dropout", "path": "Solo"},
+    )
+    assert client.get("/api/series/dropout/solo/poster").status_code == 404
+
+
+def test_refresh_requires_auth(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path, environ={}))
+    assert (
+        client.post(
+            "/api/series/refresh",
+            json={"items": [{"platform": "dropout", "slug": "solo"}]},
+        ).status_code
+        == 401
+    )
+
+
+def test_refresh_empty_items_400(tmp_path) -> None:
+    client = _authed(tmp_path)
+    assert client.post("/api/series/refresh", json={"items": []}).status_code == 400
+
+
+def test_poster_returns_library_file(tmp_path) -> None:
+    lib = tmp_path / "lib"
+    show_dir = lib / "Solo"
+    show_dir.mkdir(parents=True)
+    (show_dir / "poster.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nseries: []\n",
+        encoding="utf-8",
+    )
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("#!/bin/sh\n", encoding="utf-8")
+    client = _authed(tmp_path, environ={"YT_DLP_EMBY_FFMPEG": str(ffmpeg)})
+    created = client.post(
+        "/api/series",
+        json={"name": "Solo", "platform": "dropout", "path": "Solo"},
+    )
+    assert created.status_code == 200, created.text
+    response = client.get("/api/series/dropout/solo/poster")
+    assert response.status_code == 200
+    assert response.content.startswith(b"\xff\xd8")
+
+
+def test_refresh_dropout_force_listing(tmp_path, monkeypatch) -> None:
+    from yt_dlp_emby.cache import (
+        dropout_cache_path,
+        dropout_listings_to_cache,
+        load_dropout_season_cache,
+        save_dropout_season_cache,
+    )
+    from yt_dlp_emby.extract import DropoutListing
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "clip.yaml").write_text(
+        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
+        "imports:\n  - shows/clip.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    _write_cookies(tmp_path)
+    page = "https://watch.dropout.tv/c/season:1"
+    save_dropout_season_cache(
+        dropout_cache_path(tmp_path / "dropout.yaml"),
+        {
+            page: dropout_listings_to_cache(
+                [
+                    DropoutListing(
+                        url="https://watch.dropout.tv/videos/old",
+                        title="Old Pilot",
+                        dropout_episode=1,
+                    )
+                ]
+            )
+        },
+    )
+    fetched: list[str] = []
+
+    def fake_extract(url, **_kwargs):
+        fetched.append(url)
+        return [
+            DropoutListing(
+                url="https://watch.dropout.tv/videos/pilot",
+                title="New Pilot",
+                dropout_episode=1,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.series.extract_dropout_season", fake_extract
+    )
+    client = _authed(tmp_path)
+    response = client.post(
+        "/api/series/refresh",
+        json={"items": [{"platform": "dropout", "slug": "clip"}]},
+    )
+    assert response.status_code == 200, response.text
+    assert fetched == [page]
+    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
+    assert cached[page][0]["title"] == "New Pilot"

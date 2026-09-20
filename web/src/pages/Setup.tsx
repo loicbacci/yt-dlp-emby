@@ -23,7 +23,6 @@ export function Setup() {
     <div class="auth-page">
       <div class="auth-card">
         <div class="brand" style={{ marginBottom: "16px" }}>
-          <span class="brand-bar" />
           <span>yt-dlp-emby</span>
         </div>
         <h1>Set admin password</h1>

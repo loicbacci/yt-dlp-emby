@@ -415,7 +415,7 @@ export function effectiveDownloadIds(
 }
 
 export function downloadLabel(effectiveCount: number): string {
-  return `Download ${effectiveCount}`;
+  return `Download ${effectiveCount} episode${effectiveCount === 1 ? "" : "s"}`;
 }
 
 export function platformLabel(platform: Platform): string {
@@ -459,6 +459,8 @@ export type ProgressState = {
   currentId: string | null;
   percent: number | null;
   phase: string | null;
+  step: number | null;
+  steps: string[];
   speed: number | null;
   eta: number | null;
   bytes: number | null;
@@ -472,6 +474,8 @@ export function emptyProgress(): ProgressState {
     currentId: null,
     percent: null,
     phase: null,
+    step: null,
+    steps: [],
     speed: null,
     eta: null,
     bytes: null,
@@ -519,7 +523,6 @@ export function formatEta(seconds: number | null | undefined): string {
 export function formatProgressStats(progress: ProgressState): string | null {
   const parts: string[] = [];
   if (progress.phase) parts.push(progress.phase);
-  if (progress.percent != null) parts.push(`${progress.percent.toFixed(1)}%`);
   if (progress.total != null && progress.total > 0) {
     parts.push(
       `${formatBinaryBytes(progress.bytes ?? 0)}/${formatBinaryBytes(progress.total)}`,
@@ -530,10 +533,7 @@ export function formatProgressStats(progress: ProgressState): string | null {
   if (progress.speed != null && Number.isFinite(progress.speed)) {
     parts.push(`${formatBinaryBytes(progress.speed)}/s`);
   }
-  if (progress.speed != null || progress.eta != null) {
-    parts.push(`ETA ${formatEta(progress.eta)}`);
-  }
-  return parts.length ? parts.join("  ") : null;
+  return parts.length ? parts.join(" · ") : null;
 }
 
 export function parsePercent(raw: unknown, bytes?: unknown, total?: unknown): number | null {
@@ -559,10 +559,22 @@ export function applyProgress(
 ): { tree: QueueTree; progress: ProgressState } {
   const kind = event.event as string | undefined;
   const progress: ProgressState = emptyProgress();
+  if (kind === "item_steps") {
+    progress.currentId = (event.id as string) ?? null;
+    progress.steps = Array.isArray(event.steps)
+      ? (event.steps as string[]).map(String)
+      : [];
+    progress.step = 0;
+    return { tree, progress };
+  }
   if (kind === "progress") {
     progress.currentId = (event.id as string) ?? null;
     progress.percent = parsePercent(event.percent, event.bytes, event.total);
     progress.phase = (event.phase as string) ?? null;
+    if (typeof event.step === "number") progress.step = event.step;
+    if (Array.isArray(event.steps)) {
+      progress.steps = (event.steps as string[]).map(String);
+    }
     progress.speed = parseFiniteNumber(event.speed);
     progress.eta = parseFiniteNumber(event.eta);
     progress.bytes = parseFiniteNumber(event.bytes);
@@ -575,17 +587,42 @@ export function applyProgress(
     else progress.doneIds.add(id);
     progress.currentId = id;
     progress.percent = event.action === "failed" ? null : 100;
+    progress.step = null;
     return { tree, progress };
   }
   return { tree, progress };
 }
 
 export function mergeProgress(current: ProgressState, next: ProgressState): ProgressState {
-  const isProgress = next.percent != null || next.speed != null || next.bytes != null;
+  const isProgress =
+    next.percent != null || next.speed != null || next.bytes != null || next.step != null;
+  const idChanged =
+    next.currentId != null && current.currentId != null && next.currentId !== current.currentId;
+  const currentId = next.currentId ?? current.currentId;
+  const steps =
+    next.steps.length > 0
+      ? next.steps
+      : idChanged
+        ? []
+        : current.steps;
+  const step =
+    typeof next.step === "number"
+      ? next.step
+      : idChanged
+        ? null
+        : current.step;
+  const percent =
+    next.percent != null
+      ? next.percent
+      : idChanged
+        ? null
+        : current.percent;
   return {
-    currentId: next.currentId ?? current.currentId,
-    percent: next.percent ?? current.percent,
+    currentId,
+    percent,
     phase: next.phase ?? current.phase,
+    step,
+    steps,
     speed: isProgress ? next.speed : current.speed,
     eta: isProgress ? next.eta : current.eta,
     bytes: next.bytes ?? current.bytes,
@@ -615,7 +652,10 @@ export function overlayProgress(tree: QueueTree, progress: ProgressState): Queue
   }));
 }
 
-function episodeForId(tree: QueueTree, id: string): { series: QueueSeries; season: QueueSeason; ep: QueueEpisode } | null {
+export function episodeForId(
+  tree: QueueTree,
+  id: string,
+): { series: QueueSeries; season: QueueSeason; ep: QueueEpisode } | null {
   for (const series of tree) {
     for (const season of series.seasons) {
       for (const ep of season.pending) {

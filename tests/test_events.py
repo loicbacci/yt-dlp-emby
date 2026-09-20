@@ -69,9 +69,31 @@ def test_progress_throttle(tmp_path: Path, monkeypatch) -> None:
 
     set_current_item_id("dropout|x|S01E01")
     for _ in range(10):
-        emit_progress({"event": "progress", "id": "dropout|x|S01E01", "phase": "video"})
+        emit_progress({"event": "progress", "id": "dropout|x|S01E01", "phase": "Video"})
     lines = [line for line in target.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) <= 4
+
+
+def test_emit_progress_force_bypasses_throttle(tmp_path: Path, monkeypatch) -> None:
+    reset_runtime()
+    target = tmp_path / "ev.jsonl"
+    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
+    read_events_path(os.environ)
+    from yt_dlp_emby.events import emit_progress, set_current_item_id
+
+    set_current_item_id("dropout|x|S01E01")
+    for index in range(5):
+        emit_progress(
+            {
+                "event": "progress",
+                "id": "dropout|x|S01E01",
+                "phase": "Video",
+                "step": index,
+            },
+            force=True,
+        )
+    lines = [line for line in target.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 5
 
 
 def test_merge_plan_force_sticky(tmp_path: Path) -> None:

@@ -55,7 +55,9 @@ from yt_dlp_emby.server.series import (
     put_series,
     dropout_series_check,
     dropout_series_layout,
+    refresh_series_batch,
     refresh_series_source,
+    series_poster_bytes,
 )
 from yt_dlp_emby.library import titles_match
 from yt_dlp_emby.dropout_check import titles_related
@@ -125,6 +127,10 @@ class SeriesPutBody(BaseModel):
     tvdb_id: int | None = None
     tvdb_skip: list[dict[str, Any]] | None = None
     sources: list[dict[str, Any]]
+
+
+class SeriesRefreshBody(BaseModel):
+    items: list[dict[str, str]]
 
 
 class AddSourceBody(BaseModel):
@@ -572,6 +578,40 @@ def create_app(
             raise HTTPException(
                 status_code=_series_value_status(exc), detail={"error": str(exc)}
             ) from exc
+
+    @app.get("/api/series/{platform}/{slug}/poster")
+    async def get_series_poster(
+        platform: str, slug: str, request: Request
+    ) -> Response:
+        require_auth(request)
+        try:
+            data = await asyncio.to_thread(
+                series_poster_bytes,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        if not data:
+            raise HTTPException(status_code=404, detail={"error": "no poster"})
+        return Response(content=data, media_type="image/jpeg")
+
+    @app.post("/api/series/refresh")
+    async def post_series_refresh(
+        body: SeriesRefreshBody, request: Request
+    ) -> dict[str, Any]:
+        require_auth(request)
+        _reject_if_run_active(request)
+        if not body.items:
+            raise HTTPException(status_code=400, detail={"error": "empty items"})
+        return await asyncio.to_thread(
+            refresh_series_batch,
+            request.app.state.data_dir,
+            body.items,
+            environ=request.app.state.environ,
+        )
 
     @app.put("/api/series/{platform}/{slug}")
     async def put_series_detail(

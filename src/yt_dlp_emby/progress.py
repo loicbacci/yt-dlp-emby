@@ -121,6 +121,61 @@ def render_bar(
     return fill + empty
 
 
+_SUB_LANG_LABELS: dict[str, str] = {
+    "en": "English subs",
+    "es": "Spanish subs",
+    "fr": "French subs",
+    "de": "German subs",
+    "ja": "Japanese subs",
+    "ko": "Korean subs",
+    "zh": "Chinese subs",
+    "zh-hans": "Chinese subs",
+    "zh-hant": "Chinese subs",
+}
+
+
+def subtitle_step_label(lang: str) -> str:
+    key = (lang or "").strip().lower()
+    if not key:
+        return "Subtitles"
+    return _SUB_LANG_LABELS.get(key, f"{key} subs")
+
+
+def format_step_label(fmt: dict[str, Any]) -> str:
+    vcodec = fmt.get("vcodec")
+    acodec = fmt.get("acodec")
+    has_video = vcodec not in (None, "none")
+    has_audio = acodec not in (None, "none")
+    if has_video and has_audio:
+        return "Video+Audio"
+    if has_video:
+        return "Video"
+    if has_audio:
+        return "Audio"
+    return "Download"
+
+
+def plan_download_steps(info: dict[str, Any], *, copy: bool = True) -> list[str]:
+    steps: list[str] = []
+    subs = info.get("requested_subtitles")
+    if isinstance(subs, dict):
+        for lang in subs:
+            steps.append(subtitle_step_label(str(lang)))
+    requested = info.get("requested_formats")
+    if isinstance(requested, list) and requested:
+        for fmt in requested:
+            if isinstance(fmt, dict):
+                steps.append(format_step_label(fmt))
+    else:
+        steps.append(format_step_label(info))
+    if isinstance(requested, list) and len(requested) > 1:
+        steps.append("Merge")
+    steps.append("Remux")
+    if copy:
+        steps.append("Copy to library")
+    return steps
+
+
 def stream_label(data: dict[str, Any]) -> str:
     info = data.get("info_dict") if isinstance(data.get("info_dict"), dict) else {}
     filename = str(data.get("filename") or info.get("filename") or "")
@@ -128,18 +183,19 @@ def stream_label(data: dict[str, Any]) -> str:
     ext = str(info.get("ext") or "").lower()
     lang = str(info.get("language") or "").strip()
     if suffix in _SUB_EXTS or ext in {"srt", "vtt", "ass", "ttml"}:
-        return f"{lang}.srt" if lang else "subtitles"
-    vcodec = info.get("vcodec")
-    acodec = info.get("acodec")
-    has_video = vcodec not in (None, "none")
-    has_audio = acodec not in (None, "none")
-    if has_video and not has_audio:
-        return "video"
-    if has_audio and not has_video:
-        return "audio"
-    if has_video and has_audio:
-        return "media"
-    return "download"
+        return subtitle_step_label(lang)
+    return format_step_label(info)
+
+
+def postprocessor_step_label(name: str) -> str:
+    lowered = name.lower()
+    if "remux" in lowered:
+        return "Remux"
+    if "merger" in lowered or "merge" in lowered:
+        return "Merge"
+    if "subtitle" in lowered:
+        return "Subtitles"
+    return name or "Processing"
 
 
 def progress_percent(data: dict[str, Any]) -> float | None:
@@ -338,6 +394,65 @@ class ProgressDisplay:
 
 
 class DownloadProgress(ProgressDisplay):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._steps: list[str] = []
+        self._step = 0
+
+    def set_steps(self, steps: list[str]) -> None:
+        self._steps = list(steps)
+        self._step = -1
+        item = current_item_id()
+        if item and self._steps:
+            emit_progress(
+                {
+                    "event": "item_steps",
+                    "id": item,
+                    "steps": self._steps,
+                },
+                force=True,
+            )
+
+    def _resolve_step_index(self, label: str) -> int:
+        if label in self._steps:
+            return self._steps.index(label)
+        self._steps.append(label)
+        return len(self._steps) - 1
+
+    def _emit_step_progress(
+        self,
+        label: str,
+        *,
+        percent: float | None,
+        bytes_val: int | float | None = None,
+        total: int | float | None = None,
+        speed: float | None = None,
+        eta: float | None = None,
+    ) -> None:
+        item = current_item_id()
+        if not item:
+            return
+        index = self._resolve_step_index(label)
+        force = index != self._step
+        self._step = index
+        payload: dict[str, Any] = {
+            "event": "progress",
+            "phase": label,
+            "id": item,
+            "step": index,
+            "steps": self._steps,
+            "percent": percent,
+        }
+        if speed is not None:
+            payload["speed"] = speed
+        if eta is not None:
+            payload["eta"] = eta
+        if bytes_val is not None:
+            payload["bytes"] = bytes_val
+        if total is not None:
+            payload["total"] = total
+        emit_progress(payload, force=force)
+
     def hook(self, data: dict[str, Any]) -> None:
         if not self.enabled:
             return
@@ -350,21 +465,15 @@ class DownloadProgress(ProgressDisplay):
                     data, width=self.width, label=label, **self._bar_style()
                 )
             )
-            item = current_item_id()
-            if item:
-                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                emit_progress(
-                    {
-                        "event": "progress",
-                        "phase": label,
-                        "id": item,
-                        "percent": progress_percent(data),
-                        "speed": data.get("speed"),
-                        "eta": data.get("eta"),
-                        "bytes": data.get("downloaded_bytes"),
-                        "total": total,
-                    }
-                )
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            self._emit_step_progress(
+                label,
+                percent=progress_percent(data),
+                bytes_val=data.get("downloaded_bytes"),
+                total=total,
+                speed=data.get("speed"),
+                eta=data.get("eta"),
+            )
         elif status == "finished":
             self._draw(f"{stream_label(data)}  complete")
 
@@ -373,34 +482,33 @@ class DownloadProgress(ProgressDisplay):
             return
         name = str(data.get("postprocessor") or "")
         status = data.get("status")
+        label = postprocessor_step_label(name)
         lowered = name.lower()
-        if status == "started" and ("remux" in lowered or "merger" in lowered or "merge" in lowered):
-            label = "remux" if "remux" in lowered else "merge"
-            self.start_heartbeat(label)
-        elif status == "started" and "subtitle" in lowered:
-            self.start_heartbeat("subtitles")
-        elif status == "finished" and ("remux" in lowered or "merger" in lowered or "merge" in lowered):
+        if status == "started" and (
+            "remux" in lowered or "merger" in lowered or "merge" in lowered or "subtitle" in lowered
+        ):
             self.stop_heartbeat()
-            self._draw("remux  complete" if "remux" in lowered else "merge  complete")
+            self._emit_step_progress(label, percent=None)
+            self.start_heartbeat(label)
+        elif status == "finished" and (
+            "remux" in lowered or "merger" in lowered or "merge" in lowered
+        ):
+            self.stop_heartbeat()
+            self._draw(f"{label}  complete")
 
-    def copy_update(self, copied: int, total: int, label: str = "copy") -> None:
+    def copy_update(self, copied: int, total: int, label: str = "Copy to library") -> None:
         self.stop_heartbeat()
         self._draw(
             format_copy_line(
                 copied, total, width=self.width, label=label, **self._bar_style()
             )
         )
-        item = current_item_id()
-        if item and total:
-            emit_progress(
-                {
-                    "event": "progress",
-                    "phase": label,
-                    "id": item,
-                    "percent": min(100.0, max(0.0, 100.0 * copied / total)),
-                    "bytes": copied,
-                    "total": total,
-                }
+        if total:
+            self._emit_step_progress(
+                label,
+                percent=min(100.0, max(0.0, 100.0 * copied / total)),
+                bytes_val=copied,
+                total=total,
             )
 
 

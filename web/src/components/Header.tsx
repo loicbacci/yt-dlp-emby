@@ -25,7 +25,6 @@ export function Header({
   return (
     <header class="app-header">
       <div class="brand">
-        <span class="brand-bar" />
         <span>yt-dlp-emby</span>
       </div>
       <nav class="header-nav" aria-label="Main">
@@ -35,7 +34,7 @@ export function Header({
           aria-current={current === "dashboard" ? "page" : undefined}
           onClick={goTo("/")}
         >
-          Run
+          Downloads
         </a>
         <a
           href="/series"
@@ -43,7 +42,7 @@ export function Header({
           aria-current={current === "series" ? "page" : undefined}
           onClick={goTo("/series")}
         >
-          Series
+          Shows
         </a>
         <a
           href="/settings"

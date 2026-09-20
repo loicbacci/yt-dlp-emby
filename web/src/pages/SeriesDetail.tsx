@@ -12,11 +12,18 @@ import {
   apiClient,
 } from "../api";
 import { Header } from "../components/Header";
-import { SeriesDetailSkeleton } from "../components/Skeleton";
+import { Poster, posterLetter } from "../components/Poster";
+import {
+  beginRefresh,
+  endRefresh,
+  refreshSeriesKey,
+  useSeriesRefreshing,
+} from "../seriesRefreshStore";
+import { SeriesDetailSkeleton, Skeleton } from "../components/Skeleton";
 import { UrlField } from "../components/UrlField";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
-import { DestMapPanel } from "../components/series/DestMapPanel";
 import { FindSourceModal } from "../components/series/FindSourceModal";
+import { LibrarySeasons } from "../components/series/LibrarySeasons";
 import { RemapModal } from "../components/series/RemapModal";
 import { SonarrCheckPanel } from "../components/series/SonarrCheckPanel";
 import { SourceBlock } from "../components/series/SourceBlock";
@@ -69,6 +76,7 @@ export function SeriesDetail() {
 
   const [run, setRun] = useState<Run>(idleRun);
   const [folderView, setFolderView] = useState<"sources" | "emby">("emby");
+  const refreshing = useSeriesRefreshing(platform, slug);
   const [detail, setDetail] = useState<SeriesDetailModel | null>(null);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -300,6 +308,22 @@ export function SeriesDetail() {
     }
   };
 
+  const saveSourceUrl = async (sourceId: number, url: string) => {
+    if (!detail) return;
+    const next: SeriesDetailModel = {
+      ...detail,
+      sources: detail.sources.map((src, idx) =>
+        idx === sourceId ? { ...src, url } : src,
+      ),
+    };
+    try {
+      await persist(next);
+      await refreshSource(sourceId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Update URL failed");
+    }
+  };
+
   const updateSeasonTitle = async (
     sourceId: number,
     seasonId: number,
@@ -485,6 +509,31 @@ export function SeriesDetail() {
     go(url);
   };
 
+  const refreshMetadata = async () => {
+    const key = refreshSeriesKey(platform, slug);
+    beginRefresh([key]);
+    try {
+      await apiClient.refreshSeries([{ platform, slug }]);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.series(platform, slug) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.episodesSeries(platform, slug),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.disk(platform, slug) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.missing(platform, slug) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.check(slug) }),
+      ]);
+      if (detail?.tvdb_id != null) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.sonarrEpisodes(detail.tvdb_id),
+        });
+      }
+    } finally {
+      endRefresh([key]);
+    }
+  };
+
   if (!detail) {
     return (
       <div class="series-shell">
@@ -503,7 +552,7 @@ export function SeriesDetail() {
               go("/series");
             }}
           >
-            ← Series
+            ← Shows
           </a>
           {error ? (
             <div class="validation-error">{error}</div>
@@ -517,7 +566,7 @@ export function SeriesDetail() {
     );
   }
 
-  const catalogView = !(platform === "dropout" && folderView === "emby");
+  const mappingView = folderView === "sources";
   const tvdbHref =
     detail.tvdb_id != null ? tvdbSeriesUrl(detail.tvdb_id) : "";
 
@@ -540,7 +589,7 @@ export function SeriesDetail() {
                 navigate("/series");
               }}
             >
-              ← Series
+              ← Shows
             </a>
             <div class="series-hero-links">
               {tvdbHref && (
@@ -566,16 +615,39 @@ export function SeriesDetail() {
             </div>
           </div>
           <div class="series-hero-row">
+            <Poster
+              src={detail.poster_url}
+              letter={posterLetter(detail.name)}
+              size="lg"
+              alt={detail.name}
+            />
             <div>
               <h1 class="settings-title">{detail.name}</h1>
               <p class="series-map-lead">
                 {platform === "youtube" ? "YouTube" : "Dropout"}
-                <span class="map-arrow"> → </span>
-                Emby
                 {detail.path ? ` · ${detail.path}` : ""}
               </p>
+              {refreshing ? (
+                <div class="skel-meta">
+                  <Skeleton width="6.5rem" />
+                  <Skeleton width="7rem" />
+                  <Skeleton width="6rem" />
+                </div>
+              ) : (
+                <p class="series-row-meta">
+                  {detail.season_count} seasons
+                </p>
+              )}
             </div>
             <div class="series-toolbar-end">
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={refreshing}
+                onClick={() => void refreshMetadata()}
+              >
+                Refresh
+              </button>
               <span
                 class={
                   detail.platform === "youtube" ? "badge-youtube" : "badge-dropout"
@@ -610,17 +682,7 @@ export function SeriesDetail() {
             </div>
           </div>
         </section>
-        {platform === "dropout" && (
-          <div class="map-switch" role="tablist" aria-label="Mapping view">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={folderView === "sources"}
-              class={folderView === "sources" ? "filter-chip active" : "filter-chip"}
-              onClick={() => setFolderView("sources")}
-            >
-              Dropout catalog
-            </button>
+        <div class="map-switch" role="tablist" aria-label="Show view">
             <button
               type="button"
               role="tab"
@@ -628,24 +690,26 @@ export function SeriesDetail() {
               class={folderView === "emby" ? "filter-chip active" : "filter-chip"}
               onClick={() => setFolderView("emby")}
             >
-              Emby library
+              Library
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={folderView === "sources"}
+              class={folderView === "sources" ? "filter-chip active" : "filter-chip"}
+              onClick={() => setFolderView("sources")}
+            >
+              Mapping
             </button>
           </div>
-        )}
-        {platform === "dropout" && folderView === "emby" && (
-          <DestMapPanel
+        {folderView === "emby" && (
+          <LibrarySeasons
             destMap={destMap}
             loading={
               Object.values(loadingMap).some(Boolean) ||
               (detail.tvdb_id != null && sonarrMetaQuery.isPending)
             }
-            onRemap={(occupant) =>
-              setRemap({
-                sourceId: occupant.row.sourceId,
-                seasonId: occupant.row.seasonId,
-                episode: occupant.row.episode,
-              })
-            }
+            refreshing={refreshing}
             onFind={(slot) =>
               setRemap({
                 missing: {
@@ -660,7 +724,7 @@ export function SeriesDetail() {
             onPack={(destSeason) => void applyPack(destSeason)}
           />
         )}
-        {catalogView && (
+        {mappingView && (
           <section class="settings-section">
             <div class="series-section-head">
               <div>
@@ -735,6 +799,7 @@ export function SeriesDetail() {
                 runActive={runActive}
                 episodeMap={episodeMap}
                 loadingMap={loadingMap}
+                refreshing={refreshing}
                 onDisk={onDisk}
                 seasonOpen={(seasonId) =>
                   isSeasonOpen(seasonFolds, sourceId, seasonId)
@@ -749,6 +814,7 @@ export function SeriesDetail() {
                 }}
                 onRefresh={() => void refreshSource(sourceId)}
                 onRemove={() => void removeSource(sourceId)}
+                onSaveUrl={(url) => void saveSourceUrl(sourceId, url)}
                 onToggleEnabled={(seasonId) =>
                   void toggleSeasonEnabled(sourceId, seasonId)
                 }
@@ -786,7 +852,7 @@ export function SeriesDetail() {
             )}
           </section>
         )}
-        {platform === "dropout" && detail.tvdb_id != null && (
+        {platform === "dropout" && mappingView && detail.tvdb_id != null && (
           <SonarrCheckPanel
             detail={detail}
             check={check}
@@ -805,7 +871,7 @@ export function SeriesDetail() {
             onRemap={(row) => setRemap({ missing: row })}
           />
         )}
-        {platform === "dropout" && catalogView && (
+        {platform === "dropout" && mappingView && (
           <section class="settings-section">
             <TvdbSkipPanel
               detail={detail}

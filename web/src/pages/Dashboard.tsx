@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useQuery } from "@tanstack/preact-query";
 import { ApiError, type PlanFile, type Run, apiClient, runKeyFor } from "../api";
 import { go } from "../nav";
 import { Header } from "../components/Header";
 import { LogViewer } from "../components/LogViewer";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { Poster, posterLetter } from "../components/Poster";
+import { queryKeys } from "../queryKeys";
 import {
   applyCheck,
   applyProgress,
   buildTree,
   downloadLabel,
   effectiveDownloadIds,
-  finishedEpisodes,
+  episodeForId,
+  formatBinaryBytes,
   formatItemSize,
   formatProgressStats,
   heroFrom,
@@ -122,7 +126,11 @@ export function Dashboard() {
         if (next.progress.event === "series" && typeof next.progress.name === "string") {
           setListingSeries(next.progress.name);
         }
-        if (next.progress.event === "progress" || next.progress.event === "item_done") {
+        if (
+          next.progress.event === "item_steps" ||
+          next.progress.event === "progress" ||
+          next.progress.event === "item_done"
+        ) {
           const { progress: patch } = applyProgress(treeRef.current, next.progress);
           setProgress((current) => mergeProgress(current, patch));
         }
@@ -163,7 +171,11 @@ export function Dashboard() {
           if (ev.event === "series" && typeof ev.name === "string") {
             setListingSeries(ev.name);
           }
-          if (ev.event === "progress" || ev.event === "item_done") {
+          if (
+            ev.event === "item_steps" ||
+            ev.event === "progress" ||
+            ev.event === "item_done"
+          ) {
             const { progress: next } = applyProgress(treeRef.current, ev);
             setProgress((current) => mergeProgress(current, next));
           }
@@ -201,6 +213,16 @@ export function Dashboard() {
       }
     }
   }, [downloading, progress.currentId, displayTree]);
+
+  const didOpenDefault = useRef(false);
+  useEffect(() => {
+    if (didOpenDefault.current || downloading || !visible.length) return;
+    const first = visible.find((series) => series.seasons.length > 0);
+    if (!first) return;
+    didOpenDefault.current = true;
+    setOpenSeries(new Set([first.key]));
+    setOpenSeasons(new Set([first.seasons[0].key]));
+  }, [visible, downloading]);
 
   const onRefresh = async () => {
     setError(null);
@@ -264,6 +286,32 @@ export function Dashboard() {
     downloading ? downloadTotal || allPending.length : allPending.length,
   );
   const progressStats = downloading ? formatProgressStats(progress) : null;
+  const posterQuery = useQuery({
+    queryKey: queryKeys.seriesList(),
+    queryFn: () => apiClient.listSeries(),
+    staleTime: 60_000,
+  });
+  const posterMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of posterQuery.data?.series ?? []) {
+      if (row.poster_url) map.set(`${row.platform}|${row.slug}`, row.poster_url);
+    }
+    return map;
+  }, [posterQuery.data]);
+  const nowHit = progress.currentId
+    ? episodeForId(displayTree, progress.currentId)
+    : null;
+  const nowPoster = nowHit
+    ? posterMap.get(`${nowHit.series.platform}|${nowHit.series.slug}`)
+    : null;
+  const localDetail =
+    progress.total != null && progress.total > 0
+      ? `${formatBinaryBytes(progress.bytes ?? 0)} of ${formatBinaryBytes(progress.total)}${
+          progress.speed != null && Number.isFinite(progress.speed)
+            ? ` · ${formatBinaryBytes(progress.speed)}/s`
+            : ""
+        }`
+      : progressStats;
   const expandedSeasons = useMemo(() => {
     const keys = new Set(openSeasons);
     const q = query.trim();
@@ -386,28 +434,32 @@ export function Dashboard() {
           <p class="run-hint">
             No queue yet. Add series under{" "}
             <a href="/series" onClick={(e) => { e.preventDefault(); go("/series"); }}>
-              Series
+              Shows
             </a>
             , then Refresh queue.
           </p>
         )}
-        <section class="run-hero">
-          <div class="run-hero-copy">
-            <h1>{hero.heading}</h1>
-            <p class="run-hero-sub">{hero.sub}</p>
-          </div>
-          {downloading && (
-            <button type="button" class="btn-danger run-hero-stop" onClick={onStop}>
-              Stop
-            </button>
-          )}
-          {downloading && (
-            <div class="run-hero-progress">
+        {downloading && nowHit ? (
+          <section class="download-now" data-testid="download-now">
+            <Poster
+              src={nowPoster}
+              letter={posterLetter(nowHit.series.name)}
+              size="now"
+              alt={nowHit.series.name}
+            />
+            <div class="download-now-copy">
+              <p class="download-kicker">Downloading now</p>
+              <h1>{nowHit.series.name}</h1>
+              <h2>{nowHit.ep.title}</h2>
+              <div class="progress-row">
+                <span>{progress.phase ?? "Working…"}</span>
+                <span>{localDetail}</span>
+              </div>
               <div
-                class={`run-hero-bar${progress.percent == null ? " is-indeterminate" : ""}`}
+                class={`progress-track${progress.percent == null ? " is-indeterminate" : ""}`}
               >
                 <div
-                  class="run-hero-fill"
+                  class="progress-fill"
                   style={
                     progress.percent != null
                       ? { width: `${progress.percent}%` }
@@ -415,13 +467,58 @@ export function Dashboard() {
                   }
                 />
               </div>
-              {progressStats && (
-                <p class="run-hero-metrics">{progressStats}</p>
+              {progress.steps.length > 0 && (
+                <ol class="step-chips">
+                  {progress.steps.map((label, index) => (
+                    <li
+                      key={label}
+                      data-testid={`step-chip-${label}`}
+                      class={
+                        progress.step != null && index < progress.step
+                          ? "is-done"
+                          : progress.step === index
+                            ? "is-current"
+                            : undefined
+                      }
+                    >
+                      {label}
+                    </li>
+                  ))}
+                </ol>
               )}
+              <button
+                type="button"
+                class="btn-danger"
+                style={{ marginTop: "12px" }}
+                onClick={onStop}
+              >
+                Stop
+              </button>
             </div>
-          )}
-        </section>
+          </section>
+        ) : (
+          <section class="dl-hero">
+            <div>
+              <h1>
+                {planning || run.phase === "stopping"
+                  ? hero.heading
+                  : `${allPending.length} new episodes`}
+              </h1>
+              <p class="run-hero-sub">{hero.sub}</p>
+            </div>
+            {downloading && (
+              <button type="button" class="btn-danger run-hero-stop" onClick={onStop}>
+                Stop
+              </button>
+            )}
+          </section>
+        )}
         <section class="run-stats" aria-live="polite">{statsLine}</section>
+        {downloading && (
+          <h3 class="queue-label">
+            Queue · {Math.max(0, (downloadTotal || allPending.length) - progress.doneIds.size - (nowHit ? 1 : 0))} episodes
+          </h3>
+        )}
         <section class="run-tree">
           {planning && (
             <p class="run-hint">Building the download queue — listing each series…</p>
@@ -433,6 +530,7 @@ export function Dashboard() {
             <SeriesRow
               key={series.key}
               series={series}
+              posterUrl={posterMap.get(`${series.platform}|${series.slug}`)}
               open={openSeries.has(series.key) || Boolean(query.trim())}
               openSeasons={expandedSeasons}
               upcomingOpen={expandedUpcoming.has(series.key)}
@@ -474,8 +572,8 @@ export function Dashboard() {
             />
           ))}
           {upToDate.length > 0 && (
-            <details class="run-complete">
-              <summary>Up to date ({upToDate.length})</summary>
+            <details class="fold-card disclosure">
+              <summary>Already in library ({upToDate.length})</summary>
               <ul>
                 {upToDate.map((s) => (
                   <li key={s.key}>{s.name}</li>
@@ -484,7 +582,10 @@ export function Dashboard() {
             </details>
           )}
         </section>
-        <LogViewer runKey={runKey} compact />
+        <details class="run-log-details">
+          <summary>Details · technical log</summary>
+          <LogViewer runKey={runKey} compact />
+        </details>
       </main>
       {!downloading && (
         <footer class="run-bar">
@@ -524,23 +625,22 @@ export function Dashboard() {
 
 function SeriesRow({
   series,
+  posterUrl,
   open,
   openSeasons,
-  upcomingOpen,
   selected,
   busy,
   downloading,
   listing,
   currentId,
-  currentPercent,
   onToggleOpen,
   onToggleSeries,
   onToggleSeason,
   onToggleEpisode,
   onToggleSeasonOpen,
-  onToggleUpcoming,
 }: {
   series: QueueSeries;
+  posterUrl?: string;
   open: boolean;
   openSeasons: Set<string>;
   upcomingOpen: boolean;
@@ -563,27 +663,23 @@ function SeriesRow({
   const upcoming = series.seasons
     .map((season) => ({
       season,
-      remaining: remainingEpisodes(season, hideDone),
+      remaining: remainingEpisodes(season, hideDone).filter(
+        (ep) => ep.id !== currentId,
+      ),
     }))
     .filter((row) => row.remaining.length > 0);
-  const downloadedNow = series.seasons.flatMap((season) =>
-    (hideDone ? finishedEpisodes(season) : []).map((ep) => ({
-      season,
-      ep,
-    })),
-  );
   const upcomingCount = upcoming.reduce((n, row) => n + row.remaining.length, 0);
-  const diskCount = series.completeSeasons.length + downloadedNow.length;
   if (series.error) {
     return (
-      <div class="run-row run-row-series">
+      <section class="fold-card">
         <span class="run-error">{series.name}: {series.error}</span>
-      </div>
+      </section>
     );
   }
+  if (downloading && upcomingCount === 0) return null;
   return (
-    <div class="run-row run-row-series">
-      <div class="run-series-head">
+    <section class="fold-card">
+      <div class="fold-head">
         {!downloading && childIds.length > 0 && (
           <input
             type="checkbox"
@@ -601,153 +697,135 @@ function SeriesRow({
         )}
         <button
           type="button"
-          class="run-twist"
+          class="fold-main"
           aria-expanded={open}
           onClick={onToggleOpen}
         >
-          {open ? "▾" : "▸"}
-        </button>
-        <button type="button" class="run-series-name" onClick={onToggleOpen}>
-          {series.name}
-        </button>
-        <span class="run-meta">{platformLabel(series.platform)}</span>
-        {listing && <span class="run-meta">Listing…</span>}
-        {(hideDone ? upcomingCount : series.pendingCount) > 0 && (
-          <span class="run-meta">
-            {hideDone ? upcomingCount : series.pendingCount} new
+          <Poster
+            src={posterUrl}
+            letter={posterLetter(series.name)}
+            size="md"
+            alt={series.name}
+          />
+          <span class="show-copy">
+            <span class="show-name">{series.name}</span>
+            <span class="show-meta">
+              {listing
+                ? "Listing…"
+                : downloading
+                  ? `${upcomingCount} remaining · ${upcoming.length} ${upcoming.length === 1 ? "season" : "seasons"}`
+                  : `${series.pendingCount} new · ${series.seasons.length} ${series.seasons.length === 1 ? "season" : "seasons"} · ${platformLabel(series.platform)}`}
+            </span>
           </span>
-        )}
+          <span class={`twist${open ? " is-open" : ""}`} aria-hidden="true" />
+        </button>
       </div>
-      {open && (
-        <div class="run-series-body">
-          {upcoming.length > 0 && (
-            <details
-              class="run-upcoming"
-              open={upcomingOpen}
-              onToggle={(e) =>
-                onToggleUpcoming((e.currentTarget as HTMLDetailsElement).open)
-              }
-            >
-              <summary class="run-upcoming-summary">
-                Upcoming · {upcoming.length}{" "}
-                {upcoming.length === 1 ? "season" : "seasons"} · {upcomingCount}{" "}
-                {upcomingCount === 1 ? "episode" : "episodes"}
-              </summary>
-              {upcoming.map(({ season, remaining }) => {
-                const seasonOpen = openSeasons.has(season.key);
-                const seasonIds = remaining.map((e) => e.id);
-                return (
-                  <div key={season.key} class="run-row run-row-season">
-                    <div class="run-series-head">
-                      {!downloading && seasonIds.length > 0 && (
+      {open &&
+        upcoming.map(({ season, remaining }) => {
+          const seasonOpen = openSeasons.has(season.key);
+          const seasonIds = remaining.map((e) => e.id);
+          return (
+            <div key={season.key} class="season-group">
+              <div class="fold-head season-head">
+                {!downloading && seasonIds.length > 0 && (
+                  <input
+                    type="checkbox"
+                    class="run-check"
+                    checked={triState(selected, seasonIds) === "all"}
+                    ref={(el) => {
+                      if (el) {
+                        el.indeterminate = triState(selected, seasonIds) === "some";
+                      }
+                    }}
+                    onChange={(e) =>
+                      onToggleSeason(
+                        season,
+                        (e.target as HTMLInputElement).checked,
+                      )
+                    }
+                    disabled={busy}
+                    aria-label={`Select ${season.folderLabel}`}
+                  />
+                )}
+                <button
+                  type="button"
+                  class="fold-main"
+                  aria-expanded={seasonOpen}
+                  onClick={() => onToggleSeasonOpen(season.key)}
+                >
+                  <span class="show-copy">
+                    <span class="show-name">
+                      {season.seasonTitle ?? season.folderLabel}
+                    </span>
+                    <span class="show-meta">{season.folderLabel}</span>
+                  </span>
+                  <span class={`count-chip${downloading ? "" : " is-new"}`}>
+                    {remaining.length} {downloading ? "remaining" : "new"}
+                  </span>
+                  <span class={`twist${seasonOpen ? " is-open" : ""}`} aria-hidden="true" />
+                </button>
+              </div>
+              {seasonOpen && (
+                <div class="season-eps">
+                  {remaining.map((ep) => (
+                    <label
+                      key={ep.id}
+                      class={
+                        selected.has(ep.id) && !downloading
+                          ? "ep-row is-on"
+                          : ep.status === "failed"
+                            ? "ep-row is-failed"
+                            : "ep-row"
+                      }
+                    >
+                      {!downloading && (
                         <input
                           type="checkbox"
                           class="run-check"
-                          checked={triState(selected, seasonIds) === "all"}
+                          checked={selected.has(ep.id)}
                           onChange={(e) =>
-                            onToggleSeason(
-                              season,
+                            onToggleEpisode(
+                              ep.id,
                               (e.target as HTMLInputElement).checked,
                             )
                           }
                           disabled={busy}
-                          aria-label={`Select season ${season.folderLabel}`}
                         />
                       )}
-                      <button
-                        type="button"
-                        class="run-twist"
-                        aria-expanded={seasonOpen}
-                        onClick={() => onToggleSeasonOpen(season.key)}
-                      >
-                        {seasonOpen ? "▾" : "▸"}
-                      </button>
-                      <button
-                        type="button"
-                        class="run-series-name"
-                        onClick={() => onToggleSeasonOpen(season.key)}
-                      >
-                        {season.seasonTitle ?? season.folderLabel}
-                      </button>
-                      <span class="run-meta muted">{season.folderLabel} on disk</span>
-                      <span class="run-meta">{remaining.length} new</span>
-                    </div>
-                    {seasonOpen &&
-                      remaining.map((ep) => {
-                        const now = currentId === ep.id;
-                        return (
-                          <div
-                            key={ep.id}
-                            class={`run-row run-row-ep${now ? " is-now" : ""}${ep.status === "failed" ? " is-failed" : ""}`}
-                          >
-                            {!downloading && (
-                              <input
-                                type="checkbox"
-                                class="run-check"
-                                checked={selected.has(ep.id)}
-                                onChange={(e) =>
-                                  onToggleEpisode(
-                                    ep.id,
-                                    (e.target as HTMLInputElement).checked,
-                                  )
-                                }
-                                disabled={busy}
-                              />
-                            )}
-                            <span class="run-code">{ep.code}</span>
-                            <span class="run-ep-title">{ep.title}</span>
-                            {now && currentPercent != null && (
-                              <span class="run-meta">{Math.round(currentPercent)}%</span>
-                            )}
-                            {ep.status === "failed" && (
-                              <span class="run-meta run-error">failed</span>
-                            )}
-                            {formatItemSize(ep.size) && (
-                              <span class="run-meta ep-size">{formatItemSize(ep.size)}</span>
-                            )}
-                          </div>
-                        );
-                      })}
-                  </div>
-                );
-              })}
-            </details>
-          )}
-          {diskCount > 0 && (
-            <details class="run-complete queue-complete">
-              <summary>Already on disk ({diskCount})</summary>
-              <ul>
-                {series.completeSeasons.map((s) => (
-                  <li key={s.folderLabel}>
-                    {s.seasonTitle ?? s.folderLabel}
-                    <span class="run-meta muted"> · {s.skip} skipped</span>
-                  </li>
-                ))}
-                {downloadedNow.map(({ season, ep }) => (
-                  <li key={ep.id}>
-                    <span class="run-code">{ep.code}</span> {ep.title}
-                    <span class="run-meta muted">
-                      {" "}
-                      · {season.seasonTitle ?? season.folderLabel}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-          {series.unmapped.length > 0 && (
-            <details class="run-row run-row-season">
-              <summary>Unmapped ({series.unmapped.length})</summary>
-              {series.unmapped.map((ep) => (
-                <div key={ep.id} class="run-row run-row-ep">
-                  <span class="run-code">{ep.code}</span>
-                  <span class="run-ep-title">{ep.title}</span>
+                      <span class="ep-copy">
+                        <span class="ep-title">{ep.title}</span>
+                        <span class="ep-code">{ep.code}</span>
+                      </span>
+                      {ep.status === "failed" && (
+                        <span class="run-error">failed</span>
+                      )}
+                      {formatItemSize(ep.size) && (
+                        <span class="ep-size">{formatItemSize(ep.size)}</span>
+                      )}
+                    </label>
+                  ))}
                 </div>
-              ))}
-            </details>
-          )}
+              )}
+            </div>
+          );
+        })}
+      {open && series.unmapped.length > 0 && (
+        <div class="season-group">
+          <div class="show-meta" style={{ padding: "8px 16px" }}>
+            Unmapped ({series.unmapped.length})
+          </div>
+          <div class="season-eps">
+            {series.unmapped.map((ep) => (
+              <div key={ep.id} class="ep-row">
+                <span class="ep-copy">
+                  <span class="ep-title">{ep.title}</span>
+                  <span class="ep-code">{ep.code}</span>
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }
