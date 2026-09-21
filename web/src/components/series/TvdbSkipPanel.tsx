@@ -1,12 +1,9 @@
-import { useMemo, useState } from "preact/hooks";
 import { useQuery } from "@tanstack/preact-query";
-import { ApiError, apiClient, type SeriesDetail } from "../../api";
+import { useMemo, useState } from "preact/hooks";
+import { ApiError, type SeriesDetail, apiClient } from "../../api";
+import { parseNonNegInt } from "../../formValidation";
 import { queryKeys } from "../../queryKeys";
-import {
-  formatMapsTo,
-  removeTvdbSkip,
-  skippedTvdbRows,
-} from "../../seriesView";
+import { addTvdbSkip, formatMapsTo, removeTvdbSkip, skippedTvdbRows } from "../../seriesView";
 
 export function TvdbSkipPanel({
   detail,
@@ -39,46 +36,32 @@ export function TvdbSkipPanel({
   );
 
   const available = useMemo(() => {
-    const hidden = new Set(
-      skipped.map((row) => `${row.season}-${row.episode}`),
-    );
-    return (episodes ?? []).filter(
-      (ep) => !hidden.has(`${ep.season}-${ep.episode}`),
-    );
+    const hidden = new Set(skipped.map((row) => `${row.season}-${row.episode}`));
+    return (episodes ?? []).filter((ep) => !hidden.has(`${ep.season}-${ep.episode}`));
   }, [episodes, skipped]);
 
-  const add = (season: number, episode: number) => {
-    const next = detail.tvdb_skip.map((block) => ({
-      ...block,
-      episodes: [...block.episodes],
-    }));
-    const block = next.find((item) => item.season === season);
-    if (block) {
-      if (!block.episodes.includes(episode)) {
-        block.episodes.push(episode);
-        block.episodes.sort((a, b) => a - b);
-      }
-    } else {
-      next.push({ season, episodes: [episode] });
-    }
-    onChange(next);
-  };
+  const seasonParsed = parseNonNegInt(manualSeason);
+  const episodeParsed = parseNonNegInt(manualEpisode);
+  const manualReady = seasonParsed != null && episodeParsed != null;
+  const manualError =
+    (manualSeason.trim() || manualEpisode.trim()) && !manualReady
+      ? "Season and episode must be whole numbers"
+      : null;
 
   const addManual = () => {
-    const season = Number.parseInt(manualSeason, 10);
-    const episode = Number.parseInt(manualEpisode, 10);
-    if (!Number.isFinite(season) || !Number.isFinite(episode)) return;
-    add(season, episode);
+    if (seasonParsed == null || episodeParsed == null) return;
+    onChange(addTvdbSkip(detail.tvdb_skip, seasonParsed, episodeParsed));
+    setManualSeason("");
     setManualEpisode("");
     setAdding(false);
   };
 
   const addPicked = () => {
     const [seasonRaw, episodeRaw] = picked.split("-");
-    const season = Number.parseInt(seasonRaw, 10);
-    const episode = Number.parseInt(episodeRaw, 10);
-    if (!Number.isFinite(season) || !Number.isFinite(episode)) return;
-    add(season, episode);
+    const season = parseNonNegInt(seasonRaw ?? "");
+    const episode = parseNonNegInt(episodeRaw ?? "");
+    if (season == null || episode == null) return;
+    onChange(addTvdbSkip(detail.tvdb_skip, season, episode));
     setPicked("");
     setAdding(false);
   };
@@ -86,15 +69,15 @@ export function TvdbSkipPanel({
   return (
     <div>
       <h2 class="settings-heading">Hide from Sonarr check</h2>
-      <p class="settings-hint">
-        Does not skip downloads. Used by Dropout check only.
-      </p>
+      <p class="settings-hint">Does not skip downloads. Used by Dropout check only.</p>
       {detail.tvdb_id == null && (
-        <p class="settings-hint">
-          Set a TVDB id to look up episode titles, or add rows below.
-        </p>
+        <p class="settings-hint">Set a TVDB id to look up episode titles, or add rows below.</p>
       )}
-      {error && <div class="validation-error">{error}</div>}
+      {error && (
+        <div class="validation-error" role="alert">
+          {error}
+        </div>
+      )}
       {skipped.length === 0 ? (
         <p class="settings-hint">No exceptions yet.</p>
       ) : (
@@ -108,9 +91,7 @@ export function TvdbSkipPanel({
               <button
                 type="button"
                 class="btn-ghost"
-                onClick={() =>
-                  onChange(removeTvdbSkip(detail.tvdb_skip, row.season, row.episode))
-                }
+                onClick={() => onChange(removeTvdbSkip(detail.tvdb_skip, row.season, row.episode))}
               >
                 Remove
               </button>
@@ -119,11 +100,7 @@ export function TvdbSkipPanel({
         </ul>
       )}
       {!adding ? (
-        <button
-          type="button"
-          class="btn-secondary"
-          onClick={() => setAdding(true)}
-        >
+        <button type="button" class="btn-secondary" onClick={() => setAdding(true)}>
           Add exception
         </button>
       ) : (
@@ -132,26 +109,17 @@ export function TvdbSkipPanel({
             <div class="series-toolbar">
               <select
                 value={picked}
-                onChange={(e) =>
-                  setPicked((e.currentTarget as HTMLSelectElement).value)
-                }
+                aria-label="Sonarr episode"
+                onChange={(e) => setPicked((e.currentTarget as HTMLSelectElement).value)}
               >
                 <option value="">Choose a Sonarr episode…</option>
                 {available.map((ep) => (
-                  <option
-                    key={`${ep.season}-${ep.episode}`}
-                    value={`${ep.season}-${ep.episode}`}
-                  >
+                  <option key={`${ep.season}-${ep.episode}`} value={`${ep.season}-${ep.episode}`}>
                     {formatMapsTo(ep.season, ep.episode)} {ep.title}
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                class="btn-secondary"
-                disabled={!picked}
-                onClick={addPicked}
-              >
+              <button type="button" class="btn-secondary" disabled={!picked} onClick={addPicked}>
                 Add
               </button>
             </div>
@@ -161,31 +129,32 @@ export function TvdbSkipPanel({
               type="text"
               inputMode="numeric"
               placeholder="Season"
+              aria-label="Season"
               value={manualSeason}
-              onInput={(e) =>
-                setManualSeason((e.currentTarget as HTMLInputElement).value)
-              }
+              onInput={(e) => setManualSeason((e.currentTarget as HTMLInputElement).value)}
             />
             <input
               type="text"
               inputMode="numeric"
               placeholder="Episode"
+              aria-label="Episode"
               value={manualEpisode}
-              onInput={(e) =>
-                setManualEpisode((e.currentTarget as HTMLInputElement).value)
-              }
+              onInput={(e) => setManualEpisode((e.currentTarget as HTMLInputElement).value)}
             />
-            <button type="button" class="btn-ghost" onClick={addManual}>
-              Add
-            </button>
             <button
               type="button"
               class="btn-ghost"
-              onClick={() => setAdding(false)}
+              disabled={!manualReady}
+              title={manualReady ? undefined : "Enter a season and episode number first"}
+              onClick={addManual}
             >
+              Add
+            </button>
+            <button type="button" class="btn-ghost" onClick={() => setAdding(false)}>
               Cancel
             </button>
           </div>
+          {manualError && <div class="validation-error">{manualError}</div>}
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import pytest
 
 from yt_dlp_emby.config import ConfigError, resolve_settings
 from yt_dlp_emby.dropout import (
+    DownloadJob,
     emby_season_dir,
     format_season_plan,
     layout_origin,
@@ -100,7 +101,7 @@ def test_sort_download_jobs_follows_emby_dest_order() -> None:
     listing = DropoutListing(url="https://example/x", title="Ep", dropout_episode=1)
 
     def job(season: int, episode: int):
-        return (series, listing, season, episode, Path("."), "stem", None)
+        return DownloadJob(series, listing, season, episode, Path("."), "stem", None)
 
     ordered = sort_download_jobs(
         [
@@ -111,7 +112,7 @@ def test_sort_download_jobs_follows_emby_dest_order() -> None:
             job(12, 1),
         ]
     )
-    assert [(item[2], item[3]) for item in ordered] == [
+    assert [(item.to_season, item.to_episode) for item in ordered] == [
         (11, 1),
         (11, 2),
         (12, 1),
@@ -270,10 +271,13 @@ def test_resolve_remap_and_default_to_season() -> None:
         dropout=29,
         remap=(DropoutRemap(2, skip=True),),
     )
-    assert resolve_emby_target(
-        DropoutListing(url="https://x", title="Bonus", dropout_episode=2),
-        skipped,
-    ) == "skip"
+    assert (
+        resolve_emby_target(
+            DropoutListing(url="https://x", title="Bonus", dropout_episode=2),
+            skipped,
+        )
+        == "skip"
+    )
 
 
 def test_layout_origin_only_when_remapped() -> None:
@@ -314,27 +318,31 @@ def test_layout_series_groups_by_name_or_path() -> None:
         sources=(DropoutSource(url="https://watch.dropout.tv/other", seasons=()),),
     )
     by_path = layout_series_groups((shared_path, shared_name))
-    assert by_path[(shared_path.name, shared_path.path)][0] == by_path[
-        (shared_name.name, shared_name.path)
-    ][0]
+    assert (
+        by_path[(shared_path.name, shared_path.path)][0]
+        == by_path[(shared_name.name, shared_name.path)][0]
+    )
     assert by_path[(shared_path.name, shared_path.path)][1] == "Dimension 20 [tvdbid=354216]"
 
     by_name = layout_series_groups((shared_name, other_path))
-    assert by_name[(shared_name.name, shared_name.path)][0] == by_name[
-        (other_path.name, other_path.path)
-    ][0]
+    assert (
+        by_name[(shared_name.name, shared_name.path)][0]
+        == by_name[(other_path.name, other_path.path)][0]
+    )
     assert by_name[(shared_name.name, shared_name.path)][1] == "Dimension 20"
 
     mixed = layout_series_groups((shared_path, shared_name, other_path, separate))
-    assert mixed[(shared_path.name, shared_path.path)][0] == mixed[
-        (shared_name.name, shared_name.path)
-    ][0]
-    assert mixed[(shared_name.name, shared_name.path)][0] == mixed[
-        (other_path.name, other_path.path)
-    ][0]
-    assert mixed[(separate.name, separate.path)][0] != mixed[
-        (shared_path.name, shared_path.path)
-    ][0]
+    assert (
+        mixed[(shared_path.name, shared_path.path)][0]
+        == mixed[(shared_name.name, shared_name.path)][0]
+    )
+    assert (
+        mixed[(shared_name.name, shared_name.path)][0]
+        == mixed[(other_path.name, other_path.path)][0]
+    )
+    assert (
+        mixed[(separate.name, separate.path)][0] != mixed[(shared_path.name, shared_path.path)][0]
+    )
 
 
 def test_load_manifest_remap_skip(tmp_path: Path) -> None:
@@ -427,11 +435,7 @@ def test_dropout_skips_existing_and_force_redownloads(tmp_path: Path) -> None:
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
     settings = _settings(tmp_path)
     series_dir = tmp_path / "lib" / "Dimension 20 [tvdbid=354216]"
-    dest = (
-        series_dir
-        / "Season 27"
-        / "Dimension 20 - S27E01 - Welcome to the Wastes.mkv"
-    )
+    dest = series_dir / "Season 27" / "Dimension 20 - S27E01 - Welcome to the Wastes.mkv"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"old")
     calls: list[str] = []
@@ -488,6 +492,8 @@ def test_dropout_skips_existing_and_force_redownloads(tmp_path: Path) -> None:
     )
     assert any("/welcome-to-the-wastes" in url for url in calls)
     assert dest.read_bytes() == b"new"
+    old_copies = list((tmp_path / "old").rglob("*.mkv"))
+    assert any(path.read_bytes() == b"old" for path in old_copies)
 
 
 def test_dropout_only_episodes_downloads_listed_numbers(tmp_path: Path) -> None:
@@ -619,12 +625,8 @@ series:
         == 0
     )
     series_dir = tmp_path / "lib" / "Dimension 20 [tvdbid=354216]"
-    assert (
-        series_dir / "Season 1" / "Dimension 20 - S01E01 - Welcome.mkv"
-    ).is_file()
-    assert (
-        series_dir / "Specials" / "Dimension 20 - S00E48 - Live Show.mkv"
-    ).is_file()
+    assert (series_dir / "Season 1" / "Dimension 20 - S01E01 - Welcome.mkv").is_file()
+    assert (series_dir / "Specials" / "Dimension 20 - S00E48 - Live Show.mkv").is_file()
     assert calls == [
         "https://watch.dropout.tv/x/videos/welcome",
         "https://watch.dropout.tv/x/videos/live-show",
@@ -742,7 +744,9 @@ def test_parse_dropout_browse_titles_uses_on_site_label() -> None:
     </a>
     """
     titles = parse_dropout_browse_titles(html)
-    assert titles["https://watch.dropout.tv/x/videos/welcome-to-the-wastes"] == "Welcome to the Wastes"
+    assert (
+        titles["https://watch.dropout.tv/x/videos/welcome-to-the-wastes"] == "Welcome to the Wastes"
+    )
 
 
 def test_extract_dropout_season_falls_back_to_url_slug() -> None:
@@ -790,9 +794,7 @@ def test_format_season_plan_and_dry_run_row() -> None:
     from yt_dlp_emby.dropout_manifest import DropoutRemap, DropoutSeason
 
     mapped = DropoutSeason(dropout=28, to_season=27)
-    assert "season 28 → Season 27" in format_season_plan(
-        mapped, skip=12, download=2, unmapped=0
-    )
+    assert "season 28 → Season 27" in format_season_plan(mapped, skip=12, download=2, unmapped=0)
     specials = DropoutSeason(dropout=29, to_season=0)
     assert "Specials" in format_season_plan(specials, skip=0, download=1, unmapped=0)
     remapped = DropoutSeason(dropout=29, remap=(DropoutRemap(1, 0, 70),))
@@ -1351,9 +1353,7 @@ def test_dropout_verbose_warns_title_change(
     assert "keeping" not in captured.err
 
 
-def test_dropout_silent_hides_summary(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_dropout_silent_hides_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     manifest = load_dropout_manifest(_write_manifest(tmp_path))
 
     def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
@@ -1408,9 +1408,7 @@ def test_filter_manifest_series_and_season(tmp_path: Path) -> None:
     filtered = filter_dropout_manifest(manifest, dropout_seasons=[28])
     assert len(filtered.series) == 1
     assert [
-        season.dropout
-        for source in filtered.series[0].sources
-        for season in source.seasons
+        season.dropout for source in filtered.series[0].sources for season in source.seasons
     ] == [28]
     named = filter_dropout_manifest(manifest, series_names=["dimension 20"])
     assert named.series[0].name == "Dimension 20"
@@ -1451,45 +1449,6 @@ def test_dropout_auth_error_aborts(tmp_path: Path) -> None:
         == 1
     )
     assert calls == []
-
-
-def test_dropout_download_auth_error_stops_remaining(tmp_path: Path) -> None:
-    from yt_dlp_emby.auth import DropoutAuthError
-
-    manifest = load_dropout_manifest(_write_manifest(tmp_path))
-    calls: list[str] = []
-
-    def fake_extract(url: str, **_kwargs: object) -> list[DropoutListing]:
-        if url.endswith("/season:28"):
-            return [
-                DropoutListing(
-                    url="https://watch.dropout.tv/x/videos/welcome-to-the-wastes",
-                    title="Welcome to the Wastes",
-                    dropout_episode=1,
-                ),
-                DropoutListing(
-                    url="https://watch.dropout.tv/x/videos/next",
-                    title="Next",
-                    dropout_episode=2,
-                ),
-            ]
-        return []
-
-    def fake_download(url: str, *_args: object, **_kwargs: object) -> dict:
-        calls.append(url)
-        raise DropoutAuthError("login required")
-
-    assert (
-        run_dropout(
-            manifest,
-            _settings(tmp_path),
-            create=True,
-            extract_fn=fake_extract,
-            download_fn=fake_download,
-        )
-        == 1
-    )
-    assert calls == ["https://watch.dropout.tv/x/videos/welcome-to-the-wastes"]
 
 
 def test_dropout_download_auth_error_stops_remaining(tmp_path: Path) -> None:
@@ -1726,7 +1685,7 @@ def test_dropout_debug_splits_cache_and_disk(
     assert "disk" in out
 
 
-def test_dropout_indexes_each_season_folder_once(
+def test_dropout_indexes_series_folder_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "dropout.yaml"
@@ -1750,13 +1709,13 @@ series:
     from yt_dlp_emby import dropout as dropout_mod
 
     calls: list[Path] = []
-    real = dropout_mod.index_episode_mkvs
+    real = dropout_mod.index_series_mkvs
 
-    def spy(season: Path) -> dict[tuple[int, int], Path]:
-        calls.append(season)
-        return real(season)
+    def spy(series: Path) -> dict[tuple[int, int], Path]:
+        calls.append(series)
+        return real(series)
 
-    monkeypatch.setattr(dropout_mod, "index_episode_mkvs", spy)
+    monkeypatch.setattr(dropout_mod, "index_series_mkvs", spy)
 
     def fake_extract(_url: str, **_kwargs: object) -> list[DropoutListing]:
         return [
@@ -1779,4 +1738,4 @@ series:
         download_fn=lambda *_a, **_k: {"id": "nope"},
     )
     assert len(calls) == 1
-    assert calls[0].name == "Season 27"
+    assert calls[0].name == "Dimension 20 [tvdbid=354216]"

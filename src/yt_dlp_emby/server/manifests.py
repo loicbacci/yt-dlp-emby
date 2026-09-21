@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
 import yaml
 
+from yt_dlp_emby.cache import atomic_write_private, file_lock
 from yt_dlp_emby.config import ConfigError, describe_manifest_paths, format_yaml_error
 from yt_dlp_emby.dropout_manifest import parse_dropout_manifest, parse_dropout_series_file
 from yt_dlp_emby.youtube_manifest import parse_youtube_manifest, parse_youtube_series_file
@@ -78,7 +80,9 @@ def _import_paths_from_text(text: str) -> list[str]:
 def _confined_import_path(data_dir: Path, listed: str) -> Path | None:
     resolved_data = data_dir.resolve()
     candidate = Path(listed)
-    resolved = candidate.resolve() if candidate.is_absolute() else (resolved_data / listed).resolve()
+    resolved = (
+        candidate.resolve() if candidate.is_absolute() else (resolved_data / listed).resolve()
+    )
     if not resolved.is_relative_to(resolved_data):
         return None
     return resolved
@@ -137,20 +141,26 @@ def validate_manifest_text(data_dir: Path, kind: str, text: str) -> None:
     _parse_text(kind, text, data_dir)
 
 
+def atomic_write_manifest_text(path: Path, text: str, *, mode: int = 0o644) -> None:
+    """Unique-tmp + fsync + single `.bak` + replace for manifest YAML (0644)."""
+    if path.is_file():
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except OSError:
+            pass
+    atomic_write_private(path, text, mode=mode)
+
+
 def write_manifest(data_dir: Path, kind: str, text: str) -> ManifestPayload:
     _parse_text(kind, text, data_dir)
     path = _manifest_path(data_dir, kind)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    with file_lock(path):
+        atomic_write_manifest_text(path, text)
     imports = imports_payload(data_dir, text)
     return ManifestPayload(kind=kind, text=text, exists=True, imports=imports)
 
 
-def write_import(
-    data_dir: Path, kind: str, listed_path: str, text: str
-) -> ImportPayload:
+def write_import(data_dir: Path, kind: str, listed_path: str, text: str) -> ImportPayload:
     if kind not in ALLOWED:
         raise ValueError("unknown manifest kind")
     if len(text.encode("utf-8")) > MAX_BYTES:
@@ -168,10 +178,8 @@ def write_import(
         parse_youtube_series_file(data, confined)
     else:
         parse_dropout_series_file(data, confined)
-    confined.parent.mkdir(parents=True, exist_ok=True)
-    tmp = confined.with_suffix(confined.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(confined)
+    with file_lock(confined):
+        atomic_write_manifest_text(confined, text)
     return ImportPayload(path=listed_path, text=text, exists=True)
 
 

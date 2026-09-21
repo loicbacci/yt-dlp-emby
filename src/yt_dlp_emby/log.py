@@ -41,6 +41,24 @@ _PLAN_STYLE = {
 }
 
 
+_TERMINAL_COLS: int | None = None
+_TERMINAL_COLS_AT = 0.0
+_TERMINAL_TTL = 1.0
+
+
+def _terminal_columns() -> int | None:
+    global _TERMINAL_COLS, _TERMINAL_COLS_AT
+    now = time.monotonic()
+    if _TERMINAL_COLS is not None and now - _TERMINAL_COLS_AT < _TERMINAL_TTL:
+        return _TERMINAL_COLS or None
+    try:
+        _TERMINAL_COLS = shutil.get_terminal_size().columns
+    except OSError:
+        _TERMINAL_COLS = 0
+    _TERMINAL_COLS_AT = now
+    return _TERMINAL_COLS or None
+
+
 def info(message: str) -> None:
     print(fit_line(message, sys.stdout), flush=True)
 
@@ -63,7 +81,9 @@ def fit_line(text: str, stream: object | None = None) -> str:
     try:
         if not isatty():
             return text
-        cols = shutil.get_terminal_size().columns
+        cols = _terminal_columns()
+        if cols is None:
+            return text
     except OSError:
         return text
     if cols < 8 or visible_len(text) <= cols:
@@ -202,9 +222,7 @@ def format_unit_plan(
     download_bytes: int | None = None,
 ) -> str:
     skip_part = dim(f"{skip} skip")
-    download_part = (
-        green(f"{download} download") if download else dim(f"{download} download")
-    )
+    download_part = green(f"{download} download") if download else dim(f"{download} download")
     hint = format_size_estimate(download_bytes)
     if hint and download:
         download_part += f" {dim(hint)}"
@@ -226,8 +244,7 @@ def format_unit_plan(
         disk = disk_seconds or 0.0
         if debug:
             suffix = (
-                f"{listing_source} {format_elapsed(listing_seconds)}  "
-                f"disk {format_elapsed(disk)}"
+                f"{listing_source} {format_elapsed(listing_seconds)}  disk {format_elapsed(disk)}"
             )
         else:
             suffix = f"{listing_source}  {format_elapsed(listing_seconds + disk)}"
@@ -241,6 +258,7 @@ class RunStats:
     downloaded: int = 0
     skipped: int = 0
     failed: int = 0
+    filtered: int = 0
     remaining: int | None = None
     interrupted: bool = False
     dry_run: bool = False
@@ -253,11 +271,17 @@ class RunStats:
     def mark_download(self, seconds: float) -> None:
         if seconds >= 0:
             self.durations.append(seconds)
+            self.durations = self.durations[-5:]
 
     def eta(self, remaining: int) -> str | None:
         if remaining <= 0 or not self.durations:
             return None
-        avg = sum(self.durations) / len(self.durations)
+        ordered = sorted(self.durations)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            avg = ordered[mid]
+        else:
+            avg = (ordered[mid - 1] + ordered[mid]) / 2
         return format_duration(avg * remaining)
 
     def summary(self) -> str:
@@ -274,6 +298,10 @@ class RunStats:
     def recap(self) -> None:
         if not self.failures:
             return
+        shown = self.failures[:20]
         error("failed episodes:")
-        for stem, message in self.failures:
+        for stem, message in shown:
             error(f"  {stem}: {message}")
+        extra = len(self.failures) - len(shown)
+        if extra:
+            error(f"  … and {extra} more")

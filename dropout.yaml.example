@@ -5,9 +5,9 @@ old_dir: /path/to/old
 # staging: /var/tmp/yt-dlp-emby
 cookies: dropout-cookies.txt
 imports:
-  - shows/dimension-20.yaml.example
+  - shows/dimension-20.yaml
 
-# Root series: is still valid; omit series: when imports already list every show.
+# A root series: list is still valid; omit series: when imports already list every show.
 series:
   - name: Game Changer
     path: Game Changer [tvdbid=361151]

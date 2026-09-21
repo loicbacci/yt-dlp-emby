@@ -1,9 +1,6 @@
-import type {
-  EpisodeFileStatus,
-  SeriesEpisode,
-  SeriesSeason,
-  SeriesSource,
-} from "./api";
+import type { EpisodeFileStatus, SeriesEpisode, SeriesSeason, SeriesSource } from "./api";
+import { slotText } from "./api";
+import type { ConfigSlot } from "./api";
 
 export type SeriesPlatform = "youtube" | "dropout";
 
@@ -20,12 +17,49 @@ export type SeriesSummary = {
   missing_count?: number | null;
   listings_complete?: boolean;
   poster_url?: string;
+  refreshed?: {
+    listings: string | null;
+    disk: string | null;
+    sonarr: string | null;
+  };
 };
 
 const slugPattern = /[^a-z0-9]+/g;
 
 export function slugify(name: string): string {
-  return name.toLowerCase().replace(slugPattern, "-").replace(/^-+|-+$/g, "");
+  return name
+    .toLowerCase()
+    .replace(slugPattern, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Index show posters by file slug and by slugify(name) so the queue can
+ *  join plan rows that still use the apostrophe-preserving pipeline slug. */
+export function indexSeriesPosters(
+  rows: { platform: string; slug: string; name: string; poster_url?: string | null }[],
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.poster_url) continue;
+    map.set(`${row.platform}|${row.slug}`, row.poster_url);
+    const fromName = slugify(row.name);
+    if (fromName && fromName !== row.slug) {
+      map.set(`${row.platform}|${fromName}`, row.poster_url);
+    }
+  }
+  return map;
+}
+
+export function seriesPosterUrl(
+  posters: Map<string, string>,
+  platform: string,
+  slug: string,
+  name?: string,
+): string | undefined {
+  return (
+    posters.get(`${platform}|${slug}`) ??
+    (name ? posters.get(`${platform}|${slugify(name)}`) : undefined)
+  );
 }
 
 export function suggestFolder(name: string, tvdbId: number | null): string {
@@ -54,7 +88,14 @@ export function parseSeriesPath(path: string): {
   if (parts[0] !== "series" || parts.length < 3) return null;
   const platform = parts[1];
   if (platform !== "youtube" && platform !== "dropout") return null;
-  return { platform, slug: parts.slice(2).join("/") };
+  const raw = parts.slice(2).join("/");
+  let slug = raw;
+  try {
+    slug = decodeURIComponent(raw);
+  } catch {
+    slug = raw;
+  }
+  return { platform, slug };
 }
 
 export function formatMapsTo(season: number, episode: number): string {
@@ -77,10 +118,7 @@ export function seasonHeading(toSeason: number): string {
   return `Season ${toSeason}`;
 }
 
-export function seasonDisplayName(
-  toSeason: number,
-  title: string | null | undefined,
-): string {
+export function seasonDisplayName(toSeason: number, title: string | null | undefined): string {
   if (title && title.trim()) return title.trim();
   return seasonHeading(toSeason);
 }
@@ -126,7 +164,7 @@ export function isSeasonOpen(
   sourceId: number,
   seasonId: number,
 ): boolean {
-  return folds[seasonFoldKey(sourceId, seasonId)] !== false;
+  return folds[seasonFoldKey(sourceId, seasonId)] === true;
 }
 
 export function countLabel(n: number, singular: string, plural: string): string {
@@ -139,7 +177,7 @@ export function seasonMissingLabel(missing: number | null | undefined): string {
 }
 
 export function emptyListMessage(total: number, filtered: number): string {
-  if (total === 0) return "No series yet.";
+  if (total === 0) return "No series yet"; // CTA is rendered by SeriesList
   if (filtered === 0) return "No matching series.";
   return "";
 }
@@ -167,9 +205,7 @@ export function applySeasonToEpisode(
     mapped_title: string | null;
   },
 ): typeof episode {
-  const remap = season.remaps.find(
-    (item) => item.dropout_episode === episode.source_episode,
-  );
+  const remap = season.remaps.find((item) => item.dropout_episode === episode.source_episode);
   if (season.skip_ids.includes(episode.id) || remap?.skip) {
     return {
       ...episode,
@@ -232,10 +268,7 @@ export function defaultDestSeason(season: {
   return season.dropout;
 }
 
-export function remapKind(
-  season: SeriesSeason,
-  episode: SeriesEpisode,
-): RemapKind {
+export function remapKind(season: SeriesSeason, episode: SeriesEpisode): RemapKind {
   const mapped = applySeasonToEpisode(season, episode);
   if (mapped.skipped) return "skip";
   const remap = season.remaps.find(
@@ -247,9 +280,9 @@ export function remapKind(
 }
 
 export function originLabel(row: CatalogEpisode): string {
-  const dropout =
-    row.season.dropout != null ? `Dropout ${row.season.dropout}` : row.season.label;
-  return `${dropout} · E${row.episode.source_episode}`;
+  const dropout = row.season.dropout != null ? `Dropout ${row.season.dropout}` : row.season.label;
+  const url = row.sourceUrl ? ` · ${shortUrl(row.sourceUrl)}` : "";
+  return `${dropout} · E${row.episode.source_episode}${url}`;
 }
 
 export type DestOccupant = {
@@ -265,6 +298,7 @@ export type DestSlot = {
   code: string;
   title: string;
   sonarr: boolean;
+  skipped: boolean;
   occupants: DestOccupant[];
 };
 
@@ -282,10 +316,137 @@ export type DestMap = {
   leftovers: DestOccupant[];
 };
 
+export function isTvdbSkipped(
+  skip: { season: number; episodes: number[] }[] | undefined,
+  season: number,
+  episode: number,
+): boolean {
+  return Boolean(
+    skip?.some((block) => block.season === season && block.episodes.includes(episode)),
+  );
+}
+
+export function seasonFillStatus(group: {
+  slots: DestSlot[];
+  holes: number;
+}): "ok" | "partial" | "empty" {
+  const downloaded = group.slots.filter((slot) =>
+    slot.occupants.some((occ) => occ.status === "downloaded"),
+  ).length;
+  if (downloaded === 0) return "empty";
+  if (group.holes > 0) return "partial";
+  return "ok";
+}
+
+export function missingStatusClass(count: number | null | undefined): string {
+  if (count == null) return "";
+  return count <= 0 ? "is-ok" : "is-new";
+}
+
+export function missingStatusText(count: number | null | undefined): string | null {
+  if (count == null) return null;
+  return count <= 0 ? "Up to date" : `${count} missing`;
+}
+
+export function remapFormDefaults(episode: {
+  mapped_season: number | null;
+  mapped_episode: number | null;
+  mapped_title: string | null;
+  title: string;
+}): { toSeason: string; toEpisode: string; title: string } {
+  return {
+    toSeason: episode.mapped_season != null ? String(episode.mapped_season) : "",
+    toEpisode: episode.mapped_episode != null ? String(episode.mapped_episode) : "",
+    title: episode.mapped_title || episode.title,
+  };
+}
+
+export function sonarrEpisodeIsOut(
+  title: string,
+  airDate?: string | null,
+  today = new Date().toISOString().slice(0, 10),
+): boolean {
+  const label = title.trim().toLowerCase();
+  if (!label || label === "tba" || label === "tbd" || label === "tbc") return false;
+  if (!airDate) return true;
+  const day = airDate.trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
+  return day <= today;
+}
+
+export function filterSonarrEpisodes<T extends { season: number; episode: number; title: string }>(
+  episodes: T[],
+  query: string,
+): T[] {
+  const raw = query.trim().toLowerCase();
+  if (!raw) return episodes;
+  const compact = raw.replace(/\s+/g, "");
+  const code = /^s?(\d+)e(\d+)$/i.exec(compact);
+  return episodes.filter((episode) => {
+    if (code) {
+      return episode.season === Number(code[1]) && episode.episode === Number(code[2]);
+    }
+    if (episode.title.toLowerCase().includes(raw)) return true;
+    if (formatMapsTo(episode.season, episode.episode).toLowerCase().includes(compact)) {
+      return true;
+    }
+    if (String(episode.episode) === compact || `e${episode.episode}` === compact) {
+      return true;
+    }
+    return false;
+  });
+}
+
+export function rankSonarrRecommendations<
+  T extends { season: number; episode: number; title: string },
+>(
+  all: T[],
+  suggested: T[],
+  episode: {
+    title: string;
+    mapped_season: number | null;
+    mapped_episode: number | null;
+    source_episode: number;
+  },
+): T[] {
+  const seen = new Set<string>();
+  const ranked: T[] = [];
+  const add = (item: T | undefined) => {
+    if (!item) return;
+    const key = `${item.season}-${item.episode}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ranked.push(item);
+  };
+  for (const item of suggested) add(item);
+  if (episode.mapped_season != null && episode.mapped_episode != null) {
+    add(
+      all.find(
+        (item) => item.season === episode.mapped_season && item.episode === episode.mapped_episode,
+      ),
+    );
+  }
+  for (const item of all) {
+    if (item.episode === episode.source_episode) add(item);
+  }
+  const needle = episode.title.trim().toLowerCase();
+  if (needle) {
+    for (const item of all) {
+      const title = item.title.toLowerCase();
+      if (title.includes(needle) || needle.includes(title)) add(item);
+    }
+  }
+  return ranked.slice(0, 12);
+}
+
 export function buildDestMap(
   catalog: CatalogEpisode[],
-  sonarr: { season: number; episode: number; title: string }[] | null | undefined,
+  sonarr:
+    | { season: number; episode: number; title: string; air_date?: string | null }[]
+    | null
+    | undefined,
   onDisk: ReadonlySet<string>,
+  tvdbSkip?: { season: number; episodes: number[] }[],
 ): DestMap {
   const leftovers: DestOccupant[] = [];
   const bySlot = new Map<string, DestOccupant[]>();
@@ -294,11 +455,7 @@ export function buildDestMap(
     const kind = remapKind(row.season, row.episode);
     const status = fileStatus(mapped, onDisk);
     const occupant: DestOccupant = { row, mapped, kind, status };
-    if (
-      mapped.skipped ||
-      mapped.mapped_season == null ||
-      mapped.mapped_episode == null
-    ) {
+    if (mapped.skipped || mapped.mapped_season == null || mapped.mapped_episode == null) {
       leftovers.push(occupant);
       continue;
     }
@@ -310,6 +467,7 @@ export function buildDestMap(
 
   const sonarrBySeason = new Map<number, { episode: number; title: string }[]>();
   for (const item of sonarr ?? []) {
+    if (!sonarrEpisodeIsOut(item.title, item.air_date)) continue;
     const list = sonarrBySeason.get(item.season) ?? [];
     list.push({ episode: item.episode, title: item.title });
     sonarrBySeason.set(item.season, list);
@@ -324,9 +482,9 @@ export function buildDestMap(
   const seasons: DestSeasonGroup[] = [...destSeasons]
     .sort((a, b) => Number(a === 0) - Number(b === 0) || a - b)
     .map((destSeason) => {
-      const sonarrEps = (sonarrBySeason.get(destSeason) ?? []).slice().sort(
-        (a, b) => a.episode - b.episode,
-      );
+      const sonarrEps = (sonarrBySeason.get(destSeason) ?? [])
+        .slice()
+        .sort((a, b) => a.episode - b.episode);
       const episodeNums = new Set<number>();
       for (const item of sonarrEps) episodeNums.add(item.episode);
       for (const key of bySlot.keys()) {
@@ -349,18 +507,18 @@ export function buildDestMap(
             code: formatMapsTo(destSeason, destEpisode),
             title,
             sonarr: titles.has(destEpisode),
+            skipped: isTvdbSkipped(tvdbSkip, destSeason, destEpisode),
             occupants,
           };
         });
-      const pack = packDestSeasonRemaps(destSeason, catalog);
       return {
         destSeason,
         label: seasonHeading(destSeason),
         slots,
-        holes: slots.filter((slot) => slot.sonarr && slot.occupants.length === 0)
+        holes: slots.filter((slot) => slot.sonarr && slot.occupants.length === 0 && !slot.skipped)
           .length,
         conflicts: slots.filter((slot) => slot.occupants.length > 1).length,
-        packable: pack.length > 0,
+        packable: false,
       };
     });
 
@@ -377,10 +535,7 @@ export type PackRemap = {
   clear: boolean;
 };
 
-export function packDestSeasonRemaps(
-  destSeason: number,
-  catalog: CatalogEpisode[],
-): PackRemap[] {
+export function packDestSeasonRemaps(destSeason: number, catalog: CatalogEpisode[]): PackRemap[] {
   const native = catalog
     .map((row) => ({ row, mapped: applySeasonToEpisode(row.season, row.episode) }))
     .filter(({ row, mapped }) => {
@@ -400,8 +555,7 @@ export function packDestSeasonRemaps(
     const toEpisode = index + 1;
     const dest = defaultDestSeason(row.season);
     const isDefault = dest === destSeason && row.episode.source_episode === toEpisode;
-    const already =
-      mapped.mapped_season === destSeason && mapped.mapped_episode === toEpisode;
+    const already = mapped.mapped_season === destSeason && mapped.mapped_episode === toEpisode;
     const remap = row.season.remaps.find(
       (item) => item.dropout_episode === row.episode.source_episode && !item.skip,
     );
@@ -448,9 +602,7 @@ export function applyPackRemapsToSources(
         if (!forSeason.length) return season;
         let remaps = season.remaps;
         for (const change of forSeason) {
-          remaps = remaps.filter(
-            (item) => item.dropout_episode !== change.dropout_episode,
-          );
+          remaps = remaps.filter((item) => item.dropout_episode !== change.dropout_episode);
           if (!change.clear) {
             remaps = [
               ...remaps,
@@ -526,15 +678,18 @@ export function skippedTvdbRows(
       });
     }
   }
-  return rows.sort(
-    (a, b) => a.season - b.season || a.episode - b.episode,
-  );
+  return rows.sort((a, b) => a.season - b.season || a.episode - b.episode);
 }
 
-export function sonarrBadgeLabel(check: {
-  ok: boolean;
-  missing: unknown[];
-} | null | undefined): string | null {
+export function sonarrBadgeLabel(
+  check:
+    | {
+        ok: boolean;
+        missing: unknown[];
+      }
+    | null
+    | undefined,
+): string | null {
   if (!check) return null;
   if (check.missing.length > 0) {
     const n = check.missing.length;
@@ -549,6 +704,7 @@ export type CatalogEpisode = {
   seasonId: number;
   season: SeriesSeason;
   episode: SeriesEpisode;
+  sourceUrl?: string;
 };
 
 export function catalogEpisodes(
@@ -560,7 +716,7 @@ export function catalogEpisodes(
     source.seasons.forEach((season, seasonId) => {
       const key = seasonFoldKey(sourceId, seasonId);
       for (const episode of episodeMap[key] ?? []) {
-        rows.push({ sourceId, seasonId, season, episode });
+        rows.push({ sourceId, seasonId, season, episode, sourceUrl: source.url });
       }
     });
   }
@@ -584,10 +740,7 @@ export function catalogEpisodeKey(row: CatalogEpisode): string {
   return `${row.sourceId}-${row.seasonId}-${row.episode.id}`;
 }
 
-export function filterCatalogEpisodes(
-  catalog: CatalogEpisode[],
-  query: string,
-): CatalogEpisode[] {
+export function filterCatalogEpisodes(catalog: CatalogEpisode[], query: string): CatalogEpisode[] {
   const q = query.trim().toLowerCase();
   return catalog.filter((row) => {
     if (row.episode.skipped) return false;
@@ -597,8 +750,7 @@ export function filterCatalogEpisodes(
       mapped.mapped_season != null && mapped.mapped_episode != null
         ? formatMapsTo(mapped.mapped_season, mapped.mapped_episode).toLowerCase()
         : "";
-    const dropout =
-      row.season.dropout != null ? `season ${row.season.dropout}` : "";
+    const dropout = row.season.dropout != null ? `season ${row.season.dropout}` : "";
     return (
       row.episode.title.toLowerCase().includes(q) ||
       String(row.episode.source_episode).includes(q) ||
@@ -661,7 +813,9 @@ export function sonarrSeriesUrl(
 }
 
 export function effectiveConfigValue(
-  field: { file: string | null; effective: string | null } | undefined,
+  field: { file: ConfigSlot; effective: ConfigSlot } | undefined,
 ): string {
-  return (field?.effective || field?.file || "").trim();
+  // slotText maps masked secret objects to "" so this never throws on
+  // `.trim()` and never leaks secrets into hrefs/labels.
+  return (slotText(field?.effective) || slotText(field?.file)).trim();
 }

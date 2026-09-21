@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from yt_dlp_emby.cli import build_parser
@@ -397,3 +399,94 @@ series:
     )
     args = build_parser().parse_args(["dropout", "check", "--manifest", str(path)])
     assert run_dropout(args) == 0
+
+
+def test_youtube_manifest_honors_config_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_dlp_emby.cli import run_download
+
+    manifest = tmp_path / "youtube.yaml"
+    manifest.write_text(
+        """
+series:
+  - name: Example Channel
+    playlists:
+      - url: https://example.invalid/playlist
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "alt.toml"
+    config.write_text(
+        f'[fallback]\nlibrary = "{tmp_path / "lib"}"\nold_dir = "{tmp_path / "old"}"\n',
+        encoding="utf-8",
+    )
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffmpeg.chmod(0o755)
+    captured: dict = {}
+
+    def fake_run(manifest_obj, settings, format_selector=None):
+        captured["config"] = settings.config_path
+        return 0
+
+    monkeypatch.setattr("yt_dlp_emby.pipeline.run_youtube_manifest", fake_run)
+    monkeypatch.setenv("YT_DLP_EMBY_FFMPEG", str(ffmpeg))
+    args = build_parser().parse_args(
+        [
+            "youtube",
+            "--manifest",
+            str(manifest),
+            "--config",
+            str(config),
+            "--dry-run",
+        ]
+    )
+    assert run_download(args) == 0
+    assert captured["config"] == config
+
+
+def test_dropout_honors_config_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from yt_dlp_emby.cli import run_dropout
+
+    manifest = tmp_path / "dropout.yaml"
+    manifest.write_text(
+        """
+series:
+  - name: Show
+    path: Show
+    url: https://watch.dropout.tv/x
+    seasons:
+      - dropout: 1
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "alt.toml"
+    config.write_text(
+        f'[fallback]\nlibrary = "{tmp_path / "lib"}"\nold_dir = "{tmp_path / "old"}"\n',
+        encoding="utf-8",
+    )
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text("#!/bin/sh\n")
+    ffmpeg.chmod(0o755)
+    captured: dict = {}
+
+    def fake_run(manifest_obj, settings, force=False, create=False, format_selector=None):
+        captured["config"] = settings.config_path
+        return 0
+
+    monkeypatch.setattr("yt_dlp_emby.dropout.run_dropout", fake_run)
+    monkeypatch.setenv("YT_DLP_EMBY_FFMPEG", str(ffmpeg))
+    args = build_parser().parse_args(
+        [
+            "dropout",
+            "download",
+            "--manifest",
+            str(manifest),
+            "--config",
+            str(config),
+            "--dry-run",
+        ]
+    )
+    assert run_dropout(args) == 0
+    assert captured["config"] == config

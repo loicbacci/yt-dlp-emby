@@ -7,14 +7,34 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from yt_dlp_emby.cache import dropout_cache_path, dropout_listings_from_cache, load_dropout_season_cache
+from yt_dlp_emby.cache import (
+    dropout_cache_path,
+    dropout_listings_from_cache,
+    load_dropout_season_cache,
+)
 from yt_dlp_emby.config import ConfigError, Settings
-from yt_dlp_emby.dropout import resolve_emby_target
-from yt_dlp_emby.dropout_manifest import DropoutManifest, DropoutSeason, DropoutSeries, season_page_url
+from yt_dlp_emby.dropout import resolve_emby_target, series_folder
+from yt_dlp_emby.dropout_manifest import (
+    DropoutManifest,
+    DropoutSeason,
+    DropoutSeries,
+    season_page_url,
+)
 from yt_dlp_emby.extract import DropoutListing
-from yt_dlp_emby.library import emby_code, episode_title_from_filename, index_series_mkvs, title_key, titles_match
-from yt_dlp_emby.sonarr import SonarrEpisode, fetch_episodes_cached, sonarr_cache_path
+from yt_dlp_emby.library import (
+    emby_code,
+    episode_title_from_filename,
+    index_series_mkvs,
+    title_key,
+    titles_match,
+)
 from yt_dlp_emby.series_ids import slugify
+from yt_dlp_emby.sonarr import (
+    SonarrEpisode,
+    fetch_episodes_cached,
+    sonarr_cache_path,
+    sonarr_episode_is_out,
+)
 from yt_dlp_emby.style import bold, cyan, dim, green, red, yellow
 
 FetchFn = Callable[[int], tuple[str, list[SonarrEpisode]]]
@@ -34,6 +54,7 @@ class Hint:
     dropout_season: int | None = None
     dropout_episode: int | None = None
     series_name: str | None = None
+
 
 _STOP = frozenset({"the", "a", "an", "of", "and", "to", "for", "in", "on"})
 _CUT_FOR_TIME = re.compile(r"(?:^|[^a-z0-9])season\s*(\d+)\s*:?\s*cut\s*for\s*time", re.I)
@@ -143,9 +164,7 @@ def _mapping_warnings(
                 continue
             seen_titles.add(key)
             if not titles_match(yaml_title, sonarr_ep.title):
-                warnings.append(
-                    (slot[0], slot[1], f"{yaml_title}  (Sonarr: {sonarr_ep.title})")
-                )
+                warnings.append((slot[0], slot[1], f"{yaml_title}  (Sonarr: {sonarr_ep.title})"))
     for dest_season in sorted(seasons):
         if dest_season in sonarr_seasons:
             continue
@@ -227,9 +246,7 @@ def _duplicate_label(
 
 def _is_sure_duplicate(left: SonarrEpisode, right: SonarrEpisode) -> bool:
     return bool(
-        titles_match(left.title, right.title)
-        and left.air_date
-        and left.air_date == right.air_date
+        titles_match(left.title, right.title) and left.air_date and left.air_date == right.air_date
     )
 
 
@@ -241,8 +258,13 @@ def _paint_hint(hint: Hint) -> str:
     return yellow(hint.text)
 
 
-def _cached_listings(manifest: DropoutManifest, series: DropoutSeries) -> list[CachedListing]:
-    cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
+def _cached_listings(
+    manifest: DropoutManifest,
+    series: DropoutSeries,
+    cache: dict[str, list[dict]] | None = None,
+) -> list[CachedListing]:
+    if cache is None:
+        cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
     found: list[CachedListing] = []
     for source in series.sources:
         for season in source.seasons:
@@ -315,14 +337,12 @@ def _missing_suggestions(
         if dest is None:
             continue
         sure = _is_sure_duplicate(missing, dest)
-        if sure or titles_related(dest.title, missing.title) or titles_related(
-            listing.title, dest.title
+        if (
+            sure
+            or titles_related(dest.title, missing.title)
+            or titles_related(listing.title, dest.title)
         ):
-            add(
-                _duplicate_label(
-                    series_name, current_name, dest, on_disk, sure=sure
-                )
-            )
+            add(_duplicate_label(series_name, current_name, dest, on_disk, sure=sure))
 
     current_eps = [item for name, item in catalog if name == current_name]
     cut_season = _cut_for_time_season(missing.title)
@@ -391,13 +411,14 @@ def _run_dropout_check(
     catalog: list[SonarrRef] = [
         (series.name, episode) for series, _title, episodes in reports for episode in episodes
     ]
+    dropout_cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
     listings = [
         item
         for series, _title, _episodes in reports
-        for item in _cached_listings(manifest, series)
+        for item in _cached_listings(manifest, series, dropout_cache)
     ]
     disk_indexes = {
-        series.name: index_series_mkvs(settings.library / series.path)
+        series.name: index_series_mkvs(series_folder(settings, series))
         for series, _title, _episodes in reports
     }
     disk_files = {name: set(index) for name, index in disk_indexes.items()}
@@ -410,11 +431,11 @@ def _run_dropout_check(
         for episode in sorted(episodes, key=lambda item: (item.season, item.episode)):
             if (episode.season, episode.episode) in series.tvdb_skip:
                 continue
+            if not sonarr_episode_is_out(episode.title, episode.air_date):
+                continue
             path = on_disk.get((episode.season, episode.episode))
             if path is None:
-                if not _is_planned(
-                    episode.season, episode.episode, planned_slots, planned_seasons
-                ):
+                if not _is_planned(episode.season, episode.episode, planned_slots, planned_seasons):
                     missing.append(episode)
                 continue
             file_title = episode_title_from_filename(path.name)
@@ -433,9 +454,7 @@ def _run_dropout_check(
             print(f"  {red('missing')}")
             for episode in missing:
                 line = f"    {_slot_code(episode.season, episode.episode)}  {episode.title}"
-                hints = _missing_suggestions(
-                    episode, series.name, catalog, listings, disk_files
-                )
+                hints = _missing_suggestions(episode, series.name, catalog, listings, disk_files)
                 if hints:
                     painted = [_paint_hint(item) for item in hints]
                     line += f"  {dim('(')}{dim('; ').join(painted)}{dim(')')}"
@@ -485,13 +504,14 @@ def check_series_report(
         raise ConfigError("series not found")
     if series.tvdb_id is None:
         raise ConfigError("tvdb_id not set")
-    if not _cached_listings(manifest, series):
+    cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
+    if not _cached_listings(manifest, series, cache):
         raise ConfigError("List seasons first")
     fetch = fetch_fn or _default_fetch(manifest, settings)
     sonarr_title, episodes = fetch(series.tvdb_id)
     catalog: list[SonarrRef] = [(series.name, episode) for episode in episodes]
-    listings = _cached_listings(manifest, series)
-    on_disk = index_series_mkvs(settings.library / series.path)
+    listings = _cached_listings(manifest, series, cache)
+    on_disk = index_series_mkvs(series_folder(settings, series))
     disk_files = {series.name: set(on_disk)}
     planned_slots, planned_seasons, planned_titles = _collect_planned(series)
     missing: list[dict[str, object]] = []
@@ -499,14 +519,12 @@ def check_series_report(
     for episode in sorted(episodes, key=lambda item: (item.season, item.episode)):
         if (episode.season, episode.episode) in series.tvdb_skip:
             continue
+        if not sonarr_episode_is_out(episode.title, episode.air_date):
+            continue
         path = on_disk.get((episode.season, episode.episode))
         if path is None:
-            if not _is_planned(
-                episode.season, episode.episode, planned_slots, planned_seasons
-            ):
-                hints = _missing_suggestions(
-                    episode, series.name, catalog, listings, disk_files
-                )
+            if not _is_planned(episode.season, episode.episode, planned_slots, planned_seasons):
+                hints = _missing_suggestions(episode, series.name, catalog, listings, disk_files)
                 missing.append(
                     {
                         "season": episode.season,
@@ -540,12 +558,7 @@ def check_series_report(
         )
     ]
     series_name_mismatch = not titles_match(series.name, sonarr_title)
-    ok = (
-        not missing
-        and not title_mismatches
-        and not warnings
-        and not series_name_mismatch
-    )
+    ok = not missing and not title_mismatches and not warnings and not series_name_mismatch
     return {
         "ok": ok,
         "series_name_mismatch": series_name_mismatch,

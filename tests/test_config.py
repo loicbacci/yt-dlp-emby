@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -57,9 +56,7 @@ def test_loads_config_from_explicit_path(tmp_path: Path) -> None:
 
 
 def test_loads_config_toml_from_cwd_when_present(tmp_path: Path) -> None:
-    (tmp_path / "config.toml").write_text(
-        'library = "/from/cwd/lib"\nold_dir = "/from/cwd/old"\n'
-    )
+    (tmp_path / "config.toml").write_text('library = "/from/cwd/lib"\nold_dir = "/from/cwd/old"\n')
     settings = resolve_settings(
         ffmpeg_location="/usr/bin/ffmpeg",
         environ={},
@@ -238,7 +235,7 @@ def test_verbose_still_hides_progress_with_debug(tmp_path: Path) -> None:
 
 
 def test_no_default_library_path() -> None:
-    source = Path("src/yt_dlp_emby/config.py").read_text()
+    source = (Path(__file__).resolve().parent.parent / "src/yt_dlp_emby/config.py").read_text()
     assert "/mnt/nas" not in source
     assert "/path/to/library" not in source
 
@@ -271,9 +268,7 @@ def test_cookiefile_from_cwd_cookies_txt(tmp_path: Path) -> None:
 
 def test_cookiefile_from_cwd_auto_cookie_name(tmp_path: Path) -> None:
     youtube = tmp_path / "cookies.txt"
-    youtube.write_text(
-        "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n"
-    )
+    youtube.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n")
     dropout = tmp_path / "dropout-cookies.txt"
     dropout.write_text(
         "# Netscape HTTP Cookie File\n.watch.dropout.tv\tTRUE\t/\tTRUE\t0\t_session\tabc\n"
@@ -426,8 +421,7 @@ def test_manifest_does_not_use_config_cookies(tmp_path: Path) -> None:
     cookies.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tNAME\tvalue\n")
     config = tmp_path / "config.toml"
     config.write_text(
-        '[fallback]\nlibrary = "/lib"\nold_dir = "/old"\n'
-        f'cookies = "{cookies}"\n',
+        f'[fallback]\nlibrary = "/lib"\nold_dir = "/old"\ncookies = "{cookies}"\n',
         encoding="utf-8",
     )
     settings = resolve_settings(

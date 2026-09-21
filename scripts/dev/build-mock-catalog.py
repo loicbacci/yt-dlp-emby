@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Build Cosmos mockup catalog from manifests + Sonarr. Statuses are fictional."""
+"""Build Cosmos mockup catalog from manifests + Sonarr.
+
+Local-only. Statuses are fictional. Catalog data is not production truth.
+
+  uv run python scripts/dev/build-mock-catalog.py --help
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path("/home/loicbacci/Programming/yt-dlp-emby")
-DATA = Path("/docker/yt-dlp-emby")
+ROOT = Path(os.environ.get("YT_DLP_EMBY_ROOT", Path(__file__).resolve().parents[2]))
+DATA = Path(os.environ.get("YT_DLP_EMBY_DATA", "/docker/yt-dlp-emby"))
+SONARR_DB = Path(os.environ.get("SONARR_DB", "/docker/sonarr/sonarr.db"))
 OUT_JSON = ROOT / "web/src/mockups/catalog.json"
 POSTER_DIR = ROOT / "web/public/mockups"
 TONES = ("terra", "teal", "rose", "gold", "blue")
@@ -31,15 +39,19 @@ MISSING_FROM_SEASON = {
 
 
 def sonarr_ids_by_tvdb() -> dict[int, int]:
-    db = Path("/docker/sonarr/sonarr.db")
+    db = SONARR_DB
     if not db.is_file():
         return {}
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        rows = conn.execute("SELECT Id, TvdbId FROM Series WHERE TvdbId IS NOT NULL")
-        return {int(tvdb): int(sid) for sid, tvdb in rows if tvdb}
-    finally:
-        conn.close()
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            rows = conn.execute("SELECT Id, TvdbId FROM Series WHERE TvdbId IS NOT NULL")
+            return {int(tvdb): int(sid) for sid, tvdb in rows if tvdb}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        print(f"sonarr db unreadable: {exc}", file=sys.stderr)
+        return {}
 
 
 def fetch_poster(tvdb_id: int, slug: str, ids: dict[int, int]) -> str | None:
@@ -381,6 +393,18 @@ def build_shows() -> list[dict]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Build fictional Cosmos mock catalog (local-only).")
+    parser.add_argument("--root", default=str(ROOT))
+    parser.add_argument("--data", default=str(DATA))
+    parser.add_argument("--sonarr-db", default=str(SONARR_DB))
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args()
+    global ROOT, DATA, SONARR_DB, OUT_JSON, POSTER_DIR
+    ROOT = Path(args.root)
+    DATA = Path(args.data)
+    SONARR_DB = Path(args.sonarr_db)
+    OUT_JSON = Path(args.out) if args.out else ROOT / "web/src/mockups/catalog.json"
+    POSTER_DIR = ROOT / "web/public/mockups"
     POSTER_DIR.mkdir(parents=True, exist_ok=True)
     shows = build_shows()
     ids = sonarr_ids_by_tvdb()

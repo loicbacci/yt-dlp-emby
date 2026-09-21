@@ -19,6 +19,7 @@
     },
     "series": {
       "type": "array",
+      "minItems": 1,
       "items": { "$ref": "#/definitions/seriesItem" }
     }
   },
@@ -28,7 +29,12 @@
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]*$",
+          "not": { "pattern": "\\.\\." }
+        },
         "path": { "type": "string", "minLength": 1 },
         "tvdb_id": { "type": "integer", "minimum": 1 },
         "playlists": {

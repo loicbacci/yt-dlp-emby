@@ -100,7 +100,10 @@ def test_dropout_season_cache_roundtrip(tmp_path: Path) -> None:
     assert restored == listings
     assert path.is_file()
     assert dropout_listings_from_cache([]) is None
-    assert dropout_listings_from_cache([{"url": "https://x", "title": "", "dropout_episode": 1}]) is None
+    assert (
+        dropout_listings_from_cache([{"url": "https://x", "title": "", "dropout_episode": 1}])
+        is None
+    )
 
 
 def test_dropout_cache_path_next_to_manifest(tmp_path: Path) -> None:

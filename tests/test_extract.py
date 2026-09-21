@@ -1,12 +1,15 @@
+from pathlib import Path
+
 from yt_dlp_emby.extract import (
     episode_from_info,
     extract_playlist,
     extract_video,
+    find_node,
+    parse_channel_art,
+    parse_playlist,
     pick_avatar,
     pick_banner,
     pick_best_thumbnail,
-    parse_channel_art,
-    parse_playlist,
 )
 
 
@@ -80,6 +83,23 @@ def test_parse_playlist_webpage_url_from_id() -> None:
     }
     playlist = parse_playlist(info)
     assert playlist.episodes[0].webpage_url == "https://www.youtube.com/watch?v=vid1"
+
+
+def test_parse_playlist_ignores_invalid_duration() -> None:
+    info = {
+        "id": "PLtest",
+        "title": "A Course",
+        "channel": "Example Channel",
+        "channel_id": "UCabc",
+        "entries": [
+            {"id": "vid1", "title": "Intro", "duration": "unknown", "playlist_index": 1},
+            {"id": "vid2", "title": "Next", "duration": True, "playlist_index": 2},
+            {"id": "vid3", "title": "Ok", "duration": 12, "playlist_index": 3},
+        ],
+    }
+    playlist = parse_playlist(info)
+    assert [ep.duration for ep in playlist.episodes] == [None, None, 12.0]
+    assert [ep.playlist_index for ep in playlist.episodes] == [1, 2, 3]
 
 
 def test_extract_playlist_uses_flat_listing() -> None:
@@ -198,3 +218,26 @@ def test_pick_best_thumbnail_uses_largest_width() -> None:
         ]
     )
     assert url == "https://img.example/b.jpg"
+
+
+def test_find_node_prefers_path(monkeypatch) -> None:
+    monkeypatch.setattr("yt_dlp_emby.extract.shutil.which", lambda _name: "/usr/bin/node")
+    assert find_node() == "/usr/bin/node"
+
+
+def test_find_node_uses_newest_nvm_when_not_on_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("yt_dlp_emby.extract.shutil.which", lambda _name: None)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    newer = tmp_path / ".nvm" / "versions" / "node" / "v22.11.0" / "bin" / "node"
+    older = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin" / "node"
+    for path in (newer, older):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+    assert find_node() == str(newer)
+
+
+def test_find_node_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("yt_dlp_emby.extract.shutil.which", lambda _name: None)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert find_node() is None

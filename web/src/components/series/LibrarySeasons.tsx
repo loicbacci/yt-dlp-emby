@@ -1,35 +1,33 @@
-import { useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
-import { Skeleton } from "../Skeleton";
+import { useState } from "preact/hooks";
 import {
-  catalogEpisodeKey,
-  formatMapsTo,
   type DestMap,
   type DestOccupant,
   type DestSlot,
+  catalogEpisodeKey,
+  formatMapsTo,
+  seasonFillStatus,
 } from "../../seriesView";
+import { Skeleton } from "../Skeleton";
 
 export function LibrarySeasons({
   destMap,
   loading,
   refreshing,
   onFind,
-  onPack,
 }: {
   destMap: DestMap;
   loading?: boolean;
   refreshing?: boolean;
   onFind: (slot: DestSlot) => void;
-  onPack: (destSeason: number) => void;
 }) {
-  const firstOpen =
-    destMap.seasons.find((group) => group.holes > 0)?.destSeason ??
-    destMap.seasons[0]?.destSeason ??
-    null;
-  const [open, setOpen] = useState<number | null>(firstOpen);
+  const [open, setOpen] = useState<Set<number>>(new Set());
 
   if (loading && destMap.seasons.length === 0) {
     return <p class="settings-hint">Loading listings…</p>;
+  }
+  if (!loading && destMap.seasons.length === 0) {
+    return <p class="empty-state">No seasons yet.</p>;
   }
 
   return (
@@ -49,30 +47,42 @@ export function LibrarySeasons({
         </span>
       </p>
       {destMap.seasons.map((group) => {
-        const isOpen = open === group.destSeason;
+        const isOpen = open.has(group.destSeason);
+        const fill = seasonFillStatus(group);
+        const fillDot = fill === "ok" ? "library" : fill === "empty" ? "skipped" : "missing";
         const inLibrary = group.slots.filter((slot) =>
           slot.occupants.some((occ) => occ.status === "downloaded"),
         ).length;
         const missing = group.holes;
-        const skipped = group.slots.filter((slot) =>
-          slot.occupants.some((occ) => occ.status === "skipped"),
+        const skipped = group.slots.filter(
+          (slot) => slot.skipped || slot.occupants.some((occ) => occ.status === "skipped"),
         ).length;
+        const chipClass = fill === "empty" ? "is-empty" : missing ? "is-new" : "is-ok";
         return (
           <section key={group.destSeason} class="fold-card">
-            <div class="fold-head">
+            <div class="fold-head season-head">
               <button
                 type="button"
                 class="fold-main"
                 aria-expanded={isOpen}
-                onClick={() => setOpen(isOpen ? null : group.destSeason)}
+                onClick={() =>
+                  setOpen((current) => {
+                    const next = new Set(current);
+                    if (next.has(group.destSeason)) next.delete(group.destSeason);
+                    else next.add(group.destSeason);
+                    return next;
+                  })
+                }
               >
+                <span class={`dot-status ${fillDot}`} />
                 <span class="show-copy">
+                  <span class="season-kicker">Season</span>
                   <span class="show-name">{group.label}</span>
                 </span>
                 {refreshing ? (
                   <Skeleton width="8.5rem" height="0.9em" />
                 ) : (
-                  <span class={`count-chip${missing ? " is-new" : ""}`}>
+                  <span class={`count-chip ${chipClass}`}>
                     {missing
                       ? `${missing} missing · ${inLibrary} in library`
                       : skipped
@@ -82,15 +92,6 @@ export function LibrarySeasons({
                 )}
                 <span class={`twist${isOpen ? " is-open" : ""}`} aria-hidden="true" />
               </button>
-              {group.packable && (
-                <button
-                  type="button"
-                  class="btn-ghost"
-                  onClick={() => onPack(group.destSeason)}
-                >
-                  Pack remaining
-                </button>
-              )}
             </div>
             {isOpen ? (
               refreshing ? (
@@ -110,6 +111,18 @@ export function LibrarySeasons({
                 <div class="season-eps">
                   {group.slots.flatMap((slot) => {
                     if (slot.occupants.length === 0) {
+                      if (slot.skipped) {
+                        return [
+                          <LibraryRow
+                            key={slot.code}
+                            status="skipped"
+                            title={slot.title || "Skipped slot"}
+                            code={slot.code}
+                            pill="Skipped"
+                            skipped
+                          />,
+                        ];
+                      }
                       return [
                         <LibraryRow
                           key={slot.code}
@@ -118,11 +131,7 @@ export function LibrarySeasons({
                           code={slot.code}
                           pill="Missing"
                           action={
-                            <button
-                              type="button"
-                              class="btn-ghost"
-                              onClick={() => onFind(slot)}
-                            >
+                            <button type="button" class="btn-ghost" onClick={() => onFind(slot)}>
                               Find episode
                             </button>
                           }
@@ -133,12 +142,11 @@ export function LibrarySeasons({
                       <LibraryRow
                         key={`${slot.code}-${catalogEpisodeKey(occupant.row)}`}
                         status={libraryDot(occupant)}
-                        title={
-                          occupant.mapped.mapped_title || occupant.row.episode.title
-                        }
+                        title={occupant.mapped.mapped_title || occupant.row.episode.title}
                         code={slot.code}
                         pill={libraryPill(occupant)}
                         skipped={occupant.status === "skipped"}
+                        conflict={slot.occupants.length > 1}
                       />
                     ));
                   })}
@@ -153,16 +161,23 @@ export function LibrarySeasons({
           <button
             type="button"
             class="fold-head"
-            aria-expanded={open === -1}
-            onClick={() => setOpen(open === -1 ? null : -1)}
+            aria-expanded={open.has(-1)}
+            onClick={() =>
+              setOpen((current) => {
+                const next = new Set(current);
+                if (next.has(-1)) next.delete(-1);
+                else next.add(-1);
+                return next;
+              })
+            }
           >
             <span class="show-copy">
               <span class="show-name">Unmapped / skipped</span>
             </span>
             <span class="count-chip">{destMap.leftovers.length}</span>
-            <span class={`twist${open === -1 ? " is-open" : ""}`} aria-hidden="true" />
+            <span class={`twist${open.has(-1) ? " is-open" : ""}`} aria-hidden="true" />
           </button>
-          {open === -1 && (
+          {open.has(-1) && (
             <div class="season-eps">
               {destMap.leftovers.map((occupant) => (
                 <LibraryRow
@@ -170,12 +185,8 @@ export function LibrarySeasons({
                   status={libraryDot(occupant)}
                   title={occupant.row.episode.title}
                   code={
-                    occupant.mapped.mapped_season != null &&
-                    occupant.mapped.mapped_episode != null
-                      ? formatMapsTo(
-                          occupant.mapped.mapped_season,
-                          occupant.mapped.mapped_episode,
-                        )
+                    occupant.mapped.mapped_season != null && occupant.mapped.mapped_episode != null
+                      ? formatMapsTo(occupant.mapped.mapped_season, occupant.mapped.mapped_episode)
                       : `E${String(occupant.row.episode.source_episode).padStart(2, "0")}`
                   }
                   pill={libraryPill(occupant)}
@@ -209,6 +220,7 @@ function LibraryRow({
   pill,
   skipped,
   action,
+  conflict,
 }: {
   status: "library" | "missing" | "skipped";
   title: string;
@@ -216,6 +228,7 @@ function LibraryRow({
   pill: string;
   skipped?: boolean;
   action?: ComponentChildren;
+  conflict?: boolean;
 }) {
   return (
     <div class={skipped ? "ep-row is-skipped" : "ep-row"}>
@@ -224,6 +237,7 @@ function LibraryRow({
         <span class="ep-title">{title}</span>
         <span class="ep-code">{code}</span>
       </span>
+      {conflict && <span class="count-chip is-empty">Conflict</span>}
       <span class={`status-pill ${status}`}>{pill}</span>
       {action}
     </div>

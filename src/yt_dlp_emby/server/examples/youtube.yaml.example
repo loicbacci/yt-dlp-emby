@@ -10,8 +10,13 @@ old_dir: /path/to/old
 
 series:
   - name: Example Channel
+    # path: Example Channel [tvdbid=123]
+    # tvdb_id: 123
     playlists:
       - url: https://www.youtube.com/playlist?list=PLxxxxxxxx
         season: 1
       - url: https://www.youtube.com/playlist?list=PLyyyyyyyy
         # season omitted: next unused season in this series folder
+        # enabled: false
+        # skip:
+        #   - dQw4w9WgXcQ

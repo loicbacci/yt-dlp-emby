@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, NoReturn
 
+from yt_dlp_emby.config import ConfigError
 from yt_dlp_emby.extract import DropoutListing, EpisodeInfo, PlaylistInfo
 
 CACHE_FILENAME = ".yt-emby-cache.json"
@@ -14,24 +20,109 @@ DROPOUT_CACHE_FILENAME = "dropout.json"
 LEGACY_DROPOUT_CACHE_FILENAME = ".yt-emby-dropout.json"
 
 
+def quarantine_corrupt(path: Path, exc: Exception) -> NoReturn:
+    backup = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+    try:
+        shutil.copy2(path, backup)
+    except OSError:
+        backup = path
+    raise ConfigError(f"corrupt index {path} (backed up to {backup}): {exc}") from exc
+
+
+def load_json_object(path: Path, *, kind: str = "index") -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        quarantine_corrupt(path, exc)
+    if not isinstance(data, dict):
+        quarantine_corrupt(path, TypeError(f"{kind} root is not an object"))
+    return data
+
+
 def load_cache(series: Path) -> dict[str, dict]:
     path = series / CACHE_FILENAME
     if not path.is_file():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    videos = data.get("videos") if isinstance(data, dict) else None
+    data = load_json_object(path, kind="cache")
+    videos = data.get("videos")
     if isinstance(videos, dict):
         return {str(key): value for key, value in videos.items() if isinstance(value, dict)}
     return {}
 
 
+def atomic_write_private(
+    path: Path,
+    data: bytes | str,
+    *,
+    mode: int = 0o600,
+    encoding: str = "utf-8",
+) -> None:
+    """Write `data` via a unique tmp file, fsync, then replace. Default mode 0600."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = data.encode(encoding) if isinstance(data, str) else data
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        os.chmod(path, mode)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        except OSError:
+            dir_fd = -1
+        if dir_fd >= 0:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    atomic_write_private(path, text, mode=mode)
+
+
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    """Inter-process lock on a sidecar `.lock` next to `path`."""
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except ImportError:
+            pass
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        os.close(fd)
+
+
 def save_cache(series: Path, cache: dict[str, dict]) -> None:
-    series.mkdir(parents=True, exist_ok=True)
     payload = {"videos": cache}
-    (series / CACHE_FILENAME).write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    path = series / CACHE_FILENAME
+    with file_lock(path):
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
 
 
 def episode_to_cache(episode: EpisodeInfo) -> dict:
@@ -121,11 +212,11 @@ def load_dropout_season_cache(path: Path) -> dict[str, list[dict]]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        quarantine_corrupt(path, exc)
     seasons = data.get("seasons") if isinstance(data, dict) else None
     if not isinstance(seasons, dict):
-        return {}
+        quarantine_corrupt(path, TypeError("dropout cache root.seasons is not an object"))
     result: dict[str, list[dict]] = {}
     for key, value in seasons.items():
         if isinstance(value, list):
@@ -134,12 +225,12 @@ def load_dropout_season_cache(path: Path) -> dict[str, list[dict]]:
 
 
 def save_dropout_season_cache(path: Path, seasons: dict[str, list[dict]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"seasons": seasons}
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    with file_lock(path):
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
 
 
 def dropout_listings_to_cache(listings: list[DropoutListing]) -> list[dict]:

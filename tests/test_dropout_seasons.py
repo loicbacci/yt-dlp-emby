@@ -6,9 +6,7 @@ from yt_dlp_emby.dropout_seasons import (
 
 
 def test_normalize_season_url() -> None:
-    base, lone = normalize_dropout_catalog_url(
-        "https://watch.dropout.tv/show/season:3"
-    )
+    base, lone = normalize_dropout_catalog_url("https://watch.dropout.tv/show/season:3")
     assert lone == 3
     assert base.endswith("/show")
 

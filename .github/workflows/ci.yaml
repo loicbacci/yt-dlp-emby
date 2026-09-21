@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Sync
+        run: uv sync --frozen --extra server --group dev
+      - name: Ruff
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy src/yt_dlp_emby/server
+      - name: Pytest
+        run: uv run pytest -m "not network" --cov=src --cov-fail-under=70
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm --dir web install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm --dir web typecheck
+      - name: Lint
+        run: pnpm --dir web lint && pnpm --dir web format:check
+      - name: Test
+        run: pnpm --dir web test
+      - name: Build
+        run: pnpm --dir web build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t yt-dlp-emby:ci .
+      - name: Non-root
+        run: test "$(docker run --rm --entrypoint id yt-dlp-emby:ci -u)" = 1000
+      - name: Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: yt-dlp-emby:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+          vuln-type: os,library
+      - name: Healthcheck
+        run: |
+          cid=$(docker run --rm -d -p 127.0.0.1:8080:8080 yt-dlp-emby:ci)
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then
+              docker stop "$cid"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs "$cid" || true
+          docker stop "$cid" || true
+          exit 1
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck && shellcheck scripts/*.sh

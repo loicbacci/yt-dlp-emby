@@ -34,14 +34,14 @@ FFmpeg is an external program invoked by yt-dlp to merge and remux. It is **not*
 ## Install
 
 ```bash
-uv sync
+uv sync --frozen --extra server --group dev
 uv run yt-dlp-emby doctor
 uv run yt-dlp-emby doctor --cookies cookies.txt --staging /var/tmp/yt-dlp-emby --library /path/to/library
 uv run yt-dlp-emby bench
 uv run yt-dlp-emby bench --size 64M --dest /path/to/old
 ```
 
-`doctor` checks ffmpeg, Node (for YouTube JS), cookies, that staging is writable, and free space on staging/library/temp.
+`doctor` checks ffmpeg, Node (for YouTube JS), cookies, that staging is writable, and free space on staging/library/temp. CLI-only install can omit `--extra server`.
 
 ## Configuration
 
@@ -57,22 +57,59 @@ Resolution order (highest wins): **CLI flag → environment variable → manifes
 | Local download staging | `--staging` | `YT_DLP_EMBY_STAGING` | `staging` | `[fallback].staging` |
 | Config file | `--config` | `YT_DLP_EMBY_CONFIG` | — | — |
 | ffmpeg binary | `--ffmpeg-location` | `YT_DLP_EMBY_FFMPEG` | — | — |
-| Netscape cookies | `--cookies` | `YT_DLP_EMBY_COOKIES` | `cookies` | `cookies` (CLI URL mode only) |
+| Netscape cookies | `--cookies` | `YT_DLP_EMBY_COOKIES` | `cookies` | `cookies` (YouTube **URL mode only**; manifests use their own `cookies:` key) |
 | Force metadata refetch | `--force-refetch` | `YT_DLP_EMBY_FORCE_REFETCH` | — | — |
-| Dropout listing timings | `-vv` / `--debug` | `YT_DLP_EMBY_DEBUG` | — | — |
+| Verbose skip rows | `-v` / `--verbose` | `YT_DLP_EMBY_VERBOSE` | — | — |
+| Listing vs disk timings | `-vv` / `--debug` | `YT_DLP_EMBY_DEBUG` | — | — |
+| Sonarr base URL | `--sonarr-url` | `YT_DLP_EMBY_SONARR_URL` | — | `sonarr_url` |
+| Sonarr API key | `--sonarr-api-key` | `YT_DLP_EMBY_SONARR_API_KEY` | — | `sonarr_api_key` |
+| Imported series dir | — | `YT_DLP_EMBY_SHOWS_DIR` | — | `shows_dir` |
+
+### Flags
+
+| Flag | Where | Effect |
+| --- | --- | --- |
+| `--dry-run` | `youtube`, `dropout download` | Plan only; no downloads |
+| `--format` | `youtube`, `dropout download` | yt-dlp format selector override |
+| `--cookies-from-browser` | `youtube`, `dropout download`/`layout` | Browser name for yt-dlp cookies |
+| `--season` | `youtube` URL mode; `dropout download`/`layout` (repeatable) | Force season (YouTube URL) or filter Dropout seasons |
+| `--series` | manifest `youtube` / `dropout` (repeatable) | Limit to this series name |
+| `--create` | `dropout download` | Create missing Emby series folders instead of refusing |
+| `--force` | `dropout download` | Redownload even when the dest `.mkv` exists |
+| `--force-refetch` | `youtube`, `dropout` | Ignore cached listings/metadata (CLI-only; not in the UI) |
+| `--quiet` / `--silent` / `-v` / `-vv` | most commands | Verbosity |
+| `server --host` / `--port` / `--data` / `--proxy-headers` | `server` | Bind, data dir, trust `X-Forwarded-*` |
+| `bench --size` / `--dest` | `bench` | Payload size (e.g. `64M`) and copy destination |
+
+### Extra environment variables
+
+| Variable | Role |
+| --- | --- |
+| `YT_DLP_EMBY_DATA` | Web/Docker data dir (default `/data` in Docker, else cwd) |
+| `YT_DLP_EMBY_PASSWORD` | Optional first-boot admin password (does not auto-login; cleared from the process env after the auth file is written) |
+| `YT_DLP_EMBY_HTTPS` | Set `Secure` on session cookies (use behind TLS) |
+| `YT_DLP_EMBY_PROXY_HEADERS` | Trust `X-Forwarded-*` from a reverse proxy (or pass `server --proxy-headers`) |
+| `TRUSTED_PROXY_IPS` | Comma-separated proxy IPs allowed to set `X-Forwarded-*` (enables `Secure` cookies) |
+| `ALLOW_PRIVATE_SONARR` | Compatibility flag. Sonarr on LAN/loopback is always allowed; link-local/metadata addresses are still blocked |
+| `ALLOW_ROOT_PATHS` | Allow the web UI to save library/old/staging under `/`, `/etc`, `/root`, `/proc`, or `/sys` |
+| `YT_DLP_EMBY_EVENTS` | Internal: JSONL event sidecar path (set by the web runner) |
+| `YT_DLP_EMBY_ONLY` | Internal: `download-only.json` path for a selected-id download |
 
 If `--config` / `YT_DLP_EMBY_CONFIG` is unset, `config.toml` in the current working directory is loaded when that file exists. `YT_EMBY_*` environment variables still work as a fallback. Top-level `library` / `old_dir` / `staging` in older config files still load as fallbacks.
 
 Copy [`config.toml.example`](config.toml.example):
 
 ```toml
+# cookies = "cookies.txt"   # YouTube URL mode only
+# shows_dir = "shows"
 # sonarr_url = "http://localhost:8989"
 # sonarr_api_key = "your-sonarr-api-key"
 
 [fallback]
 library = "/path/to/library"
 old_dir = "/path/to/old"
-# staging = "/path/to/local/tmp"
+# Prefer a local SSD. /var/tmp is usually larger than /tmp (often tmpfs).
+# staging = "/var/tmp/yt-dlp-emby"
 ```
 
 Downloads always happen on **local disk** first (system temp, or `staging` if you set it), then the finished `.mkv` and subtitle `.srt` files are copied to `library` and the staged files are deleted. Merge temps (`.temp.mkv`) and stream fragments (`.mp4` / `.m4a`) stay in staging and are never copied, so Emby does not pick them up. Point `staging` at a local SSD if `/tmp` is small. Leftover `yt-dlp-emby-*` folders in temp/staging from a killed run cannot be resumed (each run uses a new directory) and are deleted the next time you launch, unless another `yt-dlp-emby` process is still using that folder.
@@ -172,7 +209,7 @@ series:
         episodes: [12, 13, 14]
 ```
 
-`imports` is optional. Keep a single file if you prefer. When you split, put **one file per TVDB/Emby series**; imported files contain only `series:` (no `library` / `cookies` / nested `imports`). Same `path` across files is merged (catalogs are appended). Schema for fragments: [`schemas/dropout-series.schema.json`](schemas/dropout-series.schema.json).
+`imports` is optional. Keep a single file if you prefer. When you split, put **one file per TVDB/Emby series**; imported files contain only `series:` (no `library` / `cookies` / nested `imports`). Same `path` across files is merged (catalogs are appended). Copy [`shows/dimension-20.yaml.example`](shows/dimension-20.yaml.example) to `shows/dimension-20.yaml` (gitignored). Schema for fragments: [`schemas/dropout-series.schema.json`](schemas/dropout-series.schema.json).
 
 ```yaml
 # yaml-language-server: $schema=../schemas/dropout-series.schema.json
@@ -216,7 +253,13 @@ uv run yt-dlp-emby dropout download --debug
 uv run yt-dlp-emby dropout download --force-refetch
 ```
 
-`layout` is a dry-run that regroups planned files by Emby folder (`Season 17`, then `Specials`) so you can verify remaps. It does not download. `check` compares local `.mkv` files to Sonarr for series that set `tvdb_id`: **missing** Sonarr episodes that the yaml never maps (not planned downloads), with suggestions when a cached Dropout listing title matches (including other series in the same manifest) or another Sonarr episode looks like a duplicate (exact title and air date; if that copy is already on disk the hint is **add to skip list**). Weaker title or date-only hits are prefixed **maybe** and shown in yellow.; **warning** yaml dests that are not in Sonarr, or remap titles that do not match; and filename titles that do not match. Planned `SxxExx` destinations are left to `download` / `layout`. It does not download and does not need Dropout cookies (Dropout suggestions use `{manifest}/cache/dropout.json` from a previous listing). Point it at Sonarr with `sonarr_url` / `sonarr_api_key` in gitignored `config.toml` (or `--sonarr-url` / `--sonarr-api-key` / `YT_DLP_EMBY_SONARR_URL` / `YT_DLP_EMBY_SONARR_API_KEY`). Do not put the API key in `dropout.yaml`. `tvdb_skip` blacklists Sonarr slots (for example Game Changer cut-for-time specials). `--force-refetch` on `check` refreshes the Sonarr cache in `{manifest}/cache/sonarr.json`.
+`layout` is a dry-run that regroups planned files by Emby folder (`Season 17`, then `Specials`) so you can verify remaps. It does not download.
+
+`check` compares local `.mkv` files to Sonarr for series that set `tvdb_id`. It does not download and does not need Dropout cookies (suggestions use `{manifest}/cache/dropout.json` from a previous listing). Point it at Sonarr with `sonarr_url` / `sonarr_api_key` in gitignored `config.toml` (or `--sonarr-url` / `--sonarr-api-key` / `YT_DLP_EMBY_SONARR_URL` / `YT_DLP_EMBY_SONARR_API_KEY`). Do not put the API key in `dropout.yaml`. `tvdb_skip` blacklists Sonarr slots (for example Game Changer cut-for-time specials). `--force-refetch` on `check` refreshes the Sonarr cache in `{manifest}/cache/sonarr.json`. Planned `SxxExx` destinations are left to `download` / `layout`.
+
+- **missing** — Sonarr episodes the yaml never maps (not planned downloads). Suggestions appear when a cached Dropout listing title matches (including other series in the same manifest) or another Sonarr episode looks like a duplicate (exact title and air date; if that copy is already on disk the hint is **add to skip list**). Weaker title or date-only hits are prefixed **maybe** and shown in yellow.
+- **warning** — yaml dests that are not in Sonarr, or remap titles that do not match.
+- **filename titles** — on-disk `.mkv` titles that do not match the planned or Sonarr title.
 
 Existing destination `.mkv` files are skipped (including the same `SxxExx` under a different title). `--force` redownloads them and moves the old title to `old_dir`. Sidecar `.srt` files are written for **all** subtitle languages (not embedded). Season listings (episode URLs and titles) are cached in `{manifest}/cache/dropout.json` (next to `dropout.yaml`, not on the library share) so later dry-runs skip Dropout; pass `--force-refetch` (or `YT_DLP_EMBY_FORCE_REFETCH=1`) to list again. A leftover `{library}/.yt-emby-dropout.json` is moved there on the next run. Listing prints the series name, per-season skip/download counts with a `~size` estimate for queued files (yt-dlp `filesize` when present, otherwise duration at about 5 Mbit/s for the default 1080p mkv), a dim `cached`/`fetch` timing (listing plus one folder scan), and indented download (and unmapped) rows; skip rows and per-file title notes only appear with `-v`. Origin is shown in parentheses only when it differs. Manifest series entries with the same name or path are combined into one layout block. `-vv` / `--debug` (or `YT_DLP_EMBY_DEBUG=1`) adds the listing-cache path and splits those times (`cached 4ms  disk 1.4s`); it does not dump yt-dlp HTTP and does not hide progress bars. Title Case vs slug filenames are treated as the same title. The run ends with elapsed time and a failure recap, and exits `1` if any download failed (or `130` on Ctrl-C).
 
@@ -248,52 +291,84 @@ The CLI is the primary interface. The web UI is an **optional addon** for managi
 Install the server extra:
 
 ```bash
-uv sync --extra server
-uv run yt-dlp-emby server --port 8080
+uv sync --frozen --extra server --group dev
+uv run yt-dlp-emby server --host 127.0.0.1 --port 8080 --data .
 ```
 
 Development (API + Vite dev server with `/api` proxy):
 
 ```bash
+corepack enable && corepack prepare pnpm@10.6.5 --activate
 uv run yt-dlp-emby server --port 8080
 cd web && pnpm install && pnpm dev
 ```
+
+The UI talks to the API on the same origin (`credentials: "same-origin"`). Do not enable CORS `Access-Control-Allow-Origin: *` together with credentialed cookies.
 
 Docker:
 
 ```bash
 cp compose.yaml.example compose.yaml
+export UID="$(id -u)" GID="$(id -g)"
+# Optional dedicated data dir (instead of bind-mounting the git checkout):
+# sudo ./scripts/setup-docker-data.sh
 docker compose up --build
 ```
 
-Open `http://localhost:8080`, set an admin password on first visit, then use **Run** to refresh the download queue and start Dropout then YouTube jobs, **Series** to add shows and remap seasons, and **Settings** for path fallbacks, cookies, and the Advanced yaml editor. Layout and Sonarr check live on Dropout series detail, not on Run. If a manifest lists `imports:`, the Advanced editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Bind `library` / `old_dir` at the same absolute paths inside the container. Do not run a host CLI download and a UI job against the same library at the same time.
+`compose.yaml.example` runs as `${UID:-1000}:${GID:-1000}`. Bind `library` / `old_dir` at the **same absolute paths** inside the container as on the host. Prefer a dedicated data dir (`/docker/yt-dlp-emby:/data`) plus `scripts/setup-docker-data.sh` over `.:/data`. Publish `127.0.0.1:8080:8080` unless you intend LAN access.
 
-| Variable | Role |
-| --- | --- |
-| `YT_DLP_EMBY_DATA` | Data dir (default `/data` in Docker, else cwd) |
-| `YT_DLP_EMBY_LIBRARY` | `--library` on each UI-started job |
-| `YT_DLP_EMBY_OLD_DIR` | `--old-dir` on each job |
-| `YT_DLP_EMBY_STAGING` | `--staging` on each job |
-| `YT_DLP_EMBY_PASSWORD` | Optional first-boot admin password (does not auto-login) |
-| `YT_DLP_EMBY_HTTPS` | Set `Secure` on session cookies (use behind TLS) |
+**LAN password warning:** `YT_DLP_EMBY_PASSWORD` is plaintext in compose/env. Complete first-boot setup on localhost, or set a strong password and put TLS in front before binding `8080` on all interfaces.
 
-`--create`, `--force-refetch`, and `doctor` / `bench` remain CLI-only for now.
+Open `http://localhost:8080`, set an admin password on first visit, then use **Run** to refresh the download queue and start Dropout then YouTube jobs, **Series** to add shows and remap seasons, and **Settings** for path fallbacks, cookies, and the Advanced yaml editor. Layout and Sonarr check live on Dropout series detail, not on Run. If a manifest lists `imports:`, the Advanced editor shows tabs for the root file and each listed import; there is no UI to add or remove those files (edit the `imports:` list in the root tab and save). Run compose from the same directory as the CLI so both use those files. Do not run a host CLI download and a UI job against the same library at the same time.
+
+Run has **Force** (redownload existing `.mkv` files) and **Create missing folders** (Dropout `--create`). `--force-refetch`, `doctor`, and `bench` stay CLI-only.
+
+Mock catalogs for Cosmos fixtures are local-only and fictional (not production truth):
+
+```bash
+uv run python scripts/dev/build-mock-catalog.py --help
+```
+
+CI's Trivy gate is CRITICAL-severity only (`ci.yaml`), so "Trivy clean" means no CRITICAL OS/library CVEs, not zero findings.
 
 ## Tests
 
 ```bash
+uv sync --frozen --extra server --group dev
 uv run pytest            # unit tests only (no network)
-uv run pytest -m network  # live metadata for two playlist items, plus one low-res download
+uv run pytest -m network -o addopts=''  # live metadata for two playlist items, plus one low-res download
+corepack enable && corepack prepare pnpm@10.6.5 --activate
 cd web && pnpm test      # frontend unit tests
 ```
+
+## Troubleshooting
+
+- **Expired Dropout `_session`** — export a fresh Netscape jar for `watch.dropout.tv`. A logged-out cookie aborts the run instead of failing every episode.
+- **PO token / bot check** — YouTube may demand a PO token. This project depends on `bgutil-ytdlp-pot-provider`. Keep Node 22+ on `PATH` (nvm installs under `~/.nvm` are detected).
+- **Node not found** — `doctor` warns. Install Node 22+ or let nvm provide `~/.nvm/versions/node/*/bin/node`.
+- **ffmpeg missing** — install from your OS (`doctor` prints the distro commands). Not bundled.
+- **SMB/NFS copies are slow** — point `staging` at local disk and run `yt-dlp-emby bench --size 64M --dest /path/to/library`.
+- **Sonarr 401** — API key rejected. Keep the key in `config.toml` / `YT_DLP_EMBY_SONARR_API_KEY`, not in `dropout.yaml`.
+- **Port 8080 in use** — `yt-dlp-emby server --port 8081` or stop the other listener.
+- **Reset web auth** — delete `.yt-dlp-emby-auth.json` in the data dir (mode `0600`) and set a new password on `/setup`.
+- **yt-dlp extractors break** — bump with `uv lock --upgrade-package yt-dlp && uv run pytest -m network -o addopts=''` on a cadence, not only when something fails.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-Third-party:
+Third-party (SPDX):
 
-- yt-dlp — Unlicense
-- Pillow — HPND
-- PyYAML — MIT
-- FFmpeg — **not distributed**; install separately (LGPL/GPL)
+| Component | SPDX | Notes |
+| --- | --- | --- |
+| yt-dlp | `Unlicense` | Runtime dependency |
+| bgutil-ytdlp-pot-provider | `GPL-3.0-only` | YouTube PO-token plugin |
+| Pillow | `HPND` | Artwork |
+| PyYAML | `MIT` | Manifest reads |
+| ruamel.yaml | `MIT` | Web UI comment-preserving writes (`server` extra) |
+| FastAPI | `MIT` | `server` extra |
+| Starlette | `BSD-3-Clause` | via FastAPI |
+| Pydantic | `MIT` | `server` extra |
+| Uvicorn | `BSD-3-Clause` | `server` extra |
+| ItsDangerous | `BSD-3-Clause` | session signing (`server` extra) |
+| FFmpeg | `LGPL-2.1-or-later` / `GPL-2.0-or-later` | **Not distributed**; install separately |

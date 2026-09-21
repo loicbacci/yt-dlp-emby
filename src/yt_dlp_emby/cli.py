@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-
 from pathlib import Path
 
-from yt_dlp_emby.config import ConfigError, Settings, resolve_settings
+from yt_dlp_emby.config import ConfigError, Settings, env_value, resolve_settings
 from yt_dlp_emby.ffmpeg import FFmpegNotFoundError
 
 
@@ -51,6 +51,7 @@ def _add_dropout_common(parser: argparse.ArgumentParser) -> None:
         help="Path to dropout.yaml (default: dropout.yaml in the current directory if that file exists)",
     )
     parser.add_argument("--library", help="Emby library root directory (overrides manifest)")
+    parser.add_argument("--config", help="Path to a TOML config file")
     parser.add_argument(
         "--series",
         action="append",
@@ -75,7 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--ffmpeg-location", help="Path to ffmpeg or its directory")
     doctor.add_argument("--cookies", help="Netscape cookies.txt to verify")
-    doctor.add_argument("--staging", help="Local staging directory to verify (writable + free space)")
+    doctor.add_argument(
+        "--staging", help="Local staging directory to verify (writable + free space)"
+    )
     doctor.add_argument("--library", help="Library directory to verify (exists + free space)")
 
     youtube = sub.add_parser(
@@ -102,7 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Only this series name or playlist URL substring (manifest mode, repeatable)",
     )
-    youtube.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
+    youtube.add_argument(
+        "--dry-run", action="store_true", help="Print planned actions without writing"
+    )
     _add_verbosity(youtube)
     _add_debug(youtube)
     youtube.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
@@ -168,7 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
     for verb in (download, layout, check):
         _add_dropout_common(verb)
     download.add_argument("--old-dir", help="Directory for replaced files (overrides manifest)")
-    download.add_argument("--dry-run", action="store_true", help="Print planned actions without writing")
+    download.add_argument(
+        "--dry-run", action="store_true", help="Print planned actions without writing"
+    )
     download.add_argument(
         "--force",
         action="store_true",
@@ -180,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="season_filter",
         metavar="N",
-        help="Only this Dropout season number (repeatable)",
+        help="Only this Dropout season number, or Emby dest season for URL-only seasons (repeatable)",
     )
     download.add_argument(
         "--create",
@@ -207,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="season_filter",
         metavar="N",
-        help="Only this Dropout season number (repeatable)",
+        help="Only this Dropout season number, or Emby dest season for URL-only seasons (repeatable)",
     )
     layout.add_argument("--cookies-from-browser", help="Browser name for yt-dlp cookies")
     layout.add_argument("--cookies", help="Netscape cookies.txt for Dropout (overrides manifest)")
@@ -226,7 +233,9 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--sonarr-url", help="Sonarr base URL (overrides config / env)")
     check.add_argument("--sonarr-api-key", help="Sonarr API key (overrides config / env)")
 
-    bench = sub.add_parser("bench", help="Measure copy speed from local disk onto the library share")
+    bench = sub.add_parser(
+        "bench", help="Measure copy speed from local disk onto the library share"
+    )
     bench.add_argument(
         "--dest",
         help="Directory to copy into (default: bench_dest from config, else library)",
@@ -236,7 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="256M",
         help="Payload size, e.g. 64M, 256M, 1G (default: 256M)",
     )
-    bench.add_argument("--library", help="Emby library root (used when --dest / bench_dest are unset)")
+    bench.add_argument(
+        "--library", help="Emby library root (used when --dest / bench_dest are unset)"
+    )
     bench.add_argument("--old-dir", help="Directory for replaced files (needed to resolve config)")
     bench.add_argument("--config", help="Path to a TOML config file")
     bench.add_argument(
@@ -307,10 +318,21 @@ def run_doctor(args: argparse.Namespace) -> int:
 
 
 def run_bench(args: argparse.Namespace) -> int:
-    from yt_dlp_emby.bench import parse_size, run_bench as bench_run
+    from yt_dlp_emby.bench import parse_size
+    from yt_dlp_emby.bench import run_bench as bench_run
 
     try:
-        settings = _settings_from_args(args)
+        settings = resolve_settings(
+            library=getattr(args, "library", None),
+            old_dir=getattr(args, "old_dir", None),
+            config_path=getattr(args, "config", None),
+            ffmpeg_location=getattr(args, "ffmpeg_location", None),
+            dry_run=False,
+            staging=getattr(args, "staging", None),
+            bench_dest=getattr(args, "dest", None),
+            require_ffmpeg=False,
+            require_paths=False,
+        )
         size = parse_size(str(args.size))
     except (ConfigError, FFmpegNotFoundError, ValueError) as exc:
         print(exc, file=sys.stderr)
@@ -352,7 +374,10 @@ def run_download(args: argparse.Namespace) -> int:
         return pipeline_download(args.url, settings, format_selector=getattr(args, "format", None))
 
     if getattr(args, "season", None) is not None:
-        print("error: --season is for a single URL; set season: on the playlist in youtube.yaml", file=sys.stderr)
+        print(
+            "error: --season is for a single URL; set season: on the playlist in youtube.yaml",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -364,10 +389,10 @@ def run_download(args: argparse.Namespace) -> int:
         settings = resolve_settings(
             library=getattr(args, "library", None),
             old_dir=getattr(args, "old_dir", None),
+            config_path=getattr(args, "config", None),
             ffmpeg_location=getattr(args, "ffmpeg_location", None),
             cookies_from_browser=getattr(args, "cookies_from_browser", None),
-            cookiefile=getattr(args, "cookies", None)
-            or (str(manifest.cookies) if manifest.cookies else None),
+            cookiefile=getattr(args, "cookies", None),
             dry_run=bool(getattr(args, "dry_run", False)),
             quiet=bool(getattr(args, "quiet", False)),
             silent=bool(getattr(args, "silent", False)),
@@ -378,7 +403,8 @@ def run_download(args: argparse.Namespace) -> int:
             manifest_library=_path_or_none(manifest.library),
             manifest_old_dir=_path_or_none(manifest.old_dir),
             manifest_staging=_path_or_none(manifest.staging),
-            use_file_cookies=False,
+            manifest_cookies=str(manifest.cookies) if manifest.cookies else None,
+            use_file_cookies=True,
             auto_cookies=True,
             auto_cookie_name="cookies.txt",
         )
@@ -403,6 +429,11 @@ def _dropout_manifest_path(args: argparse.Namespace) -> Path:
     )
 
 
+def _env_flag(name: str) -> bool:
+    raw = env_value(os.environ, name)
+    return bool(raw) and raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def run_server(args: argparse.Namespace) -> int:
     try:
         from yt_dlp_emby.server.app import serve
@@ -417,7 +448,7 @@ def run_server(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
         data_dir=data_dir,
-        proxy_headers=bool(args.proxy_headers),
+        proxy_headers=bool(args.proxy_headers) or _env_flag("PROXY_HEADERS"),
     )
     return 0
 
@@ -437,16 +468,10 @@ def run_dropout(args: argparse.Namespace) -> int:
         settings = resolve_settings(
             library=getattr(args, "library", None),
             old_dir=getattr(args, "old_dir", None),
+            config_path=getattr(args, "config", None),
             ffmpeg_location=getattr(args, "ffmpeg_location", None),
-            cookies_from_browser=None
-            if check
-            else getattr(args, "cookies_from_browser", None),
-            cookiefile=None
-            if check
-            else (
-                getattr(args, "cookies", None)
-                or (str(manifest.cookies) if manifest.cookies else None)
-            ),
+            cookies_from_browser=None if check else getattr(args, "cookies_from_browser", None),
+            cookiefile=(None if check else getattr(args, "cookies", None)),
             dry_run=bool(getattr(args, "dry_run", False)) or layout,
             layout=layout,
             quiet=bool(getattr(args, "quiet", False)),
@@ -460,9 +485,13 @@ def run_dropout(args: argparse.Namespace) -> int:
             manifest_library=_path_or_none(manifest.library),
             manifest_old_dir=_path_or_none(manifest.old_dir),
             manifest_staging=None if check else _path_or_none(manifest.staging),
-            use_file_cookies=False,
+            manifest_cookies=(
+                None if check else (str(manifest.cookies) if manifest.cookies else None)
+            ),
+            use_file_cookies=not check,
             auto_cookies=not check,
             auto_cookie_name="dropout-cookies.txt",
+            require_ffmpeg=not check,
         )
         if check:
             from yt_dlp_emby.dropout_check import run_dropout_check

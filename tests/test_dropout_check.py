@@ -2,10 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache, save_dropout_season_cache
+from yt_dlp_emby.cache import (
+    dropout_cache_path,
+    load_dropout_season_cache,
+    save_dropout_season_cache,
+)
 from yt_dlp_emby.config import ConfigError, resolve_settings
 from yt_dlp_emby.dropout_check import check_series_report, run_dropout_check
-from yt_dlp_emby.style import CYAN, GREEN, RED, YELLOW, strip_ansi
 from yt_dlp_emby.dropout_manifest import (
     DropoutManifest,
     DropoutRemap,
@@ -16,6 +19,7 @@ from yt_dlp_emby.dropout_manifest import (
     season_page_url,
 )
 from yt_dlp_emby.sonarr import SonarrEpisode
+from yt_dlp_emby.style import CYAN, GREEN, RED, YELLOW, strip_ansi
 
 
 def _settings(tmp_path: Path, **kwargs):
@@ -100,6 +104,25 @@ def test_check_missing_special(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "warning" not in out
 
 
+def test_check_ignores_tba_and_future_sonarr_episodes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fetch(_tvdb_id: int):
+        return "Game Changer", [
+            SonarrEpisode(0, 12, "TBA"),
+            SonarrEpisode(0, 13, "Next Week", air_date="2099-01-01"),
+            SonarrEpisode(1, 1, "Pilot"),
+        ]
+
+    code = run_dropout_check(_manifest(tmp_path, _series()), _settings(tmp_path), fetch_fn=fetch)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ok" in out
+    assert "S00E12" not in out
+    assert "S00E13" not in out
+    assert "missing" not in out
+
+
 def test_check_planned_download_not_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,9 +169,7 @@ def test_check_remap_dest_without_file_is_not_missing(
     assert "warning" not in out
 
 
-def test_check_remap_dest_not_in_sonarr(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_remap_dest_not_in_sonarr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     series = DropoutSeries(
         name="Game Changer",
         path="Game Changer [tvdbid=361151]",
@@ -183,9 +204,7 @@ def test_check_remap_dest_not_in_sonarr(
     assert "missing" in out
 
 
-def test_check_remap_title_mismatch(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_remap_title_mismatch(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     series = DropoutSeries(
         name="Game Changer",
         path="Game Changer [tvdbid=361151]",
@@ -219,9 +238,7 @@ def test_check_remap_title_mismatch(
     assert "missing" not in out
 
 
-def test_check_remap_title_match_is_ok(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_remap_title_match_is_ok(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     series = DropoutSeries(
         name="Game Changer",
         path="Game Changer [tvdbid=361151]",
@@ -309,9 +326,7 @@ def test_check_colors(
         sources=(
             DropoutSource(
                 url="https://watch.dropout.tv/game-changer",
-                seasons=(
-                    DropoutSeason(dropout=29, remap=(DropoutRemap(1, 0, 99),)),
-                ),
+                seasons=(DropoutSeason(dropout=29, remap=(DropoutRemap(1, 0, 99),)),),
             ),
         ),
         tvdb_id=361151,
@@ -362,9 +377,7 @@ def test_check_colors(
 
     def fetch_maybe(_tvdb_id: int):
         return "Game Changer", [
-            SonarrEpisode(
-                0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"
-            ),
+            SonarrEpisode(0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"),
             SonarrEpisode(4, 11, "The Official Cast Recording", air_date="2021-07-13"),
         ]
 
@@ -484,7 +497,9 @@ def test_check_name_mismatch(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     def fetch_punct(_tvdb_id: int):
         return "Game Changer", [SonarrEpisode(1, 5, "Hello, World!")]
 
-    code = run_dropout_check(_manifest(tmp_path, _series()), _settings(tmp_path), fetch_fn=fetch_punct)
+    code = run_dropout_check(
+        _manifest(tmp_path, _series()), _settings(tmp_path), fetch_fn=fetch_punct
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert "ok" in out
@@ -600,7 +615,9 @@ def test_check_does_not_call_dropout_extract(
     def fetch(_tvdb_id: int):
         return "Game Changer", [SonarrEpisode(1, 1, "Pilot")]
 
-    assert run_dropout_check(_manifest(tmp_path, _series()), _settings(tmp_path), fetch_fn=fetch) == 0
+    assert (
+        run_dropout_check(_manifest(tmp_path, _series()), _settings(tmp_path), fetch_fn=fetch) == 0
+    )
 
 
 def test_check_suggests_dropout_listing_for_missing(
@@ -662,9 +679,7 @@ def test_check_suggests_sonarr_duplicate_by_date(
 
     def fetch(_tvdb_id: int):
         return "Game Changer", [
-            SonarrEpisode(
-                0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"
-            ),
+            SonarrEpisode(0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"),
             SonarrEpisode(1, 1, "Pilot", air_date="2019-09-20"),
             SonarrEpisode(4, 11, "The Official Cast Recording", air_date="2021-07-13"),
         ]
@@ -696,9 +711,7 @@ def test_check_duplicate_on_disk_suggests_skip_list(
 
     def fetch(_tvdb_id: int):
         return "Game Changer", [
-            SonarrEpisode(
-                0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"
-            ),
+            SonarrEpisode(0, 30, "Game Changer Season 4: Cut For Time", air_date="2021-07-13"),
             SonarrEpisode(1, 1, "Pilot", air_date="2019-09-20"),
             SonarrEpisode(4, 11, "The Official Cast Recording", air_date="2021-07-13"),
         ]
@@ -788,9 +801,7 @@ def test_check_skip_remap_is_not_suggested(
     series = DropoutSeries(
         name="Game Changer",
         path="Game Changer [tvdbid=361151]",
-        sources=(
-            DropoutSource(url="https://watch.dropout.tv/game-changer", seasons=(season,)),
-        ),
+        sources=(DropoutSource(url="https://watch.dropout.tv/game-changer", seasons=(season,)),),
         tvdb_id=361151,
     )
     manifest = _manifest(tmp_path, series)
@@ -920,9 +931,7 @@ def test_check_series_report_hints_are_dicts(tmp_path: Path) -> None:
             SonarrEpisode(4, 11, "Slug Eater", air_date="2021-07-13"),
         ]
 
-    report = check_series_report(
-        manifest, _settings(tmp_path), "game-changer", fetch_fn=fetch
-    )
+    report = check_series_report(manifest, _settings(tmp_path), "game-changer", fetch_fn=fetch)
     missing = report["missing"]
     assert missing
     hints = missing[0]["hints"]

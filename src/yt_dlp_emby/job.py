@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -66,10 +67,16 @@ def print_work_rows(
     *,
     indent: str = "    ",
 ) -> None:
+    tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
     for row in rows:
         if row.action in _VERBOSE_ACTIONS and not settings.verbose:
             continue
-        if row.action in _DOWNLOAD_ACTIONS and not settings.dry_run:
+        if (
+            row.action in _DOWNLOAD_ACTIONS
+            and not settings.dry_run
+            and tty
+            and not settings.verbose
+        ):
             continue
         note(
             settings,

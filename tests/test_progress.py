@@ -86,15 +86,10 @@ def test_progress_line_includes_stream_label() -> None:
 
 
 def test_stream_label_video_audio_subs() -> None:
+    assert stream_label({"info_dict": {"vcodec": "avc1", "acodec": "none"}}) == "Video"
+    assert stream_label({"info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"}}) == "Audio"
     assert (
-        stream_label({"info_dict": {"vcodec": "avc1", "acodec": "none"}}) == "Video"
-    )
-    assert (
-        stream_label({"info_dict": {"vcodec": "none", "acodec": "mp4a.40.2"}}) == "Audio"
-    )
-    assert (
-        stream_label({"filename": "ep.en.srt", "info_dict": {"language": "en"}})
-        == "English subs"
+        stream_label({"filename": "ep.en.srt", "info_dict": {"language": "en"}}) == "English subs"
     )
     assert stream_label({"info_dict": {"vcodec": "avc1", "acodec": "mp4a"}}) == "Video+Audio"
 
@@ -140,12 +135,8 @@ def test_format_copy_line() -> None:
 def test_progress_percent_from_bytes_and_ansi() -> None:
     from yt_dlp_emby.progress import progress_percent
 
-    assert progress_percent(
-        {"downloaded_bytes": 25, "total_bytes": 100}
-    ) == 25.0
-    assert progress_percent(
-        {"_percent_str": "\033[0;94m 12.5%\033[0m"}
-    ) == 12.5
+    assert progress_percent({"downloaded_bytes": 25, "total_bytes": 100}) == 25.0
+    assert progress_percent({"_percent_str": "\033[0;94m 12.5%\033[0m"}) == 12.5
     assert progress_percent({"_percent_str": "NA%"}) is None
 
 
@@ -175,9 +166,7 @@ def test_progress_hook_emits_numeric_percent(tmp_path, monkeypatch) -> None:
     )
     bar.close()
     rows = [
-        json.loads(line)
-        for line in target.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in target.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
     assert rows
     assert rows[0]["percent"] == 50.0
@@ -208,9 +197,7 @@ def test_progress_hook_emits_step_fields(tmp_path, monkeypatch) -> None:
     )
     bar.close()
     rows = [
-        json.loads(line)
-        for line in target.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in target.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
     progress_rows = [row for row in rows if row.get("event") == "progress"]
     assert progress_rows

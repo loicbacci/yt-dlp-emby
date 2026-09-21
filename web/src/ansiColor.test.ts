@@ -4,16 +4,14 @@ import { ansiStyleClass, hasAnsiStyle, parseAnsi } from "./ansiColor";
 describe("parseAnsi", () => {
   it("parses basic foreground colors", () => {
     const spans = parseAnsi("\x1b[32mok\x1b[0m");
-    expect(spans).toEqual([
-      { text: "ok", style: { fg: "green" } },
-    ]);
+    expect(spans).toEqual([{ text: "ok", style: { fg: "green" } }]);
   });
 
   it("parses combined sgr codes", () => {
     const spans = parseAnsi("\x1b[0;32m12\x1b[0m of \x1b[0;32m121\x1b[0m");
     expect(spans.map((span) => span.text).join("")).toBe("12 of 121");
-    expect(spans[0].style.fg).toBe("green");
-    expect(spans[2].style.fg).toBe("green");
+    expect(spans[0]?.style.fg).toBe("green");
+    expect(spans[2]?.style.fg).toBe("green");
   });
 
   it("parses bold, dim, and yellow", () => {
@@ -26,7 +24,11 @@ describe("parseAnsi", () => {
 
   it("round-trips plain text", () => {
     const src = "hello\nworld";
-    expect(parseAnsi(src).map((span) => span.text).join("")).toBe(src);
+    expect(
+      parseAnsi(src)
+        .map((span) => span.text)
+        .join(""),
+    ).toBe(src);
   });
 });
 

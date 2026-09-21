@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Source } from "../../api";
+import { useModal } from "../../hooks/useModal";
 import { slugify, suggestFolder, uniqueNameError } from "../../seriesView";
 
 export function CreateSeriesModal({
@@ -29,9 +30,7 @@ export function CreateSeriesModal({
 }) {
   const [title, setTitle] = useState(initial?.name ?? "");
   const [platform, setPlatform] = useState<Source>(initial?.platform ?? "dropout");
-  const [tvdb, setTvdb] = useState(
-    initial?.tvdb_id != null ? String(initial.tvdb_id) : "",
-  );
+  const [tvdb, setTvdb] = useState(initial?.tvdb_id != null ? String(initial.tvdb_id) : "");
   const [path, setPath] = useState(initial?.path ?? "");
   const [pathTouched, setPathTouched] = useState(mode === "edit");
   const [saving, setSaving] = useState(false);
@@ -51,13 +50,9 @@ export function CreateSeriesModal({
     }
   }, [title, tvdbId, pathTouched]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, saving]);
+  const dialogRef = useModal<HTMLFormElement>(true, () => {
+    if (!saving) onClose();
+  });
 
   const ready =
     title.trim() &&
@@ -93,6 +88,7 @@ export function CreateSeriesModal({
       }}
     >
       <form
+        ref={dialogRef}
         class="modal"
         role="dialog"
         aria-modal="true"
@@ -118,19 +114,19 @@ export function CreateSeriesModal({
         {nameError && <div class="validation-error">{nameError}</div>}
         <div class="settings-field">
           <span class="settings-label">Platform *</span>
-          <div role="radiogroup" class="series-toolbar">
+          <div role="radiogroup" class="series-toolbar" aria-label="Platform">
             {(["youtube", "dropout"] as Source[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                class={platform === item ? "filter-chip active" : "filter-chip"}
-                role="radio"
-                aria-checked={platform === item}
-                disabled={mode === "edit"}
-                onClick={() => setPlatform(item)}
-              >
+              <label key={item} class={platform === item ? "filter-chip active" : "filter-chip"}>
+                <input
+                  type="radio"
+                  name="series-platform"
+                  value={item}
+                  checked={platform === item}
+                  disabled={mode === "edit"}
+                  onChange={() => setPlatform(item)}
+                />
                 {item === "youtube" ? "YouTube" : "Dropout.tv"}
-              </button>
+              </label>
             ))}
           </div>
         </div>
@@ -145,6 +141,11 @@ export function CreateSeriesModal({
             value={tvdb}
             onInput={(e) => setTvdb((e.currentTarget as HTMLInputElement).value)}
           />
+          {tvdb.trim() && !/^\d+$/.test(tvdb.trim()) && (
+            <span class="validation-error" role="alert">
+              TVDB id must be digits
+            </span>
+          )}
         </label>
         <label class="settings-field">
           <span class="settings-label">Folder *</span>
@@ -157,16 +158,16 @@ export function CreateSeriesModal({
             }}
           />
         </label>
-        {error && <div class="validation-error">{error}</div>}
+        {error && (
+          <div class="validation-error" role="alert">
+            {error}
+          </div>
+        )}
         <div class="modal-actions">
           <button type="button" class="btn-ghost" disabled={saving} onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="submit"
-            class="btn-modal-save"
-            disabled={!ready}
-          >
+          <button type="submit" class="btn-modal-save" disabled={!ready}>
             {saving ? "Saving…" : mode === "edit" ? "Save" : "Create"}
           </button>
         </div>

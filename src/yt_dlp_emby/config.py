@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-import tomllib
-
 from yt_dlp_emby.cookies import cookies_file_usable
 from yt_dlp_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
+
+MAX_CONFIG_BYTES = 256 * 1024
 
 __all__ = [
     "CONFIG_FIELDS",
@@ -24,8 +25,9 @@ __all__ = [
     "env_value",
     "env_var_name",
     "format_yaml_error",
-    "inspect_config",
+    "inspect_config_payload",
     "load_config_values",
+    "render_config_toml",
     "resolve_settings",
     "write_config",
 ]
@@ -125,7 +127,15 @@ def _stringify(value: object) -> str | None:
 
 
 def load_config_values(path: Path) -> dict[str, str]:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        size = path.stat().st_size
+        if size > MAX_CONFIG_BYTES:
+            raise ConfigError(f"Config file too large: {path}")
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except ConfigError:
+        raise
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"Could not read config {path}: {exc}") from exc
     result: dict[str, str] = {}
     fallback = data.get("fallback")
     if isinstance(fallback, dict):
@@ -198,9 +208,16 @@ def env_var_name(environ: Mapping[str, str], name: str) -> str | None:
 
 def _pick(*values: str | None) -> str | None:
     for value in values:
-        if value:
-            return value
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
     return None
+
+
+def _expand_path(value: str) -> Path:
+    return Path(value).expanduser()
 
 
 def inspect_config(
@@ -246,9 +263,7 @@ def inspect_config_payload(
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> dict[str, Any]:
-    path, exists, fields = inspect_config(
-        config_path=config_path, environ=environ, cwd=cwd
-    )
+    path, exists, fields = inspect_config(config_path=config_path, environ=environ, cwd=cwd)
     return {
         "path": str(path),
         "exists": exists,
@@ -271,6 +286,9 @@ def _toml_literal(value: str) -> str:
         .replace('"', '\\"')
         .replace("\n", "\\n")
         .replace("\t", "\\t")
+        .replace("\r", "\\r")
+        .replace("\b", "\\b")
+        .replace("\f", "\\f")
     )
     return f'"{escaped}"'
 
@@ -294,14 +312,10 @@ def render_config_toml(values: Mapping[str, str | None], *, cookies: str | None)
         lines.append(f"cookies = {_toml_literal(cookies_value)}")
     if lines:
         lines.append("")
-    fallback_items = [
-        (key, _clean_config_value(values.get(key))) for key in FALLBACK_KEYS
-    ]
+    fallback_items = [(key, _clean_config_value(values.get(key))) for key in FALLBACK_KEYS]
     fallback_items = [(key, value) for key, value in fallback_items if value]
     if fallback_items:
-        lines.append(
-            "# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key."
-        )
+        lines.append("# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key.")
         lines.append(
             "# YT_DLP_EMBY_* environment variables override both the manifest and this table."
         )
@@ -309,9 +323,7 @@ def render_config_toml(values: Mapping[str, str | None], *, cookies: str | None)
         for key, value in fallback_items:
             lines.append(f"{key} = {_toml_literal(value)}")
     if not lines:
-        lines.append(
-            "# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key."
-        )
+        lines.append("# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key.")
         lines.append("[fallback]")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -320,14 +332,16 @@ def write_config(
     path: Path,
     values: Mapping[str, str | None],
 ) -> None:
+    from yt_dlp_emby.cache import atomic_write_private
+
     cookies: str | None = None
     if path.is_file():
         cookies = load_config_values(path).get("cookies")
     text = render_config_toml(values, cookies=cookies)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    try:
+        atomic_write_private(path, text, mode=0o640)
+    except OSError as exc:
+        raise ConfigError(f"Could not write config {path}: {exc}") from exc
 
 
 def describe_manifest_paths(
@@ -397,12 +411,15 @@ def resolve_settings(
     manifest_library: str | None = None,
     manifest_old_dir: str | None = None,
     manifest_staging: str | None = None,
+    manifest_cookies: str | None = None,
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     use_default_config: bool = True,
     use_file_cookies: bool = True,
     auto_cookies: bool = True,
     auto_cookie_name: str = "cookies.txt",
+    require_ffmpeg: bool = True,
+    require_paths: bool = True,
 ) -> Settings:
     if environ is None:
         environ = os.environ
@@ -437,12 +454,16 @@ def resolve_settings(
         missing.append(
             "old_dir (--old-dir, YT_DLP_EMBY_OLD_DIR, manifest old_dir, or config [fallback].old_dir)"
         )
-    if missing:
+    if missing and require_paths:
         raise MissingPathError(
             "Missing required path(s): "
             + ", ".join(missing)
             + ". Pass them as flags, environment variables, a manifest, or a config file."
         )
+    if not resolved_library:
+        resolved_library = "."
+    if not resolved_old:
+        resolved_old = "."
 
     resolved_staging = _pick(
         staging,
@@ -460,7 +481,9 @@ def resolve_settings(
         sonarr_api_key, env_value(environ, "SONARR_API_KEY"), file_values.get("sonarr_api_key")
     )
     file_cookies = file_values.get("cookies") if use_file_cookies else None
-    resolved_cookies = _pick(cookiefile, env_value(environ, "COOKIES"), file_cookies)
+    resolved_cookies = _pick(
+        cookiefile, env_value(environ, "COOKIES"), manifest_cookies, file_cookies
+    )
     if auto_cookies and not resolved_cookies:
         name = Path(auto_cookie_name).name
         default_cookies = cwd / (name if name else "cookies.txt")
@@ -468,13 +491,19 @@ def resolve_settings(
             resolved_cookies = str(default_cookies)
     cookie_path: Path | None = None
     if resolved_cookies:
-        cookie_path = Path(resolved_cookies)
+        cookie_path = _expand_path(resolved_cookies)
         if not cookie_path.is_file():
             raise ConfigError(f"Cookies file not found: {cookie_path}")
         if not cookies_file_usable(cookie_path):
             raise ConfigError(f"Cookies file is empty: {cookie_path}")
 
-    ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
+    if require_ffmpeg:
+        ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
+    else:
+        try:
+            ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
+        except FFmpegNotFoundError:
+            ffmpeg = Path("ffmpeg")
 
     if not verbose:
         env_verbose = env_value(environ, "VERBOSE") or ""
@@ -489,8 +518,8 @@ def resolve_settings(
         force_refetch = env_refetch.lower() in {"1", "true", "yes", "on"}
 
     return Settings(
-        library=Path(resolved_library),
-        old_dir=Path(resolved_old),
+        library=_expand_path(resolved_library),
+        old_dir=_expand_path(resolved_old),
         ffmpeg=ffmpeg,
         config_path=file_path,
         season=season,
@@ -503,9 +532,9 @@ def resolve_settings(
         silent=silent,
         verbose=verbose,
         debug=debug,
-        staging=Path(resolved_staging) if resolved_staging else None,
+        staging=_expand_path(resolved_staging) if resolved_staging else None,
         force_refetch=force_refetch,
-        bench_dest=Path(resolved_bench) if resolved_bench else None,
-        sonarr_url=resolved_sonarr_url.rstrip("/") if resolved_sonarr_url else None,
+        bench_dest=_expand_path(resolved_bench) if resolved_bench else None,
+        sonarr_url=(resolved_sonarr_url.rstrip("/") or None) if resolved_sonarr_url else None,
         sonarr_api_key=resolved_sonarr_key,
     )

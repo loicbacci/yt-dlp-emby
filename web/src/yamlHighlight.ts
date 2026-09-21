@@ -1,11 +1,4 @@
-export type YamlKind =
-  | "text"
-  | "comment"
-  | "key"
-  | "punct"
-  | "string"
-  | "number"
-  | "bool";
+export type YamlKind = "text" | "comment" | "key" | "punct" | "string" | "number" | "bool";
 
 export type YamlToken = { kind: YamlKind; text: string };
 
@@ -22,6 +15,7 @@ function tokenizeValue(s: string): YamlToken[] {
   let i = 0;
   while (i < s.length) {
     const ch = s[i];
+    if (ch === undefined) break;
     if (ch === "#") {
       out.push({ kind: "comment", text: s.slice(i) });
       break;

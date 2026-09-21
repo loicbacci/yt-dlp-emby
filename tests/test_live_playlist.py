@@ -1,27 +1,40 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+from yt_dlp.utils import DownloadError
 
 from yt_dlp_emby.config import resolve_settings
 from yt_dlp_emby.download import LOW_RES_FORMAT
 from yt_dlp_emby.extract import extract_channel_art, extract_playlist
 from yt_dlp_emby.pipeline import run_download as pipeline_run
 
-LIVE_PLAYLIST = "https://www.youtube.com/playlist?list=PLG49S3nxzAnl4QDVqK-hOnoqcSKEIDDuv"
+LIVE_PLAYLIST = os.environ.get(
+    "YT_DLP_EMBY_TEST_PLAYLIST",
+    "https://www.youtube.com/playlist?list=PLG49S3nxzAnl4QDVqK-hOnoqcSKEIDDuv",
+)
 
 
 pytestmark = pytest.mark.network
 
 
+def _live(fn, *args, **kwargs):
+    """Live YouTube calls flake (bot checks, renames); skip, don't fail."""
+    try:
+        return fn(*args, **kwargs)
+    except DownloadError as exc:
+        pytest.skip(f"live playlist unavailable: {exc}")
+
+
 def test_live_playlist_metadata_first_two_videos() -> None:
-    playlist = extract_playlist(LIVE_PLAYLIST, playlist_items="1:2")
+    playlist = _live(extract_playlist, LIVE_PLAYLIST, playlist_items="1:2")
     assert playlist.channel
     assert playlist.channel_id.startswith("UC")
     assert playlist.playlist_id
     assert playlist.title
-    assert len(playlist.episodes) == 2
+    assert 1 <= len(playlist.episodes) <= 2
     for episode in playlist.episodes:
         assert episode.video_id
         assert episode.title
@@ -30,8 +43,8 @@ def test_live_playlist_metadata_first_two_videos() -> None:
 
 
 def test_live_channel_art() -> None:
-    playlist = extract_playlist(LIVE_PLAYLIST, playlist_items="1:1")
-    art = extract_channel_art(playlist.channel_id)
+    playlist = _live(extract_playlist, LIVE_PLAYLIST, playlist_items="1:1")
+    art = _live(extract_channel_art, playlist.channel_id)
     assert art.channel_id == playlist.channel_id
     assert art.avatar_url
 
@@ -45,12 +58,15 @@ def test_live_low_res_download_writes_emby_layout(tmp_path: Path) -> None:
         environ={},
         cwd=tmp_path,
     )
-    code = pipeline_run(
-        LIVE_PLAYLIST,
-        settings,
-        format_selector=LOW_RES_FORMAT,
-        playlist_items="1:1",
-    )
+    try:
+        code = pipeline_run(
+            LIVE_PLAYLIST,
+            settings,
+            format_selector=LOW_RES_FORMAT,
+            playlist_items="1:1",
+        )
+    except DownloadError as exc:
+        pytest.skip(f"live playlist unavailable: {exc}")
     assert code == 0
     series_dirs = [p for p in library.iterdir() if p.is_dir()]
     assert len(series_dirs) == 1

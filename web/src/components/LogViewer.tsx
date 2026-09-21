@@ -3,11 +3,14 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { ansiStyleClass, hasAnsiStyle, parseAnsi } from "../ansiColor";
 import { ApiError, apiClient } from "../api";
 import { go } from "../nav";
+import { pushToast } from "./Toast";
 
-function AnsiLine({ line }: { line: string }) {
+type ParsedLine = { id: number; spans: ReturnType<typeof parseAnsi> };
+
+function AnsiLine({ spans }: { spans: ParsedLine["spans"] }) {
   return (
     <>
-      {parseAnsi(line).map((span, index) =>
+      {spans.map((span, index) =>
         hasAnsiStyle(span.style) ? (
           <span key={index} class={ansiStyleClass(span.style)}>
             {span.text}
@@ -21,6 +24,7 @@ function AnsiLine({ line }: { line: string }) {
 }
 
 const COMPACT_MAX_LINES = 500;
+const MAX_LINES = 2000;
 
 export function LogViewer({
   runKey,
@@ -31,13 +35,15 @@ export function LogViewer({
 }) {
   const preRef = useRef<HTMLPreElement>(null);
   const lastNRef = useRef(0);
-  const [lines, setLines] = useState<string[]>([]);
+  const nextId = useRef(1);
+  const [lines, setLines] = useState<ParsedLine[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
 
   useEffect(() => {
     setLines([]);
     lastNRef.current = 0;
+    nextId.current = 1;
   }, [runKey]);
 
   useEffect(() => {
@@ -45,6 +51,14 @@ export function LogViewer({
     let backoff = 1000;
     let closed = false;
     let timer: number | undefined;
+    let expiredToasted = false;
+    const expireSession = () => {
+      if (!expiredToasted) {
+        expiredToasted = true;
+        pushToast("Session expired", "alert");
+      }
+      go("/login");
+    };
 
     const connect = () => {
       if (closed) return;
@@ -56,10 +70,14 @@ export function LogViewer({
         try {
           const payload = JSON.parse(event.data) as { n: number; line: string };
           lastNRef.current = payload.n;
+          const parsed: ParsedLine = {
+            id: nextId.current++,
+            spans: parseAnsi(payload.line),
+          };
           setLines((prev) => {
-            const next = [...prev, payload.line];
-            if (!compact || next.length <= COMPACT_MAX_LINES) return next;
-            return next.slice(-COMPACT_MAX_LINES);
+            const cap = compact ? COMPACT_MAX_LINES : MAX_LINES;
+            const next = [...prev, parsed];
+            return next.length > cap ? next.slice(-cap) : next;
           });
         } catch {
           /* ignore */
@@ -73,7 +91,7 @@ export function LogViewer({
           .session()
           .then((session) => {
             if (!session.authenticated) {
-              go("/login");
+              expireSession();
               return;
             }
             timer = window.setTimeout(connect, backoff);
@@ -81,7 +99,7 @@ export function LogViewer({
           })
           .catch((err) => {
             if (err instanceof ApiError && err.status === 401) {
-              go("/login");
+              expireSession();
               return;
             }
             timer = window.setTimeout(connect, backoff);
@@ -97,7 +115,7 @@ export function LogViewer({
       source?.close();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [runKey]);
+  }, [runKey, compact]);
 
   useEffect(() => {
     if (!autoScroll) return;
@@ -113,10 +131,8 @@ export function LogViewer({
     setAutoScroll(true);
   };
 
-  const trimmed =
-    compact && lines.length >= COMPACT_MAX_LINES
-      ? `Showing last ${COMPACT_MAX_LINES} lines`
-      : null;
+  const cap = compact ? COMPACT_MAX_LINES : MAX_LINES;
+  const trimmed = lines.length >= cap ? `Showing last ${cap} lines` : null;
 
   return (
     <section class={`card log-card${compact ? " log-card--compact" : ""}`}>
@@ -153,17 +169,20 @@ export function LogViewer({
         onScroll={() => {
           const pre = preRef.current;
           if (!pre) return;
-          const nearBottom =
-            pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+          const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
           if (!nearBottom && autoScroll) setAutoScroll(false);
         }}
       >
-        {lines.map((line, index) => (
-          <Fragment key={index}>
-            {index > 0 ? "\n" : null}
-            <AnsiLine line={line} />
-          </Fragment>
-        ))}
+        {lines.length === 0 ? (
+          <span class="run-hint">No output yet</span>
+        ) : (
+          lines.map((line, index) => (
+            <Fragment key={line.id}>
+              {index > 0 ? "\n" : null}
+              <AnsiLine spans={line.spans} />
+            </Fragment>
+          ))
+        )}
       </pre>
     </section>
   );

@@ -1,27 +1,58 @@
 # Optional web UI addon. The CLI still works on the host without Docker.
 # Copy to compose.yaml and edit. compose.yaml is gitignored.
 #
-# Run compose from the same directory you run the CLI (the one with
-# youtube.yaml / dropout.yaml / cookies.txt) so both share those files.
+# Dedicated data dir is the primary layout (avoids mounting the git checkout
+# into /data). Bind library/old at the same absolute paths used in yaml.
+# Publish 127.0.0.1:8080 by default; set YT_DLP_EMBY_PASSWORD (or complete
+# first-boot setup on localhost only) before exposing on a LAN.
+# YT_DLP_EMBY_PASSWORD in this file is plaintext — prefer env_file: .env
+# (.env is gitignored).
+#
+# Alternative for a single-file setup:
+#   - ./youtube.yaml:/data/youtube.yaml:rw
+#   - ./dropout.yaml:/data/dropout.yaml:rw
+#   - ./cookies.txt:/data/cookies.txt:ro
+#   - ./cache:/data/cache:rw
+#
+# Staging is writable /tmp inside the container (do not mark the container
+# read_only without a tmpfs for /tmp and staging).
+
 services:
   yt-dlp-emby:
     build: .
-    init: true
+    image: yt-dlp-emby:0.1.0
+    # No init:true here: the image ENTRYPOINT is already ["tini","--"] and must
+    # stay PID 1, otherwise tini warns and zombie reaping breaks.
     restart: unless-stopped
     stop_grace_period: 15s
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # Optional path overrides passed to each youtube/dropout child:
       # YT_DLP_EMBY_LIBRARY: /mnt/emby/library
       # YT_DLP_EMBY_OLD_DIR: /mnt/emby/old
       # YT_DLP_EMBY_STAGING: /var/tmp/yt-dlp-emby
-      # YT_DLP_EMBY_HTTPS: "1"   # behind TLS reverse proxy
-      # YT_DLP_EMBY_PASSWORD: changeme
+      # YT_DLP_EMBY_HTTPS: "1"
+      # YT_DLP_EMBY_PROXY_HEADERS: "1"
+      # TRUSTED_PROXY_IPS: "127.0.0.1"
+      # Homelab Sonarr on a LAN IP is allowed. Link-local/metadata IPs are still blocked.
+      # ALLOW_PRIVATE_SONARR: "1"
     volumes:
-      # CLI working directory: manifests, cookies, Dropout listing cache, auth.
-      - .:/data
-      # Library paths in the yaml are absolute, so bind the same host paths:
+      - /docker/yt-dlp-emby:/data
       # - /mnt/emby/library:/mnt/emby/library
       # - /mnt/emby/old:/mnt/emby/old
     user: "${UID:-1000}:${GID:-1000}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - default
+      # Attach a reverse-proxy network and set TRUSTED_PROXY_IPS / HTTPS.
+
+networks:
+  default:
+    name: yt-dlp-emby

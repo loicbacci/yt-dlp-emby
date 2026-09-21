@@ -63,10 +63,22 @@ def find_node() -> str | None:
     nvm = Path.home() / ".nvm" / "versions" / "node"
     if not nvm.is_dir():
         return None
-    for path in sorted(nvm.glob("*/bin/node"), reverse=True):
-        if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
-    return None
+    candidates: list[tuple[tuple[int, ...], Path]] = []
+    for path in nvm.glob("*/bin/node"):
+        if not path.is_file() or not os.access(path, os.X_OK):
+            continue
+        version = path.parent.parent.name.lstrip("v")
+        parts: list[int] = []
+        for piece in version.split("."):
+            try:
+                parts.append(int(piece))
+            except ValueError:
+                parts.append(0)
+        candidates.append((tuple(parts), path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return str(candidates[0][1])
 
 
 def js_runtime_opts() -> dict[str, Any]:
@@ -156,18 +168,24 @@ def parse_playlist(info: dict[str, Any]) -> PlaylistInfo:
     for entry in entries:
         if not entry:
             continue
+        if entry.get("error") or entry.get("_type") == "error":
+            continue
         if entry.get("id") is None:
             continue
         index += 1
-        playlist_index = entry.get("playlist_index") or index
+        raw_index = entry.get("playlist_index")
+        if isinstance(raw_index, bool) or not isinstance(raw_index, int) or raw_index < 1:
+            playlist_index = index
+        else:
+            playlist_index = raw_index
         episodes.append(
             EpisodeInfo(
                 video_id=str(entry["id"]),
                 title=str(entry.get("title") or entry["id"]),
                 description=str(entry.get("description") or ""),
-                playlist_index=int(playlist_index),
+                playlist_index=playlist_index,
                 upload_date=entry.get("upload_date"),
-                duration=float(entry["duration"]) if entry.get("duration") is not None else None,
+                duration=_duration(entry),
                 filesize=_filesize(entry),
                 thumbnail_url=_episode_thumbnail(entry),
                 webpage_url=_webpage_url(entry),
@@ -253,6 +271,7 @@ def _base_opts(
         "no_warnings": False,
         "skip_download": True,
         "ignoreerrors": True,
+        "socket_timeout": 30,
     }
     if youtube:
         opts["extractor_args"] = {"youtube": {"player_client": ["tv", "android", "web"]}}
@@ -286,14 +305,13 @@ def _extract_logger(
     verbose: bool,
     emit_warnings: bool,
 ) -> tuple[ExtractProgress, YtdlpLogger]:
-    display = ExtractProgress(
-        enabled=progress, heartbeat=progress, listing=listing, site=site
-    )
+    display = ExtractProgress(enabled=progress, heartbeat=progress, listing=listing, site=site)
     logger = YtdlpLogger(
         display,
         site=site,
         emit_warnings=emit_warnings and not verbose,
         emit_errors=not verbose,
+        verbose=verbose,
     )
     return display, logger
 
@@ -309,6 +327,11 @@ def extract_playlist(
     verbose: bool = False,
     emit_warnings: bool = True,
 ) -> PlaylistInfo:
+    from yt_dlp_emby.server.series_discover import assert_public_catalog_url
+
+    assert_public_catalog_url(
+        url, require_catalog_host=extract_fn is None
+    )  # accepted risk: single-resolution + redirect guard, no IP pinning
     display, logger = _extract_logger(
         progress=progress,
         listing="playlist",
@@ -482,7 +505,12 @@ def _load_dropout_season_titles(season_url: str, opts: dict[str, Any]) -> dict[s
         page_url = f"{season_url}?page={page}"
         try:
             webpage = _ydl_webpage(page_url, opts)
-        except Exception:
+        except Exception as exc:
+            from yt_dlp_emby.auth import auth_error_from_exception
+
+            auth = auth_error_from_exception(page_url, exc)
+            if auth is not None:
+                raise auth from exc
             break
         batch = parse_dropout_browse_titles(webpage)
         if not batch:
@@ -503,6 +531,11 @@ def extract_dropout_season(
     verbose: bool = False,
     emit_warnings: bool = True,
 ) -> list[DropoutListing]:
+    from yt_dlp_emby.server.series_discover import assert_public_catalog_url
+
+    assert_public_catalog_url(
+        url, require_catalog_host=extract_fn is None
+    )  # accepted risk: single-resolution + redirect guard, no IP pinning
     display, logger = _extract_logger(
         progress=progress,
         listing="season",
@@ -544,12 +577,22 @@ def extract_dropout_season(
     for entry in entries:
         if not entry:
             continue
+        if entry.get("error") or entry.get("_type") == "error":
+            continue
         episode_url = _entry_url(entry)
         if not episode_url:
             continue
         index += 1
         episode_number = entry.get("episode_number")
-        dropout_episode = int(episode_number) if episode_number is not None else index
+        if isinstance(episode_number, bool):
+            dropout_episode = index
+        else:
+            try:
+                dropout_episode = int(episode_number) if episode_number is not None else index
+            except (TypeError, ValueError):
+                dropout_episode = index
+        if dropout_episode < 1:
+            dropout_episode = index
         title = (
             str(entry.get("title") or entry.get("episode") or "").strip()
             or _lookup_browse_title(episode_url, page_titles)

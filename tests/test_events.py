@@ -9,6 +9,7 @@ from yt_dlp_emby.events import (
     allowed_item_id,
     emit,
     item_id,
+    merge_plan_slug,
     merge_plan_source,
     plan_from_events,
     read_events_path,
@@ -112,6 +113,52 @@ def test_merge_plan_force_sticky(tmp_path: Path) -> None:
     )
     data = json.loads(plan_path.read_text(encoding="utf-8"))
     assert data["force"] is True
+
+
+def test_merge_plan_slug_keeps_other_shows(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    merge_plan_source(
+        plan_path,
+        "dropout",
+        {
+            "ok": True,
+            "error": None,
+            "seasons": [
+                {"slug": "game-changer", "dest_season": 1, "download": 2},
+                {"slug": "dimension-20", "dest_season": 21, "download": 3},
+            ],
+            "items": [
+                {"slug": "game-changer", "id": "dropout|game-changer|S01E01", "action": "download"},
+                {"slug": "dimension-20", "id": "dropout|dimension-20|S21E01", "action": "download"},
+            ],
+        },
+        force=False,
+    )
+    merge_plan_slug(
+        plan_path,
+        "dropout",
+        "game-changer",
+        {
+            "ok": True,
+            "error": None,
+            "seasons": [{"slug": "game-changer", "dest_season": 1, "download": 0}],
+            "items": [],
+        },
+    )
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    block = data["sources"]["dropout"]
+    assert [row["slug"] for row in block["seasons"]] == ["dimension-20", "game-changer"]
+    assert [row["id"] for row in block["items"]] == ["dropout|dimension-20|S21E01"]
+    assert block["seasons"][-1]["download"] == 0
+
+
+def test_capture_events_collects_without_file() -> None:
+    reset_runtime()
+    from yt_dlp_emby.events import capture_events
+
+    with capture_events() as events:
+        emit({"event": "item", "slug": "x"})
+    assert events == [{"event": "item", "slug": "x"}]
 
 
 def test_merge_plan_source(tmp_path: Path) -> None:

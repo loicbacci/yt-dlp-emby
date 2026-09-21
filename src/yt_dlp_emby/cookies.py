@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, Mapping
 
 
 def cookie_lines(text: str) -> list[str]:
@@ -38,10 +38,12 @@ def sandbox_cookiefile(path: str | Path | None) -> Iterator[str | None]:
     source = Path(path)
     try:
         original = source.read_bytes()
-    except OSError:
-        yield None
-        return
-    fd, tmp = tempfile.mkstemp(prefix="yt-dlp-emby-cookies-", suffix=".txt")
+    except OSError as exc:
+        from yt_dlp_emby.log import warn
+
+        warn(f"could not read cookies file {source}: {exc}")
+        raise
+    fd, tmp = tempfile.mkstemp(prefix=f"yt-dlp-emby-cookies-{os.getpid()}-", suffix=".txt")
     os.close(fd)
     tmp_path = Path(tmp)
     try:
@@ -79,9 +81,7 @@ def confined_cookie_path(data_dir: Path, filename: str | None) -> Path | None:
     return resolved
 
 
-def inspect_cookie_jars(
-    data_dir: Path, environ: Mapping[str, str]
-) -> dict[str, object]:
+def inspect_cookie_jars(data_dir: Path, environ: Mapping[str, str]) -> dict[str, object]:
     from yt_dlp_emby.config import env_value, env_var_name
 
     env_cookies = env_value(environ, "COOKIES")
@@ -103,9 +103,7 @@ def inspect_cookie_jars(
     }
 
 
-def write_cookie_jar(
-    data_dir: Path, kind: str, text: str, *, filename: str | None = None
-) -> Path:
+def write_cookie_jar(data_dir: Path, kind: str, text: str, *, filename: str | None = None) -> Path:
     path = confined_cookie_path(data_dir, filename) or cookie_jar_path(data_dir, kind)
     encoded = text.encode("utf-8")
     if len(encoded) > MAX_COOKIE_BYTES:
@@ -114,7 +112,7 @@ def write_cookie_jar(
         raise ValueError("cookies file is empty")
     data_dir.mkdir(parents=True, exist_ok=True)
     body = text if text.endswith("\n") else text + "\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(body, encoding="utf-8")
-    tmp.replace(path)
+    from yt_dlp_emby.cache import atomic_write_private
+
+    atomic_write_private(path, body, mode=0o600)
     return path

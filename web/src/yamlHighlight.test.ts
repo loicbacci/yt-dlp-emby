@@ -30,16 +30,15 @@ describe("highlightYaml", () => {
   });
 
   it("marks booleans", () => {
-    expect(kinds("ok: true")).toEqual([
-      "key:ok",
-      "punct::",
-      "text: ",
-      "bool:true",
-    ]);
+    expect(kinds("ok: true")).toEqual(["key:ok", "punct::", "text: ", "bool:true"]);
   });
 
   it("round-trips source text", () => {
     const src = "library: /mnt/nas/video\n# comment\nseries:\n  - name: Example\n";
-    expect(highlightYaml(src).map((t) => t.text).join("")).toBe(src);
+    expect(
+      highlightYaml(src)
+        .map((t) => t.text)
+        .join(""),
+    ).toBe(src);
   });
 });

@@ -63,16 +63,16 @@ def test_inspect_cookie_jars_omits_file_text(tmp_path: Path) -> None:
 
 
 def test_inspect_cookie_jars_env_flag_without_contents(tmp_path: Path) -> None:
-    payload = inspect_cookie_jars(
-        tmp_path, {"YT_DLP_EMBY_COOKIES": "/secret/cookies.txt"}
-    )
+    payload = inspect_cookie_jars(tmp_path, {"YT_DLP_EMBY_COOKIES": "/secret/cookies.txt"})
     assert payload["env_set"] is True
     assert payload["env_name"] == "YT_DLP_EMBY_COOKIES"
     assert payload["env_path"] == "/secret/cookies.txt"
 
 
 def test_write_cookie_jar_youtube_and_dropout(tmp_path: Path) -> None:
-    youtube = write_cookie_jar(tmp_path, "youtube", _netscape(".youtube.com\tTRUE\t/\tTRUE\t0\tSID\t1\n"))
+    youtube = write_cookie_jar(
+        tmp_path, "youtube", _netscape(".youtube.com\tTRUE\t/\tTRUE\t0\tSID\t1\n")
+    )
     dropout = write_cookie_jar(tmp_path, "dropout", _netscape())
     assert youtube == tmp_path / "cookies.txt"
     assert dropout == tmp_path / "dropout-cookies.txt"
@@ -88,8 +88,6 @@ def test_write_cookie_jar_rejects_empty_and_unknown(tmp_path: Path) -> None:
 
 
 def test_write_cookie_jar_confined_filename(tmp_path: Path) -> None:
-    path = write_cookie_jar(
-        tmp_path, "dropout", _netscape(), filename="custom-drop.txt"
-    )
+    path = write_cookie_jar(tmp_path, "dropout", _netscape(), filename="custom-drop.txt")
     assert path == tmp_path / "custom-drop.txt"
     assert cookies_file_usable(path)

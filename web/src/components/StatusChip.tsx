@@ -1,13 +1,13 @@
 import type { Run } from "../api";
+import { listingLabel } from "../runQueue";
 
 function labelFor(run: Run): string {
   if (run.phase === "planning") {
-    const src = run.source === "youtube" ? "YouTube" : "Dropout";
-    return `Listing ${src}`;
+    return listingLabel(run.source);
   }
   if (run.phase === "downloading") {
-    const src = run.source === "youtube" ? "YouTube" : "Dropout";
-    return `Downloading ${src}`;
+    const src = run.source === "youtube" ? "YouTube" : run.source === "dropout" ? "Dropout" : "";
+    return src ? `Downloading ${src}` : "Downloading";
   }
   if (run.status === "idle" || run.phase === "idle") return "Idle";
   if (run.status === "stopping" || run.phase === "stopping") return "Stopping";
@@ -28,7 +28,14 @@ function classFor(run: Run): string {
   return "";
 }
 
-export function StatusChip({ run }: { run: Run }) {
+export function StatusChip({ run, loading }: { run: Run; loading?: boolean }) {
+  if (loading) {
+    return (
+      <span class="status-chip" role="status" aria-label="Loading run status">
+        <span class="status-dot" />…
+      </span>
+    );
+  }
   return (
     <span class={`status-chip ${classFor(run)}`}>
       <span class="status-dot" />

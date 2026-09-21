@@ -2,41 +2,38 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
-from yt_dlp_emby.server.app import create_app
-
 pytestmark = pytest.mark.web
 
 
-def _authed(tmp_path) -> TestClient:
-    client = TestClient(create_app(data_dir=tmp_path, environ={}))
-    client.post("/api/setup", json={"password": "secretpass"})
-    return client
-
-
-def test_platform_put_preserves_imports(tmp_path) -> None:
+def test_platform_put_preserves_imports(authed_client, tmp_path) -> None:
     root = tmp_path / "dropout.yaml"
+    old_lib = tmp_path / "old"
+    old_lib.mkdir()
+    new_lib = tmp_path / "new" / "lib"
+    new_lib.mkdir(parents=True)
     root.write_text(
-        'imports:\n  - shows/x.yaml\nlibrary: "/old"\nseries: []\n',
+        f'imports:\n  - shows/x.yaml\nlibrary: "{old_lib}"\nseries: []\n',
         encoding="utf-8",
     )
-    client = _authed(tmp_path)
-    client.put(
+    client = authed_client
+    # Use tmp_path dirs: absolute non-existent paths like /new/lib are
+    # validated by the server (created 0700 or rejected), not blindly saved.
+    response = client.put(
         "/api/platform/dropout",
-        json={"library": "/new/lib", "old_dir": "", "cookies": ""},
+        json={"library": str(new_lib), "old_dir": "", "cookies": ""},
     )
+    assert response.status_code == 200, response.text
     text = root.read_text(encoding="utf-8")
     assert "shows/x.yaml" in text
-    assert "/new/lib" in text
+    assert str(new_lib) in text
 
 
-def test_platform_get(tmp_path) -> None:
+def test_platform_get(authed_client, tmp_path) -> None:
     (tmp_path / "youtube.yaml").write_text(
         'library: "/yt"\nold_dir: "/old"\n',
         encoding="utf-8",
     )
-    client = _authed(tmp_path)
+    client = authed_client
     body = client.get("/api/platform/youtube").json()
     assert body["library"] == "/yt"
     assert body["old_dir"] == "/old"

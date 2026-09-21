@@ -1,263 +1,170 @@
-import type { SeriesSummary } from "./seriesView";
+import type {
+  AppConfig,
+  ConfigSlot,
+  ConfigValues,
+  CookieKind,
+  CookieStatus,
+  DownloadOptions,
+  DropoutCheck,
+  DropoutLayout,
+  Manifest,
+  ManifestImport,
+  ManifestPaths,
+  ManifestValidate,
+  MaskedSecret,
+  MissingRow,
+  PlanFile,
+  PlatformSettings,
+  Run,
+  SeriesDetail,
+  SeriesEpisode,
+  Session,
+  SonarrEpisode,
+  SonarrPing,
+  Source,
+} from "./types";
+import {
+  isMaskedSecret,
+  parseWith,
+  planFileSchema,
+  runSchema,
+  seriesDetailSchema,
+  slotDisplay,
+  slotIsSet,
+  slotText,
+} from "./types";
 
-export type Source = "youtube" | "dropout";
-export type RunPhase = "idle" | "planning" | "downloading" | "stopping" | "exited";
-export type RunStatus = "idle" | "running" | "stopping" | "exited";
-export type Session = { setup_required: boolean; authenticated: boolean };
-export type ManifestImport = { path: string; text: string; exists: boolean };
-export type PathSource = "env" | "manifest" | "fallback" | "unset";
-export type ManifestPathInfo = {
-  manifest: string | null;
-  effective: string | null;
-  source: PathSource;
-  env_name: string | null;
-};
-export type ManifestPaths = {
-  library: ManifestPathInfo;
-  old_dir: ManifestPathInfo;
-  staging: ManifestPathInfo;
-};
-export type Manifest = {
-  kind: Source;
-  text: string;
-  exists: boolean;
-  imports?: ManifestImport[];
-  paths?: ManifestPaths | null;
-};
-export type ManifestValidate = {
-  ok: boolean;
-  paths?: ManifestPaths | null;
-};
-export type PlanSourceBlock = {
-  ok: boolean;
-  error: string | null;
-  seasons: Record<string, unknown>[];
-  items: Record<string, unknown>[];
-};
+export { isMaskedSecret, slotDisplay, slotIsSet, slotText };
+export type { ConfigSlot, MaskedSecret };
 
-export type PlanFile = {
-  generated_at: string | null;
-  force: boolean;
-  sources: Record<string, PlanSourceBlock>;
-};
+export type {
+  AppConfig,
+  ConfigField,
+  ConfigKey,
+  ConfigValues,
+  CookieJar,
+  CookieKind,
+  CookieStatus,
+  DropoutCheck,
+  DropoutCheckHint,
+  DropoutLayout,
+  DownloadOptions,
+  EpisodeFileStatus,
+  Manifest,
+  ManifestImport,
+  ManifestPathInfo,
+  ManifestPaths,
+  ManifestValidate,
+  PathSource,
+  PlanFile,
+  PlanSourceBlock,
+  PlatformSettings,
+  Run,
+  RunPhase,
+  RunProgressEvent,
+  RunStatus,
+  SeriesDetail,
+  SeriesEpisode,
+  SeriesSeason,
+  SeriesSource,
+  Session,
+  SonarrEpisode,
+  SonarrPing,
+  Source,
+} from "./types";
 
-export type Run = {
-  status: RunStatus;
-  phase: RunPhase;
-  source: Source | null;
-  dry_run: boolean;
-  verbose: boolean;
-  force: boolean;
-  started_at: string | null;
-  finished_at: string | null;
-  exit_code: number | null;
-  plan: { generated_at: string | null; force: boolean; pending: number } | null;
-  progress?: Record<string, unknown> | null;
-};
-
-export type DownloadOptions = {
-  ids: string[] | null;
-  force?: boolean;
-};
-
-export type DropoutCheckHint = {
-  text: string;
-  kind: string;
-  sure?: boolean;
-  dropout_season?: number | null;
-  dropout_episode?: number | null;
-  series_name?: string | null;
-};
-
-export type DropoutCheck = {
-  ok: boolean;
-  missing: {
-    season: number;
-    episode: number;
-    code: string;
-    title: string;
-    hints: DropoutCheckHint[];
-  }[];
-  warnings: { code: string; detail: string }[];
-  title_mismatches: { code: string; file_title: string; sonarr_title: string }[];
-};
-
-export type DropoutLayout = {
-  folders: {
-    dest_season: number | null;
-    label: string;
-    folder?: string;
-    episodes: {
-      code: string | null;
-      title: string;
-      status: string;
-      origin: string | null;
-    }[];
-  }[];
-};
-
-export type ConfigField = {
-  file: string | null;
-  effective: string | null;
-  source: "env" | "file" | "unset";
-  env_name: string | null;
-  section: "fallback" | "root";
-};
-export type ConfigKey =
-  | "library"
-  | "old_dir"
-  | "staging"
-  | "bench_dest"
-  | "shows_dir"
-  | "sonarr_url"
-  | "sonarr_api_key";
-export type AppConfig = {
-  path: string;
-  exists: boolean;
-  fields: Record<ConfigKey, ConfigField>;
-};
-export type ConfigValues = Record<ConfigKey, string>;
-export type CookieKind = Source;
-export type CookieJar = {
-  filename: string;
-  path: string;
-  exists: boolean;
-  usable: boolean;
-};
-export type CookieStatus = {
-  env_name: string | null;
-  env_set: boolean;
-  env_path: string | null;
-  jars: Record<CookieKind, CookieJar>;
-};
-
-export type PlatformSettings = {
-  library: string;
-  old_dir: string;
-  cookies: string;
-  paths: ManifestPaths | null;
-  cookie_jar: CookieJar;
-};
-
-export type SeriesSeason = {
-  id: string;
-  dropout: number | null;
-  url: string;
-  to_season: number;
-  enabled: boolean;
-  only_episodes: number[] | null;
-  remaps: {
-    dropout_episode: number;
-    to_season?: number;
-    to_episode?: number;
-    title?: string;
-    skip?: boolean;
-  }[];
-  skip_ids: string[];
-  label: string;
-  sublabel: string;
-  title: string | null;
-};
-
-export type SeriesSource = {
-  id: string;
-  url: string;
-  error: string | null;
-  seasons: SeriesSeason[];
-};
-
-export type SeriesDetail = {
-  platform: Source;
-  slug: string;
-  file: string;
-  inline: boolean;
-  name: string;
-  path: string;
-  tvdb_id: number | null;
-  source_count: number;
-  season_count: number;
-  tvdb_skip: { season: number; episodes: number[] }[];
-  sources: SeriesSource[];
-  poster_url?: string;
-};
-
-export type EpisodeFileStatus = "downloaded" | "missing" | "skipped" | "unmapped";
-
-export type SeriesEpisode = {
-  id: string;
-  title: string;
-  url: string;
-  source_episode: number;
-  skipped: boolean;
-  mapped_season: number | null;
-  mapped_episode: number | null;
-  mapped_title: string | null;
-  status?: EpisodeFileStatus;
-};
-
-export type SonarrEpisode = {
-  season: number;
-  episode: number;
-  title: string;
-  air_date: string | null;
-};
-
-export type SonarrPing = {
-  ok: boolean;
-  version: string | null;
-  instance: string | null;
-};
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
     super(message);
     this.status = status;
+    this.name = "ApiError";
   }
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export class UnauthorizedError extends ApiError {
+  constructor(message = "Unauthorized") {
+    super(401, message);
+    this.name = "UnauthorizedError";
+  }
+}
+
+export function messageFromErrorBody(body: unknown, fallback: string): string {
+  if (!body || typeof body !== "object") return fallback;
+  const rec = body as Record<string, unknown>;
+  if (typeof rec.error === "string" && rec.error.trim()) return rec.error;
+  const detail = rec.detail;
+  if (detail && typeof detail === "object") {
+    const nested = (detail as { error?: unknown }).error;
+    if (typeof nested === "string" && nested.trim()) return nested;
+  }
+  if (typeof detail === "string" && detail.trim()) return detail;
+  try {
+    return JSON.stringify(body);
+  } catch {
+    return fallback;
+  }
+}
+
+function mergeHeaders(init?: RequestInit): Headers {
+  const headers = new Headers();
+  headers.set("Accept", "application/json");
+  if (init?.body) headers.set("Content-Type", "application/json");
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+  return headers;
+}
+
+function mergeSignal(timeout: AbortSignal, extra?: AbortSignal | null): AbortSignal {
+  if (!extra) return timeout;
+  if (typeof AbortSignal.any === "function") return AbortSignal.any([timeout, extra]);
+  return extra;
+}
+
+function seriesUrl(platform: Source, slug: string, suffix = ""): string {
+  return `/api/series/${platform}/${encodeURIComponent(slug)}${suffix}`;
+}
+
+async function api<T>(path: string, init?: RequestInit, parse?: (data: unknown) => T): Promise<T> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const { signal: initSignal, headers: _headers, ...rest } = init ?? {};
   const response = await fetch(path, {
     credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...init,
+    ...rest,
+    headers: mergeHeaders(init),
+    signal: mergeSignal(timeout, initSignal),
   });
   if (!response.ok) {
-    let message = response.statusText;
+    let message = response.statusText || `HTTP ${response.status}`;
     try {
-      const body = await response.json();
-      message = body.detail?.error ?? body.error ?? JSON.stringify(body);
+      message = messageFromErrorBody(await response.json(), message);
     } catch {
       /* ignore */
     }
+    if (response.status === 401) throw new UnauthorizedError(message);
     throw new ApiError(response.status, message);
   }
   if (response.status === 204) {
     return undefined as T;
   }
-  return (await response.json()) as T;
+  const data: unknown = await response.json();
+  return parse ? parse(data) : (data as T);
 }
 
 export function routeForSession(session: Session, path: string): string {
-  if (session.setup_required) return "/setup";
-  if (!session.authenticated) return "/login";
+  if (session.setup_required) return path === "/setup" ? path : "/setup";
+  if (!session.authenticated) {
+    if (path === "/login" || path === "/setup") return path;
+    const next = path && path !== "/" ? `?next=${encodeURIComponent(path)}` : "";
+    return `/login${next}`;
+  }
   if (path === "/setup" || path === "/login") return "/";
   return path;
-}
-
-export function confirmDirtySwitch(): boolean {
-  return window.confirm("Discard unsaved yaml changes?");
-}
-
-export function confirmDirtyConfig(): boolean {
-  return window.confirm("Discard unsaved config changes?");
-}
-
-export function confirmDirtyCookies(): boolean {
-  return window.confirm("Discard unsaved cookie paste?");
 }
 
 export function runKeyFor(run: Run): string {
@@ -265,7 +172,9 @@ export function runKeyFor(run: Run): string {
 }
 
 export function valuesFromConfig(config: AppConfig): ConfigValues {
-  const value = (key: ConfigKey) => config.fields[key]?.file ?? "";
+  // slotText maps masked secret objects to "": sonarr_api_key is write-only in
+  // the UI (masked last-4 shown separately) and must never round-trip into PUT.
+  const value = (key: keyof ConfigValues) => slotText(config.fields[key]?.file);
   return {
     library: value("library"),
     old_dir: value("old_dir"),
@@ -277,24 +186,45 @@ export function valuesFromConfig(config: AppConfig): ConfigValues {
   };
 }
 
-export function pathNotices(paths: ManifestPaths | null | undefined): string[] {
+export function omitLockedConfig(
+  values: ConfigValues,
+  config: AppConfig | null,
+): Partial<ConfigValues> {
+  if (!config) return { ...values };
+  const next: Partial<ConfigValues> = {};
+  for (const key of Object.keys(values) as (keyof ConfigValues)[]) {
+    if (config.fields[key]?.source === "env") continue;
+    next[key] = values[key];
+  }
+  return next;
+}
+
+export type PlatformPayload = { library: string; old_dir: string; cookies: string };
+
+export function omitLockedPlatform(
+  values: PlatformPayload,
+  paths: ManifestPaths | null | undefined,
+): Partial<PlatformPayload> {
+  // Mirror of omitLockedConfig: never send manifest values the environment
+  // shadows (server drops absent keys, which is neutral while env is set).
+  const next: Partial<PlatformPayload> = { cookies: values.cookies };
+  if (paths?.library?.source !== "env") next.library = values.library;
+  if (paths?.old_dir?.source !== "env") next.old_dir = values.old_dir;
+  return next;
+}
+
+export function pathNotices(paths: Manifest["paths"]): string[] {
   if (!paths) return [];
   const notices: string[] = [];
   for (const key of ["library", "old_dir", "staging"] as const) {
     const item = paths[key];
     if (!item) continue;
     if (item.source === "env") {
-      notices.push(
-        `${key} overridden by ${item.env_name ?? "environment"} (${item.effective})`,
-      );
+      notices.push(`${key} overridden by ${item.env_name ?? "environment"} (${item.effective})`);
     } else if (item.source === "fallback") {
-      notices.push(
-        `${key} using fallback from config.toml (${item.effective})`,
-      );
+      notices.push(`${key} using fallback from config.toml (${item.effective})`);
     } else if (item.source === "unset" && key !== "staging") {
-      notices.push(
-        `${key} is not set in this file, config.toml [fallback], or environment`,
-      );
+      notices.push(`${key} is not set in this file, config.toml [fallback], or environment`);
     }
   }
   return notices;
@@ -313,6 +243,11 @@ export const apiClient = {
       body: JSON.stringify({ password }),
     }),
   logout: () => api<{ ok: boolean }>("/api/logout", { method: "POST" }),
+  changePassword: (current: string, next: string) =>
+    api<{ ok: boolean }>("/api/password", {
+      method: "POST",
+      body: JSON.stringify({ current, password: next }),
+    }),
   getManifest: (kind: Source) => api<Manifest>(`/api/manifests/${kind}`),
   putManifest: (kind: Source, text: string) =>
     api<Manifest>(`/api/manifests/${kind}`, {
@@ -334,8 +269,8 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
-  getConfig: () => api<AppConfig>("/api/config"),
-  putConfig: (values: ConfigValues) =>
+  getConfig: (reveal = false) => api<AppConfig>(reveal ? "/api/config?reveal=1" : "/api/config"),
+  putConfig: (values: Partial<ConfigValues>) =>
     api<AppConfig>("/api/config", {
       method: "PUT",
       body: JSON.stringify(values),
@@ -346,89 +281,161 @@ export const apiClient = {
       method: "PUT",
       body: JSON.stringify({ text }),
     }),
-  getRun: () => api<Run>("/api/runs"),
-  getPlan: () => api<PlanFile>("/api/runs/plan"),
-  startPlan: (force = false) =>
-    api<Run>("/api/runs/plan", {
-      method: "POST",
-      body: JSON.stringify({ force }),
-    }),
+  getRun: () => api<Run>("/api/runs", undefined, (data) => parseWith(runSchema, data, "Run")),
+  getPlan: () =>
+    api<PlanFile>("/api/runs/plan", undefined, (data) => parseWith(planFileSchema, data, "Plan")),
+  startPlan: (force = false, create = false) =>
+    api<Run>(
+      "/api/runs/plan",
+      {
+        method: "POST",
+        body: JSON.stringify({ force, create }),
+      },
+      (data) => parseWith(runSchema, data, "Run"),
+    ),
   startDownload: (options: DownloadOptions) =>
-    api<Run>("/api/runs", {
-      method: "POST",
-      body: JSON.stringify({ ids: options.ids, force: options.force ?? false }),
-    }),
-  stopRun: () => api<Run>("/api/runs/stop", { method: "POST" }),
+    api<Run>(
+      "/api/runs",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ids: options.ids,
+          force: options.force ?? false,
+          create: options.create ?? false,
+        }),
+      },
+      (data) => parseWith(runSchema, data, "Run"),
+    ),
+  stopRun: () =>
+    api<Run>("/api/runs/stop", { method: "POST" }, (data) => parseWith(runSchema, data, "Run")),
   getPlatform: (kind: Source) => api<PlatformSettings>(`/api/platform/${kind}`),
-  putPlatform: (kind: Source, body: { library: string; old_dir: string; cookies: string }) =>
+  putPlatform: (
+    kind: Source,
+    body: Partial<{ library: string; old_dir: string; cookies: string }>,
+  ) =>
     api<PlatformSettings>(`/api/platform/${kind}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  listSeries: () => api<{ series: SeriesSummary[] }>("/api/series"),
+  listSeries: () =>
+    api<{
+      series: import("./seriesView").SeriesSummary[];
+      import_errors: { file: string; error: string }[];
+    }>("/api/series"),
   createSeries: (body: {
     name: string;
     platform: Source;
     path: string;
     tvdb_id: number | null;
-  }) => api<SeriesDetail>("/api/series", { method: "POST", body: JSON.stringify(body) }),
+  }) =>
+    api<SeriesDetail>("/api/series", { method: "POST", body: JSON.stringify(body) }, (data) =>
+      parseWith(seriesDetailSchema, data, "Series"),
+    ),
   getSeries: (platform: Source, slug: string) =>
-    api<SeriesDetail>(`/api/series/${platform}/${slug}`),
+    api<SeriesDetail>(seriesUrl(platform, slug), undefined, (data) =>
+      parseWith(seriesDetailSchema, data, "Series"),
+    ),
+  getSeriesYaml: (platform: Source, slug: string) =>
+    api<{ text: string; file: string }>(seriesUrl(platform, slug, "/yaml")),
+  putSeriesYaml: (platform: Source, slug: string, text: string) =>
+    api<SeriesDetail>(
+      seriesUrl(platform, slug, "/yaml"),
+      { method: "PUT", body: JSON.stringify({ text }) },
+      (data) => parseWith(seriesDetailSchema, data, "Series"),
+    ),
   getSeriesDisk: (platform: Source, slug: string) =>
-    api<{ on_disk: { season: number; episode: number }[] }>(
-      `/api/series/${platform}/${slug}/disk`,
-    ),
+    api<{ on_disk: { season: number; episode: number }[] }>(seriesUrl(platform, slug, "/disk")),
   getSeriesMissing: (platform: Source, slug: string) =>
-    api<{ missing_count: number | null; complete: boolean }>(
-      `/api/series/${platform}/${slug}/missing`,
-    ),
-  getDropoutCheck: (slug: string) =>
-    api<DropoutCheck>(`/api/series/dropout/${slug}/check`),
-  getDropoutLayout: (slug: string) =>
-    api<DropoutLayout>(`/api/series/dropout/${slug}/layout`),
-  putSeries: (platform: Source, slug: string, body: SeriesDetail) =>
-    api<SeriesDetail>(`/api/series/${platform}/${slug}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        name: body.name,
-        path: body.path,
-        tvdb_id: body.tvdb_id,
-        tvdb_skip: body.tvdb_skip,
-        sources: body.sources,
+    api<MissingRow>(seriesUrl(platform, slug, "/missing")),
+  getSeriesMissingBatch: async (items: { platform: Source; slug: string }[]) => {
+    if (!items.length) return {} as Record<string, MissingRow>;
+    try {
+      const body = await api<{
+        missing?: Record<string, MissingRow>;
+        results?: {
+          platform: string;
+          slug: string;
+          missing_count: number | null;
+          complete: boolean;
+        }[];
+      }>("/api/series/missing", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      if (body.missing) return body.missing;
+      const map: Record<string, MissingRow> = {};
+      for (const row of body.results ?? []) {
+        map[`${row.platform}|${row.slug}`] = {
+          missing_count: row.missing_count,
+          complete: row.complete,
+        };
+      }
+      if (Object.keys(map).length) return map;
+    } catch (err) {
+      if (!(err instanceof ApiError) || (err.status !== 404 && err.status !== 405)) {
+        throw err;
+      }
+    }
+    const entries = await Promise.all(
+      items.map(async (item) => {
+        const row = await apiClient.getSeriesMissing(item.platform, item.slug);
+        return [`${item.platform}|${item.slug}`, row] as const;
       }),
-    }),
-  deleteSeries: (platform: Source, slug: string) =>
-    api<void>(`/api/series/${platform}/${slug}`, { method: "DELETE" }),
-  addSeriesSource: (platform: Source, slug: string, url: string) =>
-    api<SeriesDetail>(`/api/series/${platform}/${slug}/sources`, {
-      method: "POST",
-      body: JSON.stringify({ url }),
-    }),
-  deleteSeriesSource: (platform: Source, slug: string, sourceId: number) =>
-    api<SeriesDetail>(`/api/series/${platform}/${slug}/sources/${sourceId}`, {
-      method: "DELETE",
-    }),
-  refreshSeriesSource: (platform: Source, slug: string, sourceId: number) =>
-    api<SeriesDetail>(`/api/series/${platform}/${slug}/sources/${sourceId}/refresh`, {
-      method: "POST",
-    }),
-  refreshSeries: (items: { platform: Source; slug: string }[]) =>
-    api<{ ok: boolean; results: { platform: string; slug: string; error: string | null }[] }>(
-      "/api/series/refresh",
-      { method: "POST", body: JSON.stringify({ items }) },
+    );
+    return Object.fromEntries(entries);
+  },
+  getDropoutCheck: (slug: string) =>
+    api<DropoutCheck>(`/api/series/dropout/${encodeURIComponent(slug)}/check`),
+  getDropoutLayout: (slug: string) =>
+    api<DropoutLayout>(`/api/series/dropout/${encodeURIComponent(slug)}/layout`),
+  putSeries: (platform: Source, slug: string, body: SeriesDetail) =>
+    api<SeriesDetail>(
+      seriesUrl(platform, slug),
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          name: body.name,
+          path: body.path,
+          tvdb_id: body.tvdb_id,
+          tvdb_skip: body.tvdb_skip,
+          sources: body.sources,
+        }),
+      },
+      (data) => parseWith(seriesDetailSchema, data, "Series"),
     ),
-  getSeriesEpisodes: (
-    platform: Source,
-    slug: string,
-    sourceId: number,
-    seasonId: number,
-  ) =>
+  deleteSeries: (platform: Source, slug: string) =>
+    api<void>(seriesUrl(platform, slug), { method: "DELETE" }),
+  addSeriesSource: (platform: Source, slug: string, url: string) =>
+    api<SeriesDetail>(
+      seriesUrl(platform, slug, "/sources"),
+      { method: "POST", body: JSON.stringify({ url }) },
+      (data) => parseWith(seriesDetailSchema, data, "Series"),
+    ),
+  deleteSeriesSource: (platform: Source, slug: string, sourceIndex: number) =>
+    api<SeriesDetail>(
+      seriesUrl(platform, slug, `/sources/${sourceIndex}`),
+      { method: "DELETE" },
+      (data) => parseWith(seriesDetailSchema, data, "Series"),
+    ),
+  refreshSeriesSource: (platform: Source, slug: string, sourceIndex: number) =>
+    api<SeriesDetail>(
+      seriesUrl(platform, slug, `/sources/${sourceIndex}/refresh`),
+      { method: "POST" },
+      (data) => parseWith(seriesDetailSchema, data, "Series"),
+    ),
+  refreshSeries: (items: { platform: Source; slug: string }[], parts?: string[]) =>
+    api<{
+      ok: boolean;
+      results: { platform: string; slug: string; error: string | null }[];
+    }>("/api/series/refresh", {
+      method: "POST",
+      body: JSON.stringify({ items, parts }),
+    }),
+  getSeriesEpisodes: (platform: Source, slug: string, sourceIndex: number, seasonId: number) =>
     api<{
       episodes: SeriesEpisode[];
       on_disk?: { season: number; episode: number }[];
-    }>(
-      `/api/series/${platform}/${slug}/sources/${sourceId}/seasons/${seasonId}/episodes`,
-    ),
+    }>(seriesUrl(platform, slug, `/sources/${sourceIndex}/seasons/${seasonId}/episodes`)),
   getSonarrEpisodes: (tvdbId: number) =>
     api<{ title: string; title_slug: string | null; episodes: SonarrEpisode[] }>(
       `/api/sonarr/episodes?tvdb_id=${tvdbId}`,

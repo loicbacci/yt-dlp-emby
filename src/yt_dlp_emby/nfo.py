@@ -5,6 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from yt_dlp_emby.cache import atomic_write_private
 from yt_dlp_emby.extract import EpisodeInfo
 
 PLOT_LIMIT = 8000
@@ -25,8 +26,8 @@ def _xml_bytes(root: ET.Element) -> bytes:
 
 
 def _write(path: Path, root: ET.Element) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(_xml_bytes(root))
+    # 0644 is intentional: NFOs are library media readable by the Emby UID (secrets stay 0600).
+    atomic_write_private(path, _xml_bytes(root), mode=0o644)
 
 
 def _truncate(text: str) -> str:

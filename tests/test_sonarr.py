@@ -46,6 +46,19 @@ def test_fetch_episodes_uses_tvdb_then_series_id() -> None:
     assert "secret-key" not in calls[0][0]
 
 
+def test_sonarr_episode_is_out_skips_tba_and_future() -> None:
+    from datetime import date
+
+    from yt_dlp_emby.sonarr import sonarr_episode_is_out
+
+    today = date(2026, 9, 21)
+    assert sonarr_episode_is_out("TBA", None, today=today) is False
+    assert sonarr_episode_is_out("tbd", "2020-01-01", today=today) is False
+    assert sonarr_episode_is_out("Pilot", "2026-09-22", today=today) is False
+    assert sonarr_episode_is_out("Pilot", "2026-09-21", today=today) is True
+    assert sonarr_episode_is_out("Cut for Time", None, today=today) is True
+
+
 def test_skips_null_episode_number() -> None:
     def get_json(url: str, headers: dict[str, str]) -> list | dict:
         if "series?" in url:
@@ -169,3 +182,88 @@ def test_force_refetch_skips_cache(tmp_path: Path) -> None:
     assert calls
     reread = load_sonarr_cache(path)
     assert reread["1"]["title"] == "Fresh"
+
+
+def test_fetch_sonarr_poster_skips_html_and_uses_images() -> None:
+    jpeg = b"\xff\xd8\xff\xdb" + b"\x00" * 8
+    html = b"<!DOCTYPE html><html>login</html>"
+    fetched: list[str] = []
+
+    def get_json(url: str, headers: dict[str, str]) -> list:
+        assert "Accept" in headers
+        return [
+            {
+                "id": 42,
+                "images": [
+                    {
+                        "coverType": "poster",
+                        "remoteUrl": "https://art.example/poster.jpg",
+                        "url": "/MediaCover/42/poster.jpg?lastWrite=1",
+                    }
+                ],
+            }
+        ]
+
+    def get_bytes(url: str, headers: dict[str, str]) -> tuple[bytes, str | None]:
+        fetched.append(url)
+        if url.endswith("poster.jpg") and "art.example" in url:
+            return jpeg, "image/jpeg"
+        return html, "text/html"
+
+    from yt_dlp_emby.sonarr import fetch_sonarr_poster
+
+    data = fetch_sonarr_poster(
+        1,
+        base_url="http://sonarr",
+        api_key="k",
+        get_json=get_json,
+        get_bytes=get_bytes,
+    )
+    assert data == jpeg
+    assert fetched[0] == "https://art.example/poster.jpg"
+
+
+def test_fetch_sonarr_poster_rejects_html_mediacover() -> None:
+    html = b"<html>spa</html>"
+    jpeg = b"\xff\xd8\xff\xdb" + b"\x00" * 8
+    fetched: list[str] = []
+
+    def get_json(url: str, headers: dict[str, str]) -> list:
+        return [{"id": 7}]
+
+    def get_bytes(url: str, headers: dict[str, str]) -> tuple[bytes, str | None]:
+        fetched.append(url)
+        if "/api/v3/mediacover/" in url:
+            return jpeg, "image/jpeg"
+        return html, "text/html"
+
+    from yt_dlp_emby.sonarr import fetch_sonarr_poster
+
+    data = fetch_sonarr_poster(
+        1,
+        base_url="http://sonarr",
+        api_key="k",
+        get_json=get_json,
+        get_bytes=get_bytes,
+    )
+    assert data == jpeg
+    assert any("/api/v3/mediacover/" in url for url in fetched)
+
+
+def test_assert_sonarr_url_allows_lan() -> None:
+    from yt_dlp_emby.sonarr import assert_sonarr_url_allowed
+
+    assert_sonarr_url_allowed("http://192.168.1.10:8989")
+    assert_sonarr_url_allowed("http://10.0.0.5:8989")
+    assert_sonarr_url_allowed("http://127.0.0.1:8989")
+
+
+def test_assert_sonarr_url_blocks_link_local_and_junk() -> None:
+    from yt_dlp_emby.sonarr import assert_sonarr_url_allowed
+
+    with pytest.raises(ConfigError, match="reserved"):
+        assert_sonarr_url_allowed("http://169.254.169.254/")
+    with pytest.raises(ConfigError, match="http"):
+        assert_sonarr_url_allowed("ftp://192.168.1.10:8989")
+    with pytest.raises(ConfigError, match="hostname"):
+        assert_sonarr_url_allowed("http://")

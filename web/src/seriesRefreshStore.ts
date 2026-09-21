@@ -37,6 +37,6 @@ export function useSeriesRefreshing(platform: string, slug: string): boolean {
   return useSelector(seriesRefreshStore, (state) => state.keys.has(key));
 }
 
-export function useAnyRefreshing(): Set<string> {
-  return useSelector(seriesRefreshStore, (state) => state.keys);
+export function useAnyRefreshing(): string[] {
+  return useSelector(seriesRefreshStore, (state) => [...state.keys]);
 }

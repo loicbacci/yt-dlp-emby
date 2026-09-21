@@ -74,7 +74,7 @@ export function parseAnsi(text: string): AnsiSpan[] {
   let match: RegExpExecArray | null;
   while ((match = ANSI_RE.exec(text)) !== null) {
     pushSpan(out, text.slice(index, match.index), style);
-    style = applySgr(style, match[1]);
+    style = applySgr(style, match[1] ?? "");
     index = match.index + match[0].length;
   }
   pushSpan(out, text.slice(index), style);

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import random
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from yt_dlp_emby.download import copy_to_library
@@ -85,7 +87,7 @@ def _write_payload(path: Path, size: int) -> None:
             remaining -= len(piece)
 
 
-def _time_copy(label: str, fn) -> tuple[str, float]:
+def _time_copy(label: str, fn: Callable[[], None]) -> tuple[str, float]:
     started = time.perf_counter()
     fn()
     elapsed = time.perf_counter() - started
@@ -132,25 +134,35 @@ def run_bench(
         src = Path(tmp)
         _write_payload(src, size)
         progress = DownloadProgress(enabled=show_progress)
+        info(dim("copy order is randomized; the second run may benefit from a warm cache"))
 
         def app_copy() -> None:
             copy_to_library(src, app_dest, progress, label="copy")
 
-        _, app_seconds = _time_copy("app", app_copy)
-        progress.close()
-        info(
-            f"{green('app copy')}     {format_rate(size, app_seconds)}  "
-            f"{app_seconds:.1f}s  (same path as promoting an episode)"
-        )
-
         def baseline() -> None:
             shutil.copyfile(src, baseline_dest)
 
-        _, base_seconds = _time_copy("copyfile", baseline)
-        info(
-            f"{green('copyfile')}     {format_rate(size, base_seconds)}  "
-            f"{base_seconds:.1f}s  (shutil.copyfile, no progress bar)"
-        )
+        runs = [("app", app_copy), ("copyfile", baseline)]
+        random.shuffle(runs)
+        times: dict[str, float] = {}
+        for label, fn in runs:
+            if label == "app":
+                _, seconds = _time_copy("app", fn)
+                progress.close()
+                times["app"] = seconds
+                info(
+                    f"{green('app copy')}     {format_rate(size, seconds)}  "
+                    f"{seconds:.1f}s  (same path as promoting an episode)"
+                )
+            else:
+                _, seconds = _time_copy("copyfile", fn)
+                times["copyfile"] = seconds
+                info(
+                    f"{green('copyfile')}     {format_rate(size, seconds)}  "
+                    f"{seconds:.1f}s  (shutil.copyfile, no progress bar)"
+                )
+        app_seconds = times.get("app", 0.0)
+        base_seconds = times.get("copyfile", 0.0)
         if app_seconds > 0 and base_seconds > 0:
             ratio = app_seconds / base_seconds
             if ratio >= 1.15:

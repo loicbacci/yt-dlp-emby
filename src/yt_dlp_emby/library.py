@@ -7,7 +7,11 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from yt_dlp_emby.cache import atomic_write_text, file_lock, load_json_object, quarantine_corrupt
+
 INDEX_FILENAME = ".yt-emby.json"
+RENAME_TMP_PREFIX = ".__yt_dlp_emby_tmp__"
+MAX_EPISODE_FILENAME_BYTES = 200
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _EPISODE_CODE = re.compile(r"S(\d{2})E(\d+)", re.I)
 _TEMP_MKV = (".temp.mkv", ".tmp.mkv")
@@ -22,6 +26,8 @@ class EpisodeRecord:
     duration: float | None = None
     filesize: int | None = None
     upload_date: str | None = None
+    height: int | None = None
+    season: int | None = None
 
 
 @dataclass
@@ -46,20 +52,47 @@ def sanitize_filename(name: str) -> str:
     return cleaned or "untitled"
 
 
+def series_relpath(relative: str) -> str:
+    """Return a library-relative series folder, rejecting path traversal."""
+    raw = (relative or "").strip()
+    if not raw:
+        raise ValueError("series path is empty")
+    candidate = Path(raw)
+    if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+        raise ValueError("series path must stay inside the library")
+    return str(candidate)
+
+
+def series_library_path(library: Path, relative: str) -> Path:
+    """Join a series folder onto the library root without escaping it."""
+    rel = series_relpath(relative)
+    library_resolved = library.resolve()
+    resolved = (library / rel).resolve()
+    if not resolved.is_relative_to(library_resolved):
+        raise ValueError("series path must stay inside the library")
+    return resolved
+
+
 def series_dir(library: Path, channel_name: str) -> Path:
     return library / sanitize_filename(channel_name)
 
 
 def season_folder_name(season: int) -> str:
+    if season == 0:
+        return "Specials"
     return f"Season {season}"
 
 
 def season_dir(series: Path, season: int) -> Path:
     """Prefer an existing folder, including zero-padded names like Season 01."""
     if season == 0:
-        return series / "Specials"
+        return series / season_folder_name(0)
     unpadded = series / season_folder_name(season)
     padded = series / f"Season {season:02d}"
+    if unpadded.is_dir() and padded.is_dir():
+        from yt_dlp_emby.log import warn
+
+        warn(f"both {unpadded.name} and {padded.name} exist in {series}; using {unpadded.name}")
     if unpadded.is_dir():
         return unpadded
     if padded.is_dir():
@@ -71,16 +104,78 @@ def media_exists(season: Path, basename: str) -> bool:
     return (season / f"{basename}.mkv").is_file()
 
 
-def episode_stem(channel_name: str, season: int, episode: int, title: str) -> str:
-    return (
-        f"{sanitize_filename(channel_name)} - "
-        f"S{season:02d}E{episode:02d} - "
-        f"{sanitize_filename(title)}"
-    )
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    while encoded and len(encoded) > max_bytes:
+        text = text[:-1]
+        encoded = text.encode("utf-8")
+    return text.rstrip(" .") or "untitled"
+
+
+def _disambiguate_stem(dest: Path, stem: str, season: int, episode: int) -> str:
+    if not media_exists(dest, stem):
+        return stem
+    existing = find_episode_mkv(dest, season, episode)
+    if existing is not None and existing.stem == stem:
+        return stem
+    n = 2
+    candidate = f"{stem}-{n}"
+    while media_exists(dest, candidate):
+        n += 1
+        candidate = f"{stem}-{n}"
+    return candidate
+
+
+def episode_stem(
+    channel_name: str,
+    season: int,
+    episode: int,
+    title: str,
+    *,
+    dest: Path | None = None,
+) -> str:
+    prefix = f"{sanitize_filename(channel_name)} - S{season:02d}E{episode:02d} - "
+    title_part = sanitize_filename(title)
+    max_stem = MAX_EPISODE_FILENAME_BYTES - len(".mkv".encode("utf-8"))
+    reserved = len("-99".encode("utf-8"))
+    budget = max_stem - reserved
+    stem = prefix + title_part
+    if len(stem.encode("utf-8")) > budget:
+        title_budget = budget - len(prefix.encode("utf-8"))
+        title_part = _truncate_utf8(title_part, max(1, title_budget))
+        stem = prefix + title_part
+    if dest is not None:
+        stem = _disambiguate_stem(dest, stem, season, episode)
+    return stem
 
 
 def emby_code(season: int, episode: int) -> str:
     return f"S{season:02d}E{episode:02d}"
+
+
+def _mkv_is_temp(path: Path) -> bool:
+    name = path.name
+    if name.startswith(RENAME_TMP_PREFIX):
+        return True
+    lower = name.lower()
+    return path.suffix.lower() != ".mkv" or lower.endswith(_TEMP_MKV)
+
+
+def _prefer_mkv(current: Path, candidate: Path) -> Path:
+    """Prefer a complete file when two .mkv files share the same SxxExx."""
+    try:
+        current_size = current.stat().st_size
+        candidate_size = candidate.stat().st_size
+    except OSError:
+        return current
+    if candidate_size != current_size:
+        return candidate if candidate_size > current_size else current
+    try:
+        return candidate if candidate.stat().st_mtime >= current.stat().st_mtime else current
+    except OSError:
+        return current
 
 
 def index_episode_mkvs(season: Path) -> dict[tuple[int, int], Path]:
@@ -89,14 +184,14 @@ def index_episode_mkvs(season: Path) -> dict[tuple[int, int], Path]:
     if not season.is_dir():
         return found
     for path in sorted(season.glob("*.mkv")):
-        name = path.name.lower()
-        if path.suffix.lower() != ".mkv" or name.endswith(_TEMP_MKV):
+        if _mkv_is_temp(path):
             continue
         match = _EPISODE_CODE.search(path.name)
         if not match:
             continue
         key = (int(match.group(1)), int(match.group(2)))
-        found.setdefault(key, path)
+        existing = found.get(key)
+        found[key] = path if existing is None else _prefer_mkv(existing, path)
     return found
 
 
@@ -145,6 +240,8 @@ def assign_season(index: LibraryIndex, playlist_id: str, forced: int | None) -> 
 
 
 def _episode_from_dict(data: dict) -> EpisodeRecord:
+    height = data.get("height")
+    season = data.get("season")
     return EpisodeRecord(
         video_id=data["video_id"],
         episode=int(data["episode"]),
@@ -153,13 +250,14 @@ def _episode_from_dict(data: dict) -> EpisodeRecord:
         duration=data.get("duration"),
         filesize=data.get("filesize"),
         upload_date=data.get("upload_date"),
+        height=int(height) if isinstance(height, int) and not isinstance(height, bool) else None,
+        season=int(season) if isinstance(season, int) and not isinstance(season, bool) else None,
     )
 
 
 def _playlist_from_dict(playlist_id: str, data: dict) -> PlaylistRecord:
     episodes = {
-        video_id: _episode_from_dict(raw)
-        for video_id, raw in (data.get("episodes") or {}).items()
+        video_id: _episode_from_dict(raw) for video_id, raw in (data.get("episodes") or {}).items()
     }
     return PlaylistRecord(
         playlist_id=data.get("playlist_id", playlist_id),
@@ -172,22 +270,25 @@ def _playlist_from_dict(playlist_id: str, data: dict) -> PlaylistRecord:
 
 def load_index(series: Path) -> LibraryIndex:
     path = series / INDEX_FILENAME
+    empty = LibraryIndex(channel_id="", channel_name=series.name)
     if not path.is_file():
-        return LibraryIndex(channel_id="", channel_name=series.name)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    playlists = {
-        playlist_id: _playlist_from_dict(playlist_id, raw)
-        for playlist_id, raw in (data.get("playlists") or {}).items()
-    }
-    return LibraryIndex(
-        channel_id=data.get("channel_id", ""),
-        channel_name=data.get("channel_name", series.name),
-        playlists=playlists,
-    )
+        return empty
+    data = load_json_object(path, kind="index")
+    try:
+        playlists = {
+            playlist_id: _playlist_from_dict(playlist_id, raw)
+            for playlist_id, raw in (data.get("playlists") or {}).items()
+        }
+        return LibraryIndex(
+            channel_id=data.get("channel_id", ""),
+            channel_name=data.get("channel_name", series.name),
+            playlists=playlists,
+        )
+    except (TypeError, KeyError, ValueError, AttributeError) as exc:
+        quarantine_corrupt(path, exc)
 
 
 def save_index(series: Path, index: LibraryIndex) -> None:
-    series.mkdir(parents=True, exist_ok=True)
     payload = {
         "channel_id": index.channel_id,
         "channel_name": index.channel_name,
@@ -197,14 +298,14 @@ def save_index(series: Path, index: LibraryIndex) -> None:
                 "season": record.season,
                 "title": record.title,
                 "description": record.description,
-                "episodes": {
-                    video_id: asdict(ep) for video_id, ep in record.episodes.items()
-                },
+                "episodes": {video_id: asdict(ep) for video_id, ep in record.episodes.items()},
             }
             for playlist_id, record in index.playlists.items()
         },
     }
-    (series / INDEX_FILENAME).write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    path = series / INDEX_FILENAME
+    with file_lock(path):
+        atomic_write_text(
+            path,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )

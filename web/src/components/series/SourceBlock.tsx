@@ -3,42 +3,53 @@ import type { SeriesEpisode, SeriesSource, Source } from "../../api";
 import { shortUrl } from "../../seriesView";
 import { SeasonAccordion } from "./SeasonAccordion";
 
+// Accepted deviation: SourceBlock is intentionally not memo()'d. Its props are
+// inline callbacks from SeriesDetail, so a memo wrapper would never hit;
+// per-episode derivations are memoized one level down in SeasonAccordion.
 export function SourceBlock({
   platform,
   source,
   sourceId,
-  runActive,
   episodeMap,
   loadingMap,
   refreshing,
+  sourceBusy,
   onDisk,
+  destErrors,
+  skipErrors,
   seasonOpen,
   onToggleOpen,
-  onRefresh,
   onRemove,
   onSaveUrl,
+  onRefresh,
   onToggleEnabled,
   onTitleChange,
+  onDestChange,
   onSkip,
   onRemap,
+  disabled,
 }: {
   platform: Source;
   source: SeriesSource;
   sourceId: number;
-  runActive: boolean;
   episodeMap: Record<string, SeriesEpisode[]>;
   loadingMap: Record<string, boolean>;
   refreshing?: boolean;
+  sourceBusy?: boolean;
   onDisk: ReadonlySet<string>;
+  destErrors?: Record<string, string>;
+  skipErrors?: Record<string, string>;
   seasonOpen: (seasonId: number) => boolean;
   onToggleOpen: (seasonId: number) => void;
-  onRefresh: () => void;
   onRemove: () => void;
   onSaveUrl: (url: string) => void;
+  onRefresh?: () => void;
   onToggleEnabled: (seasonId: number) => void;
   onTitleChange: (seasonId: number, value: string) => void;
+  onDestChange?: (seasonId: number, value: string) => void;
   onSkip: (seasonId: number, episode: SeriesEpisode) => void;
   onRemap: (seasonId: number, episode: SeriesEpisode) => void;
+  disabled?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(source.url);
@@ -57,6 +68,7 @@ export function SourceBlock({
           <input
             class="url-edit"
             value={draft}
+            aria-label="Source URL"
             onInput={(e) => setDraft((e.currentTarget as HTMLInputElement).value)}
           />
         ) : (
@@ -67,6 +79,8 @@ export function SourceBlock({
         <button
           type="button"
           class="btn-ghost"
+          disabled={disabled}
+          aria-label={editing ? "Save source URL" : "Edit source URL"}
           onClick={() => {
             if (editing) save();
             else {
@@ -77,19 +91,36 @@ export function SourceBlock({
         >
           {editing ? "Save" : "Edit"}
         </button>
-        <button
-          type="button"
-          class="btn-ghost"
-          disabled={runActive}
-          onClick={onRefresh}
-        >
-          Refresh
-        </button>
-        <button type="button" class="btn-ghost is-danger" onClick={onRemove}>
+        {onRefresh && (
+          <button
+            type="button"
+            class="btn-ghost"
+            disabled={disabled || sourceBusy}
+            aria-busy={sourceBusy}
+            aria-label="Refresh source"
+            onClick={onRefresh}
+          >
+            {sourceBusy ? (
+              <>
+                <span class="spinner" aria-hidden="true" /> Refreshing…
+              </>
+            ) : (
+              "Refresh"
+            )}
+          </button>
+        )}
+        {sourceBusy && !onRefresh && (
+          <span class="spinner" aria-hidden="true" role="status" aria-label="Source busy" />
+        )}
+        <button type="button" class="btn-ghost is-danger" disabled={disabled} onClick={onRemove}>
           Remove
         </button>
       </div>
-      {source.error && <div class="validation-error">{source.error}</div>}
+      {source.error && (
+        <div class="validation-error" role="alert">
+          {source.error}
+        </div>
+      )}
       {source.seasons.map((season, seasonId) => {
         const key = `${sourceId}-${seasonId}`;
         return (
@@ -103,10 +134,13 @@ export function SourceBlock({
             loading={Boolean(loadingMap[key])}
             refreshing={refreshing}
             onDisk={onDisk}
+            destError={destErrors?.[key]}
+            skipErrors={skipErrors}
             open={seasonOpen(seasonId)}
             onToggleOpen={() => onToggleOpen(seasonId)}
             onToggleEnabled={() => onToggleEnabled(seasonId)}
             onTitleChange={(value) => onTitleChange(seasonId, value)}
+            onDestChange={onDestChange ? (value) => onDestChange(seasonId, value) : undefined}
             onSkip={(ep) => onSkip(seasonId, ep)}
             onRemap={(ep) => onRemap(seasonId, ep)}
           />

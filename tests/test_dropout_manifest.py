@@ -521,20 +521,63 @@ series:
     assert [series.name for series in filtered.series] == ["Game Changer"]
 
 
+def test_filter_url_only_season_by_to_season(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+series:
+  - name: Show
+    path: Show
+    url: https://watch.dropout.tv/x
+    seasons:
+      - url: https://watch.dropout.tv/x/season:special
+        to_season: 0
+      - dropout: 5
+        to_season: 12
+""",
+        encoding="utf-8",
+    )
+    filtered = filter_dropout_manifest(load_dropout_manifest(path), dropout_seasons=[0])
+    seasons = [season for source in filtered.series[0].sources for season in source.seasons]
+    assert len(seasons) == 1
+    assert seasons[0].to_season == 0
+    assert seasons[0].dropout is None
+
+
+def test_series_path_rejects_parent_dir(tmp_path: Path) -> None:
+    path = tmp_path / "dropout.yaml"
+    path.write_text(
+        """
+series:
+  - name: Evil
+    path: ../outside
+    url: https://watch.dropout.tv/x
+    seasons:
+      - dropout: 1
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="inside the library"):
+        load_dropout_manifest(path)
+
+
 def test_schema_files_are_json() -> None:
     for name in ("dropout.schema.json", "dropout-series.schema.json"):
-        json.loads((Path("schemas") / name).read_text(encoding="utf-8"))
+        json.loads(
+            (Path(__file__).resolve().parent.parent / "schemas" / name).read_text(encoding="utf-8")
+        )
 
 
 def test_examples_declare_yaml_language_server_schema() -> None:
+    root = Path(__file__).resolve().parent.parent
     for path in (
-        Path("dropout.yaml.example"),
-        Path("src/yt_dlp_emby/server/examples/dropout.yaml.example"),
+        root / "dropout.yaml.example",
+        root / "src/yt_dlp_emby/server/examples/dropout.yaml.example",
     ):
         first = path.read_text(encoding="utf-8").splitlines()[0]
         assert first.startswith("# yaml-language-server: $schema=")
         assert "dropout.schema.json" in first
-    fragment = Path("src/yt_dlp_emby/server/examples/shows/dimension-20.yaml.example")
+    fragment = root / "src/yt_dlp_emby/server/examples/shows/dimension-20.yaml.example"
     first = fragment.read_text(encoding="utf-8").splitlines()[0]
     assert first.startswith("# yaml-language-server: $schema=")
     assert "dropout-series.schema.json" in first

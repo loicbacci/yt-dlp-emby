@@ -11,27 +11,24 @@ from yt_dlp_emby.server.app import create_app
 pytestmark = pytest.mark.web
 
 SECRET = "super-secret-cookie-value"
-NETSCAPE = (
-    "# Netscape HTTP Cookie File\n"
-    f".youtube.com\tTRUE\t/\tTRUE\t0\tSID\t{SECRET}\n"
-)
+NETSCAPE = f"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\t{SECRET}\n"
 
 
-def _authed(tmp_path, environ=None) -> TestClient:
+def _authed_ctx(tmp_path, environ=None) -> TestClient:
+    """Client with custom environ; the caller must `with` it for lifespan exit."""
     client = TestClient(create_app(data_dir=tmp_path, environ=environ or {}))
     client.post("/api/setup", json={"password": "secretpass"})
     return client
 
 
-def test_cookies_require_auth(tmp_path) -> None:
-    client = TestClient(create_app(data_dir=tmp_path, environ={}))
+def test_cookies_require_auth(client) -> None:
     assert client.get("/api/cookies").status_code == 401
     assert client.put("/api/cookies/youtube", json={"text": NETSCAPE}).status_code == 401
 
 
-def test_get_cookies_status_without_text(tmp_path) -> None:
+def test_get_cookies_status_without_text(authed_client, tmp_path) -> None:
     (tmp_path / "cookies.txt").write_text(NETSCAPE, encoding="utf-8")
-    client = _authed(tmp_path)
+    client = authed_client
     response = client.get("/api/cookies")
     assert response.status_code == 200
     body = response.json()
@@ -45,8 +42,8 @@ def test_get_cookies_status_without_text(tmp_path) -> None:
     assert body["env_set"] is False
 
 
-def test_put_cookies_writes_jars_and_returns_status_only(tmp_path) -> None:
-    client = _authed(tmp_path)
+def test_put_cookies_writes_jars_and_returns_status_only(authed_client, tmp_path) -> None:
+    client = authed_client
     youtube = client.put("/api/cookies/youtube", json={"text": NETSCAPE})
     dropout = client.put(
         "/api/cookies/dropout",
@@ -66,22 +63,20 @@ def test_put_cookies_writes_jars_and_returns_status_only(tmp_path) -> None:
     assert SECRET not in json.dumps(body)
 
 
-def test_put_cookies_rejects_empty_and_unknown(tmp_path) -> None:
-    client = _authed(tmp_path)
-    empty = client.put(
-        "/api/cookies/youtube", json={"text": "# Netscape HTTP Cookie File\n"}
-    )
+def test_put_cookies_rejects_empty_and_unknown(authed_client, tmp_path) -> None:
+    client = authed_client
+    empty = client.put("/api/cookies/youtube", json={"text": "# Netscape HTTP Cookie File\n"})
     assert empty.status_code == 400
-    assert "empty" in empty.json()["detail"]["error"]
+    assert "empty" in empty.json()["error"]
     assert client.put("/api/cookies/other", json={"text": NETSCAPE}).status_code == 404
 
 
-def test_put_cookies_uses_yaml_relative_filename(tmp_path) -> None:
+def test_put_cookies_uses_yaml_relative_filename(authed_client, tmp_path) -> None:
     (tmp_path / "dropout.yaml").write_text(
         "library: /lib\ncookies: custom-drop.txt\nseries: []\n",
         encoding="utf-8",
     )
-    client = _authed(tmp_path)
+    client = authed_client
     resp = client.put(
         "/api/cookies/dropout",
         json={
@@ -98,12 +93,12 @@ def test_put_cookies_uses_yaml_relative_filename(tmp_path) -> None:
     assert platform["cookie_jar"]["usable"] is True
 
 
-def test_put_cookies_sets_yaml_field_when_missing(tmp_path) -> None:
+def test_put_cookies_sets_yaml_field_when_missing(authed_client, tmp_path) -> None:
     (tmp_path / "youtube.yaml").write_text(
         "library: /lib\nseries: []\n",
         encoding="utf-8",
     )
-    client = _authed(tmp_path)
+    client = authed_client
     resp = client.put("/api/cookies/youtube", json={"text": NETSCAPE})
     assert resp.status_code == 200
     root = (tmp_path / "youtube.yaml").read_text(encoding="utf-8")
@@ -115,8 +110,9 @@ def test_put_cookies_sets_yaml_field_when_missing(tmp_path) -> None:
 
 
 def test_get_cookies_env_overlay(tmp_path) -> None:
-    client = _authed(tmp_path, {"YT_DLP_EMBY_COOKIES": "/from/env/cookies.txt"})
-    body = client.get("/api/cookies").json()
-    assert body["env_set"] is True
-    assert body["env_name"] == "YT_DLP_EMBY_COOKIES"
-    assert body["env_path"] == "/from/env/cookies.txt"
+    client = _authed_ctx(tmp_path, {"YT_DLP_EMBY_COOKIES": "/from/env/cookies.txt"})
+    with client:
+        body = client.get("/api/cookies").json()
+        assert body["env_set"] is True
+        assert body["env_name"] == "YT_DLP_EMBY_COOKIES"
+        assert body["env_path"] == "/from/env/cookies.txt"

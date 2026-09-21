@@ -12,10 +12,13 @@ dist/
 build/
 .eggs/
 
-# Tests
+# Tests / linters
 .pytest_cache/
 .coverage
 htmlcov/
+.ruff_cache/
+.mypy_cache/
+*.log
 
 # Local config (keep the example)
 config.toml
@@ -31,6 +34,13 @@ data/
 .env
 backup/
 shows/
+!shows/*.example
+!shows/README.md
+
+# Runtime queue / observability
+plan.json
+download-only.json
+events.jsonl
 
 # Media and caches
 cache/
@@ -49,8 +59,13 @@ cache/
 *.swp
 
 # Web UI
+node_modules/
 web/node_modules/
 web/dist/
 web/cosmos-export/
+web/coverage/
+web/.vite/
+web/public/mockups/poster-*.jpg
+.pnpm-store/
 src/yt_dlp_emby/server/static/
 .yt-dlp-emby-auth.json

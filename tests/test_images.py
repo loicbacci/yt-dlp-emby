@@ -29,3 +29,23 @@ def test_save_jpeg_from_existing_file(tmp_path: Path) -> None:
     save_jpeg(src, dest)
     with Image.open(dest) as image:
         assert image.format == "JPEG"
+
+
+def test_download_image_rejects_unsafe_urls(tmp_path: Path, monkeypatch) -> None:
+    from yt_dlp_emby.images import download_image, image_url_allowed
+
+    dest = tmp_path / "poster.jpg"
+    assert download_image("file:///etc/passwd", dest) is False
+    assert download_image("http://localhost/x", dest) is False
+    assert not dest.exists()
+
+    monkeypatch.setattr(
+        "yt_dlp_emby.images.socket.getaddrinfo",
+        lambda *_a, **_k: [(0, 0, 0, "", ("10.0.0.1", 0))],
+    )
+    assert image_url_allowed("https://internal.example/thumb.jpg") is False
+    monkeypatch.setattr(
+        "yt_dlp_emby.images.socket.getaddrinfo",
+        lambda *_a, **_k: [(0, 0, 0, "", ("8.8.8.8", 0))],
+    )
+    assert image_url_allowed("https://i.ytimg.com/vi/x/hqdefault.jpg") is True

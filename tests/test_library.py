@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from yt_dlp_emby.library import (
     EpisodeRecord,
     LibraryIndex,
@@ -10,8 +12,8 @@ from yt_dlp_emby.library import (
     find_episode_mkv,
     index_episode_mkvs,
     load_index,
-    save_index,
     sanitize_filename,
+    save_index,
     season_dir,
     season_folder_name,
     series_dir,
@@ -53,9 +55,10 @@ def test_titles_match_ignores_case_and_punctuation() -> None:
     assert titles_match("Welcome to the Wastes", "welcome to the wastes")
     assert titles_match("Hello, World!", "Hello World")
     assert not titles_match("Old Title", "Welcome to the Wastes")
-    assert episode_title_from_filename(
-        "Dimension 20 - S27E01 - welcome to the wastes.mkv"
-    ) == "welcome to the wastes"
+    assert (
+        episode_title_from_filename("Dimension 20 - S27E01 - welcome to the wastes.mkv")
+        == "welcome to the wastes"
+    )
 
 
 def test_find_episode_mkv_matches_code_not_title(tmp_path: Path) -> None:
@@ -112,6 +115,31 @@ def test_index_episode_mkvs_matches_sxxexx_anywhere(tmp_path: Path) -> None:
     episode.write_bytes(b"x")
     assert index_episode_mkvs(season)[(3, 17)] == episode
     assert find_episode_mkv(season, 3, 17) == episode
+
+
+def test_index_episode_mkvs_prefers_larger_duplicate(tmp_path: Path) -> None:
+    season = tmp_path / "Season 1"
+    season.mkdir()
+    small = season / "Show - S01E01 - A.mkv"
+    large = season / "Show - S01E01 - Z.mkv"
+    small.write_bytes(b"x")
+    large.write_bytes(b"x" * 32)
+    tmp = season / ".__yt_dlp_emby_tmp__Show - S01E01 - A.mkv"
+    tmp.write_bytes(b"stale")
+    indexed = index_episode_mkvs(season)
+    assert indexed[(1, 1)] == large
+
+
+def test_series_relpath_rejects_traversal(tmp_path: Path) -> None:
+    from yt_dlp_emby.library import series_library_path, series_relpath
+
+    with pytest.raises(ValueError, match="inside the library"):
+        series_relpath("../secret")
+    with pytest.raises(ValueError, match="inside the library"):
+        series_library_path(tmp_path, "/etc/passwd")
+    assert (
+        series_library_path(tmp_path, "Show [tvdbid=1]") == (tmp_path / "Show [tvdbid=1]").resolve()
+    )
 
 
 def test_assign_season_sticky_then_next() -> None:
@@ -171,3 +199,17 @@ def test_index_series_mkvs_walks_season_and_specials(tmp_path: Path) -> None:
     indexed = index_series_mkvs(series)
     assert indexed[(1, 4)] == ep
     assert indexed[(0, 12)] == special
+
+
+def test_load_index_quarantines_corrupt_json(tmp_path: Path) -> None:
+    from yt_dlp_emby.config import ConfigError
+
+    series = tmp_path / "Example Channel"
+    series.mkdir()
+    index_path = series / ".yt-emby.json"
+    index_path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ConfigError, match="corrupt"):
+        load_index(series)
+    backups = list(series.glob(".yt-emby.json.corrupt-*"))
+    assert backups
+    assert backups[0].read_text(encoding="utf-8") == "{not json"

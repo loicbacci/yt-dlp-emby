@@ -72,7 +72,9 @@ def test_server_missing_extra_hint(monkeypatch, capsys) -> None:
 
 
 def test_core_deps_exclude_server_packages() -> None:
-    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    data = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    )
     core = " ".join(data["project"]["dependencies"]).lower()
     for pkg in ("fastapi", "uvicorn", "itsdangerous"):
         assert pkg not in core

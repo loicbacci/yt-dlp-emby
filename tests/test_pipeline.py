@@ -79,7 +79,9 @@ def _patch_extractors(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None
         calls.append("art")
         return ChannelArt("UC1", "Example Channel", "About", None, None)
 
-    def fake_download(url: str, dest_stem: Path, _settings: object, format_selector: str | None = None) -> dict:
+    def fake_download(
+        url: str, dest_stem: Path, _settings: object, format_selector: str | None = None
+    ) -> dict:
         calls.append("download")
         dest_stem.parent.mkdir(parents=True, exist_ok=True)
         dest_stem.with_suffix(".mkv").write_bytes(b"video")
@@ -100,7 +102,9 @@ def _patch_extractors(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None
     monkeypatch.setattr("yt_dlp_emby.pipeline.download_image", lambda *_a, **_k: None)
 
 
-def test_pipeline_starts_download_after_listing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pipeline_starts_download_after_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[str] = []
     _patch_extractors(monkeypatch, calls)
     code = run_download("https://example.invalid/playlist", _settings(tmp_path))
@@ -429,3 +433,181 @@ def test_youtube_manifest_one_done(
     assert out.count("Done") == 1
     assert "listed" in out
 
+
+def test_pipeline_reorder_renames_without_redownload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_dlp_emby.library import episode_stem
+
+    first = PlaylistInfo(
+        playlist_id="PLa",
+        title="Course",
+        description="Playlist plot",
+        channel="Example Channel",
+        channel_id="UC1",
+        thumbnail_url=None,
+        episodes=[
+            EpisodeInfo(
+                video_id="vidA",
+                title="Alpha",
+                description="",
+                playlist_index=1,
+                webpage_url="https://www.youtube.com/watch?v=vidA",
+            ),
+            EpisodeInfo(
+                video_id="vidB",
+                title="Beta",
+                description="",
+                playlist_index=2,
+                webpage_url="https://www.youtube.com/watch?v=vidB",
+            ),
+        ],
+    )
+    reordered = PlaylistInfo(
+        playlist_id=first.playlist_id,
+        title=first.title,
+        description=first.description,
+        channel=first.channel,
+        channel_id=first.channel_id,
+        thumbnail_url=None,
+        episodes=[
+            EpisodeInfo(
+                video_id="vidB",
+                title="Beta",
+                description="",
+                playlist_index=1,
+                webpage_url="https://www.youtube.com/watch?v=vidB",
+            ),
+            EpisodeInfo(
+                video_id="vidA",
+                title="Alpha",
+                description="",
+                playlist_index=2,
+                webpage_url="https://www.youtube.com/watch?v=vidA",
+            ),
+        ],
+    )
+    state = {"playlist": first}
+    calls: list[str] = []
+
+    def fake_extract_playlist(*_args: object, **_kwargs: object) -> PlaylistInfo:
+        return state["playlist"]
+
+    def fake_download(
+        url: str, dest_stem: Path, _settings: object, format_selector: str | None = None
+    ) -> dict:
+        calls.append(url)
+        dest_stem.parent.mkdir(parents=True, exist_ok=True)
+        dest_stem.with_suffix(".mkv").write_bytes(url.encode())
+        video_id = url.rsplit("=", 1)[-1]
+        return {"id": video_id, "title": video_id, "webpage_url": url}
+
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", fake_extract_playlist)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_video", fake_download)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.download_image", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.video_height", lambda *_a, **_k: 1080)
+
+    settings = _settings(tmp_path)
+    assert run_download("https://example.invalid/playlist", settings) == 0
+    assert len(calls) == 2
+    season = tmp_path / "lib" / "Example Channel" / "Season 1"
+    stem_a1 = episode_stem("Example Channel", 1, 1, "Alpha")
+    stem_b2 = episode_stem("Example Channel", 1, 2, "Beta")
+    assert (season / f"{stem_a1}.mkv").is_file()
+    assert (season / f"{stem_b2}.mkv").is_file()
+
+    calls.clear()
+    state["playlist"] = reordered
+    assert run_download("https://example.invalid/playlist", settings) == 0
+    assert calls == []
+    stem_b1 = episode_stem("Example Channel", 1, 1, "Beta")
+    stem_a2 = episode_stem("Example Channel", 1, 2, "Alpha")
+    assert (season / f"{stem_b1}.mkv").is_file()
+    assert (season / f"{stem_a2}.mkv").is_file()
+    assert not (season / f"{stem_a1}.mkv").exists()
+    assert not (season / f"{stem_b2}.mkv").exists()
+
+
+def test_youtube_dry_run_emits_rename_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import os
+
+    from yt_dlp_emby.events import reset_runtime
+    from yt_dlp_emby.library import EpisodeRecord, LibraryIndex, PlaylistRecord, save_index
+    from yt_dlp_emby.pipeline import run_youtube_manifest
+    from yt_dlp_emby.youtube_manifest import YoutubeManifest, YoutubePlaylist, YoutubeSeries
+
+    series = tmp_path / "lib" / "Example Channel"
+    season = series / "Season 1"
+    season.mkdir(parents=True)
+    (season / "Example Channel - S01E01 - Alpha.mkv").write_bytes(b"a")
+    save_index(
+        series,
+        LibraryIndex(
+            channel_id="UC1",
+            channel_name="Example Channel",
+            playlists={
+                "PLa": PlaylistRecord(
+                    playlist_id="PLa",
+                    season=1,
+                    title="Course",
+                    episodes={
+                        "vidA": EpisodeRecord(
+                            video_id="vidA",
+                            episode=1,
+                            title="Alpha",
+                            basename="Example Channel - S01E01 - Alpha",
+                        )
+                    },
+                )
+            },
+        ),
+    )
+
+    def fake_extract_playlist(*_args: object, **_kwargs: object) -> PlaylistInfo:
+        return PlaylistInfo(
+            playlist_id="PLa",
+            title="Course",
+            description="",
+            channel="Example Channel",
+            channel_id="UC1",
+            thumbnail_url=None,
+            episodes=[
+                EpisodeInfo(
+                    video_id="vidA",
+                    title="Alpha retitled",
+                    description="",
+                    playlist_index=1,
+                    webpage_url="https://www.youtube.com/watch?v=vidA",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", fake_extract_playlist)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
+    monkeypatch.setattr("yt_dlp_emby.pipeline.video_height", lambda *_a, **_k: 1080)
+    events = tmp_path / "events.jsonl"
+    reset_runtime()
+    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(events))
+    manifest = YoutubeManifest(
+        library=tmp_path / "lib",
+        old_dir=tmp_path / "old",
+        path=tmp_path / "youtube.yaml",
+        series=(
+            YoutubeSeries(
+                name="Example Channel",
+                playlists=(YoutubePlaylist("https://example.invalid/playlist", 1),),
+            ),
+        ),
+    )
+    assert run_youtube_manifest(manifest, _settings(tmp_path, dry_run=True)) == 0
+    items = [
+        json.loads(line) for line in events.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    kinds = [row.get("action") for row in items if row.get("event") == "item"]
+    assert "rename" in kinds
+    os.environ.pop("YT_DLP_EMBY_EVENTS", None)
+    reset_runtime()

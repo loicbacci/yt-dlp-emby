@@ -3,6 +3,8 @@ name = "yt-dlp-emby"
 version = "0.1.0"
 description = "Download YouTube and Dropout.tv videos with yt-dlp for Emby."
 readme = "README.md"
+license = "MIT"
+authors = [{ name = "yt-dlp-emby contributors" }]
 requires-python = ">=3.11"
 dependencies = [
     "bgutil-ytdlp-pot-provider>=2.0.0",
@@ -12,10 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# FastAPI/Starlette/Pydantic/Uvicorn/ItsDangerous/Ruamel: server extra only.
+# pyyaml reads manifests; ruamel.yaml preserves comments on web UI saves.
 server = [
-    "fastapi>=0.115",
+    "fastapi>=0.115,<0.122",
     "uvicorn[standard]>=0.32",
     "itsdangerous>=2.2",
+    "ruamel.yaml>=0.18",
+    "pydantic>=2.0",
 ]
 
 [project.scripts]
@@ -29,18 +35,59 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
     "httpx>=0.28",
-    "fastapi>=0.115",
+    "pytest-asyncio>=0.26",
+    "pytest-timeout>=2.4",
+    "pytest-cov>=6.0",
+    "ruff>=0.11",
+    "jsonschema>=4.23",
+    "mypy>=1.14",
+    "types-pyyaml>=6.0",
+    { include-group = "server" },
+]
+server = [
+    "fastapi>=0.115,<0.122",
     "uvicorn[standard]>=0.32",
     "itsdangerous>=2.2",
+    "ruamel.yaml>=0.18",
+    "pydantic>=2.0",
 ]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not network'"
+addopts = "-ra -m 'not network'"
 testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 60
+strict_markers = true
 markers = [
     "network: tests that contact YouTube",
     "web: needs the [server] extra",
 ]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/yt_dlp_emby/server/static/*"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_empty = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["scripts", "web", "src/yt_dlp_emby/server/static"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = false
+files = ["src/yt_dlp_emby/server"]
 
 [tool.uv.build-backend]
 module-name = "yt_dlp_emby"

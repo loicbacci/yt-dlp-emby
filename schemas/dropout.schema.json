@@ -39,7 +39,12 @@
         ]
       },
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]*$",
+          "not": { "pattern": "\\.\\." }
+        },
         "path": { "type": "string", "minLength": 1 },
         "url": { "type": "string", "minLength": 1 },
         "tvdb_id": { "type": "integer", "minimum": 1 },
@@ -76,9 +81,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "dropout": { "type": "integer" },
+        "dropout": { "type": "integer", "minimum": 1 },
         "url": { "type": "string", "minLength": 1 },
-        "to_season": { "type": "integer" },
+        "to_season": { "type": "integer", "minimum": 0 },
         "enabled": { "type": "boolean" },
         "title": { "type": "string", "minLength": 1 },
         "only_episodes": {
@@ -93,16 +98,30 @@
       }
     },
     "remap": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["dropout_episode"],
-      "properties": {
-        "dropout_episode": { "type": "integer", "minimum": 1 },
-        "to_season": { "type": "integer" },
-        "to_episode": { "type": "integer" },
-        "title": { "type": "string", "minLength": 1 },
-        "skip": { "type": "boolean" }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dropout_episode", "skip"],
+          "properties": {
+            "dropout_episode": { "type": "integer", "minimum": 1 },
+            "skip": { "const": true },
+            "title": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dropout_episode", "to_season", "to_episode"],
+          "properties": {
+            "dropout_episode": { "type": "integer", "minimum": 1 },
+            "to_season": { "type": "integer", "minimum": 0 },
+            "to_episode": { "type": "integer", "minimum": 1 },
+            "title": { "type": "string", "minLength": 1 },
+            "skip": { "type": "boolean" }
+          }
+        }
+      ]
     },
     "tvdbSkip": {
       "type": "object",

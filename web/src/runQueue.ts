@@ -1,45 +1,6 @@
-export type Platform = "dropout" | "youtube";
+import type { PlanFile, PlanItem, PlanSeason, Source as Platform } from "./types";
 
-export type PlanSeason = {
-  platform: Platform;
-  slug: string;
-  series: string;
-  dest_season: number;
-  season_title: string | null;
-  folder: string;
-  download: number;
-  skip: number;
-  unmapped: number;
-  replace: number;
-};
-
-export type PlanItem = {
-  id: string;
-  action: string;
-  code: string;
-  title: string;
-  dest_season: number;
-  season_title: string | null;
-  folder: string;
-  size: number | null;
-  series: string;
-  slug: string;
-  platform: Platform;
-};
-
-export type PlanFile = {
-  generated_at: string | null;
-  force: boolean;
-  sources: Record<
-    string,
-    {
-      ok: boolean;
-      error: string | null;
-      seasons: PlanSeason[];
-      items: PlanItem[];
-    }
-  >;
-};
+export type { PlanFile, PlanItem, PlanSeason, Platform };
 
 export type QueueEpisode = PlanItem & {
   status?: "pending" | "downloading" | "done" | "failed";
@@ -93,7 +54,12 @@ export function partitionSeasons(seasons: PlanSeason[]): {
   const pending: PlanSeason[] = [];
   const complete: PlanSeason[] = [];
   for (const season of seasons) {
-    const active = season.download + season.replace + season.unmapped;
+    const active =
+      season.download +
+      season.replace +
+      season.unmapped +
+      (season.rename ?? 0) +
+      (season.remove ?? 0);
     if (active === 0 && season.skip > 0) {
       complete.push(season);
     } else if (active === 0 && season.skip === 0) {
@@ -126,9 +92,7 @@ export function buildTree(plan: PlanFile): QueueTree {
       }
       continue;
     }
-    const ownSeasons = (block.seasons ?? []).filter(
-      (s) => !s.platform || s.platform === platform,
-    );
+    const ownSeasons = (block.seasons ?? []).filter((s) => !s.platform || s.platform === platform);
     const ownItems = (block.items ?? []).filter(
       (item) => !item.platform || item.platform === platform,
     );
@@ -140,9 +104,7 @@ export function buildTree(plan: PlanFile): QueueTree {
       list.push({ ...item, status: "pending" });
       itemsBySeason.set(key, list);
     }
-    const { pending: pendingSeasons, complete: completeSeasons } = partitionSeasons(
-      ownSeasons,
-    );
+    const { pending: pendingSeasons, complete: completeSeasons } = partitionSeasons(ownSeasons);
     const seasonMeta = new Map<string, PlanSeason>();
     for (const s of [...pendingSeasons, ...completeSeasons]) {
       seasonMeta.set(seasonKey(platform, s.slug, s.dest_season), s);
@@ -190,7 +152,7 @@ export function buildTree(plan: PlanFile): QueueTree {
       const series = bySeries.get(seriesKey);
       if (!series) continue;
       const downloadable = episodes.filter((e) =>
-        ["download", "replace"].includes(e.action),
+        ["download", "replace", "rename", "remove"].includes(e.action),
       );
       const unmappedOnly = episodes.filter((e) => e.action === "unmapped");
       if (unmappedOnly.length) {
@@ -202,7 +164,8 @@ export function buildTree(plan: PlanFile): QueueTree {
           }
         }
       }
-      const active = meta.download + meta.replace + meta.unmapped;
+      const active =
+        meta.download + meta.replace + meta.unmapped + (meta.rename ?? 0) + (meta.remove ?? 0);
       const isComplete = active === 0 && meta.skip > 0;
       if (isComplete && downloadable.length === 0) continue;
       const existing = series.seasons.find((s) => s.key === key);
@@ -273,12 +236,13 @@ function compareDest(a: number, b: number): number {
 function sortQueueSeries(series: QueueSeries): void {
   series.seasons.sort((a, b) => compareDest(a.destSeason, b.destSeason));
   for (const season of series.seasons) {
-    season.pending.sort(
-      (a, b) => episodeNumberFromCode(a.code) - episodeNumberFromCode(b.code),
-    );
+    season.pending.sort((a, b) => episodeNumberFromCode(a.code) - episodeNumberFromCode(b.code));
   }
   series.completeSeasons.sort((a, b) =>
-    compareDest(a.destSeason ?? destSeasonFromFolder(a.folderLabel), b.destSeason ?? destSeasonFromFolder(b.folderLabel)),
+    compareDest(
+      a.destSeason ?? destSeasonFromFolder(a.folderLabel),
+      b.destSeason ?? destSeasonFromFolder(b.folderLabel),
+    ),
   );
 }
 
@@ -333,17 +297,13 @@ export function seriesInActiveDownload(
   downloadIds: ReadonlySet<string>,
 ): boolean {
   return series.seasons.some((season) =>
-    season.pending.some(
-      (ep) => downloadIds.has(ep.id) && ep.status !== "done",
-    ),
+    season.pending.some((ep) => downloadIds.has(ep.id) && ep.status !== "done"),
   );
 }
 
 export function upToDateSeries(tree: QueueTree, query: string): QueueSeries[] {
   const q = query.trim();
-  const complete = tree.filter(
-    (s) => s.pendingCount === 0 && s.unmapped.length === 0 && !s.error,
-  );
+  const complete = tree.filter((s) => s.pendingCount === 0 && s.unmapped.length === 0 && !s.error);
   if (!q) return complete;
   return complete.filter((s) => seriesMatches(s, q));
 }
@@ -381,10 +341,7 @@ export function applyCheck(
   return next;
 }
 
-export function remainingEpisodes(
-  season: QueueSeason,
-  hideDone: boolean,
-): QueueEpisode[] {
+export function remainingEpisodes(season: QueueSeason, hideDone: boolean): QueueEpisode[] {
   if (!hideDone) return season.pending;
   return season.pending.filter((ep) => ep.status !== "done");
 }
@@ -398,7 +355,7 @@ export function pendingIds(tree: QueueTree): string[] {
   for (const series of tree) {
     for (const season of series.seasons) {
       for (const ep of season.pending) {
-        if (["download", "replace"].includes(ep.action)) ids.push(ep.id);
+        if (["download", "replace", "rename", "remove"].includes(ep.action)) ids.push(ep.id);
       }
     }
   }
@@ -408,14 +365,66 @@ export function pendingIds(tree: QueueTree): string[] {
 export function effectiveDownloadIds(
   selected: Set<string>,
   allPending: string[],
+  options?: { cleared?: boolean },
 ): string[] {
-  if (selected.size === 0) return allPending;
+  if (selected.size === 0) return options?.cleared ? [] : allPending;
   const pendingSet = new Set(allPending);
   return [...selected].filter((id) => pendingSet.has(id));
 }
 
 export function downloadLabel(effectiveCount: number): string {
   return `Download ${effectiveCount} episode${effectiveCount === 1 ? "" : "s"}`;
+}
+
+const DOWNLOAD_ACTIONS = new Set(["download", "replace"]);
+const RUN_ACTIONS = new Set(["download", "replace", "rename", "remove"]);
+
+export function actionLabel(action: string): string {
+  if (action === "replace") return "Replace";
+  if (action === "rename") return "Rename";
+  if (action === "remove") return "Remove";
+  if (action === "unmapped") return "Unmapped";
+  return "Download";
+}
+
+export function actionsForIds(ids: string[], tree: QueueTree): string[] {
+  const wanted = new Set(ids);
+  const out: string[] = [];
+  for (const series of tree) {
+    for (const season of series.seasons) {
+      for (const ep of season.pending) {
+        if (wanted.has(ep.id) && RUN_ACTIONS.has(ep.action)) out.push(ep.action);
+      }
+    }
+  }
+  return out;
+}
+
+export function isDownloadHeavy(actions: string[]): boolean {
+  return actions.length === 0 || actions.every((action) => DOWNLOAD_ACTIONS.has(action));
+}
+
+export function runLabel(count: number, actions: string[]): string {
+  if (isDownloadHeavy(actions)) return downloadLabel(count);
+  const unique = [...new Set(actions)];
+  if (unique.length === 1) {
+    return `${actionLabel(unique[0] ?? "download")} ${count} episode${count === 1 ? "" : "s"}`;
+  }
+  return `Apply ${count} change${count === 1 ? "" : "s"}`;
+}
+
+export function queueHeading(count: number, actions: string[]): string {
+  if (count === 0) return "Up to date";
+  if (isDownloadHeavy(actions)) {
+    return `${count} new episode${count === 1 ? "" : "s"}`;
+  }
+  return `${count} queued change${count === 1 ? "" : "s"}`;
+}
+
+export function countChipText(count: number, downloading: boolean, actions: string[]): string {
+  if (downloading) return `${count} remaining`;
+  if (isDownloadHeavy(actions)) return `${count} new`;
+  return `${count} queued`;
 }
 
 export function platformLabel(platform: Platform): string {
@@ -490,7 +499,7 @@ const ANSI_RE = /\u001b\[[0-9;]*m/g;
 export function parseFiniteNumber(raw: unknown): number | null {
   if (typeof raw === "number" && Number.isFinite(raw)) return raw;
   if (typeof raw === "string") {
-    const parsed = parseFloat(raw.replace(ANSI_RE, "").trim());
+    const parsed = Number.parseFloat(raw.replace(ANSI_RE, "").trim());
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
@@ -524,9 +533,7 @@ export function formatProgressStats(progress: ProgressState): string | null {
   const parts: string[] = [];
   if (progress.phase) parts.push(progress.phase);
   if (progress.total != null && progress.total > 0) {
-    parts.push(
-      `${formatBinaryBytes(progress.bytes ?? 0)}/${formatBinaryBytes(progress.total)}`,
-    );
+    parts.push(`${formatBinaryBytes(progress.bytes ?? 0)}/${formatBinaryBytes(progress.total)}`);
   } else if (progress.bytes != null && progress.bytes > 0) {
     parts.push(formatBinaryBytes(progress.bytes));
   }
@@ -542,7 +549,7 @@ export function parsePercent(raw: unknown, bytes?: unknown, total?: unknown): nu
   }
   if (typeof raw === "string") {
     const cleaned = raw.replace(ANSI_RE, "").replace("%", "").trim();
-    const parsed = parseFloat(cleaned);
+    const parsed = Number.parseFloat(cleaned);
     if (Number.isFinite(parsed)) return Math.min(100, Math.max(0, parsed));
   }
   const totalN = Number(total);
@@ -561,9 +568,7 @@ export function applyProgress(
   const progress: ProgressState = emptyProgress();
   if (kind === "item_steps") {
     progress.currentId = (event.id as string) ?? null;
-    progress.steps = Array.isArray(event.steps)
-      ? (event.steps as string[]).map(String)
-      : [];
+    progress.steps = Array.isArray(event.steps) ? (event.steps as string[]).map(String) : [];
     progress.step = 0;
     return { tree, progress };
   }
@@ -599,24 +604,9 @@ export function mergeProgress(current: ProgressState, next: ProgressState): Prog
   const idChanged =
     next.currentId != null && current.currentId != null && next.currentId !== current.currentId;
   const currentId = next.currentId ?? current.currentId;
-  const steps =
-    next.steps.length > 0
-      ? next.steps
-      : idChanged
-        ? []
-        : current.steps;
-  const step =
-    typeof next.step === "number"
-      ? next.step
-      : idChanged
-        ? null
-        : current.step;
-  const percent =
-    next.percent != null
-      ? next.percent
-      : idChanged
-        ? null
-        : current.percent;
+  const steps = next.steps.length > 0 ? next.steps : idChanged ? [] : current.steps;
+  const step = typeof next.step === "number" ? next.step : idChanged ? null : current.step;
+  const percent = next.percent != null ? next.percent : idChanged ? null : current.percent;
   return {
     currentId,
     percent,
@@ -636,20 +626,31 @@ export function overlayProgress(tree: QueueTree, progress: ProgressState): Queue
   if (!progress.currentId && progress.doneIds.size === 0 && progress.failedIds.size === 0) {
     return tree;
   }
-  return tree.map((series) => ({
-    ...series,
-    seasons: series.seasons.map((season) => ({
-      ...season,
-      pending: season.pending.map((ep) => {
+  let treeChanged = false;
+  const next = tree.map((series) => {
+    let seriesChanged = false;
+    const seasons = series.seasons.map((season) => {
+      let seasonChanged = false;
+      const pending = season.pending.map((ep) => {
         let status = ep.status ?? "pending";
         if (progress.failedIds.has(ep.id)) status = "failed";
         else if (progress.doneIds.has(ep.id)) status = "done";
         else if (progress.currentId === ep.id) status = "downloading";
         else status = "pending";
-        return status === ep.status ? ep : { ...ep, status };
-      }),
-    })),
-  }));
+        if (status === ep.status) return ep;
+        seasonChanged = true;
+        return { ...ep, status };
+      });
+      if (!seasonChanged) return season;
+      seriesChanged = true;
+      return { ...season, pending };
+    });
+    if (!seriesChanged) return series;
+    treeChanged = true;
+    return { ...series, seasons };
+  });
+  // Preserve referential identity for memoized rows when nothing changed.
+  return treeChanged ? next : tree;
 }
 
 export function episodeForId(
@@ -666,12 +667,17 @@ export function episodeForId(
   return null;
 }
 
-export type RunPhase =
-  | "idle"
-  | "planning"
-  | "downloading"
-  | "stopping"
-  | "exited";
+export type RunPhase = "idle" | "planning" | "downloading" | "stopping" | "exited";
+
+/**
+ * Single source for the planning-phase label. Unknown sources render a bare
+ * "Listing…" (never a guessed platform) and there is no trailing ellipsis on
+ * the named form. Used by runStatsLine, heroFrom, and StatusChip.
+ */
+export function listingLabel(source: string | null | undefined): string {
+  const src = source === "youtube" ? "YouTube" : source === "dropout" ? "Dropout" : null;
+  return src ? `Listing ${src}` : "Listing…";
+}
 
 export function runStatsLine(
   run: { phase: RunPhase; source: string | null },
@@ -681,8 +687,7 @@ export function runStatsLine(
   const done = progress.doneIds.size;
   const failed = progress.failedIds.size;
   if (run.phase === "planning") {
-    const src = run.source === "youtube" ? "YouTube" : "Dropout";
-    return `Listing ${src}…`;
+    return listingLabel(run.source);
   }
   if (run.phase !== "downloading") {
     return `${totalPending} pending`;
@@ -701,9 +706,8 @@ export function heroFrom(
   pendingCount = 0,
 ): { heading: string; sub: string } {
   if (run.phase === "planning") {
-    const src = run.source === "youtube" ? "YouTube" : "Dropout";
     const name = listingSeries ?? "…";
-    return { heading: `Listing ${src}`, sub: name };
+    return { heading: listingLabel(run.source), sub: name };
   }
   if (run.phase === "stopping") {
     return { heading: "Stopping", sub: listingSeries ?? "" };

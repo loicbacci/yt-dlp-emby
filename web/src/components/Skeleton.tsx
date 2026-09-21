@@ -18,16 +18,16 @@ export function Skeleton({
 
 export function SeriesListSkeleton({ rows = 5 }: { rows?: number }) {
   return (
-    <div data-testid="series-list-skeleton">
+    <div data-testid="series-list-skeleton" role="status" aria-label="Loading shows">
       {Array.from({ length: rows }, (_, index) => (
-        <div key={index} class="series-row" aria-hidden="true">
-          <div class="series-row-main">
+        <div key={index} class="show-row" aria-hidden="true">
+          <div class="show-row-main">
             <Skeleton width="12rem" height="1em" />
             <div class="series-row-meta" style={{ marginTop: "8px" }}>
               <Skeleton width="18rem" height="0.7em" />
             </div>
           </div>
-          <div class="series-row-badges">
+          <div class="show-row-actions">
             <Skeleton width="5rem" height="1em" />
             <Skeleton width="4.5rem" height="1.4em" />
           </div>
@@ -37,9 +37,44 @@ export function SeriesListSkeleton({ rows = 5 }: { rows?: number }) {
   );
 }
 
+export function QueueSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div data-testid="queue-skeleton" role="status" aria-label="Loading queue">
+      {Array.from({ length: rows }, (_, index) => (
+        <div key={index} class="fold-card" aria-hidden="true">
+          <div class="fold-head">
+            <Skeleton width="3rem" height="3rem" />
+            <div class="show-copy">
+              <Skeleton width="12rem" height="1em" />
+              <Skeleton width="8rem" height="0.8em" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function SettingsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading settings">
+      <Skeleton width="10rem" height="1.2em" />
+      <div style={{ marginTop: "16px" }}>
+        <Skeleton width="100%" height="2.5em" />
+        <div style={{ marginTop: "8px" }}>
+          <Skeleton width="100%" height="2.5em" />
+        </div>
+        <div style={{ marginTop: "8px" }}>
+          <Skeleton width="100%" height="8rem" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SeriesDetailSkeleton() {
   return (
-    <div data-testid="series-detail-skeleton">
+    <div data-testid="series-detail-skeleton" role="status" aria-label="Loading show">
       <Skeleton width="16rem" height="1.6em" />
       <div class="series-row-meta" style={{ margin: "12px 0 24px" }}>
         <Skeleton width="22rem" height="0.8em" />

@@ -1,29 +1,88 @@
 import { describe, expect, it } from "vitest";
-import { addTvdbSkip, applyPackRemapsToSources, applySeasonToEpisode, buildDestMap, countLabel, emptyListMessage, fileStatus, filterCatalogEpisodes, filterSeries, findCatalogEpisode, formatMapsTo, isSeasonOpen, originLabel, packDestSeasonRemaps, parseSeriesPath, remapCandidatesForMissing, remapKind, removeTvdbSkip, seasonDisplayName, seasonFoldMap, seasonHeading, seasonMissingLabel, skippedTvdbRows, slugify, sonarrBadgeLabel, sonarrSeriesUrl, suggestFolder, tvdbSeriesUrl, uniqueNameError } from "./seriesView";
+import {
+  addTvdbSkip,
+  applyPackRemapsToSources,
+  applySeasonToEpisode,
+  buildDestMap,
+  countLabel,
+  emptyListMessage,
+  fileStatus,
+  filterCatalogEpisodes,
+  filterSeries,
+  filterSonarrEpisodes,
+  findCatalogEpisode,
+  formatMapsTo,
+  isSeasonOpen,
+  indexSeriesPosters,
+  missingStatusClass,
+  missingStatusText,
+  originLabel,
+  packDestSeasonRemaps,
+  parseSeriesPath,
+  rankSonarrRecommendations,
+  remapCandidatesForMissing,
+  remapFormDefaults,
+  remapKind,
+  removeTvdbSkip,
+  seasonDisplayName,
+  seasonFillStatus,
+  seasonFoldMap,
+  seasonHeading,
+  seasonMissingLabel,
+  skippedTvdbRows,
+  slugify,
+  seriesPosterUrl,
+  sonarrBadgeLabel,
+  sonarrEpisodeIsOut,
+  sonarrSeriesUrl,
+  suggestFolder,
+  tvdbSeriesUrl,
+  uniqueNameError,
+} from "./seriesView";
 
 describe("slugify", () => {
   it("matches python examples", () => {
     expect(slugify("Game Changer")).toBe("game-changer");
     expect(slugify("Dimension 20")).toBe("dimension-20");
     expect(slugify("  A/B  C!! ")).toBe("a-b-c");
+    expect(slugify("Dimension 20's Adventuring Party")).toBe("dimension-20-s-adventuring-party");
     expect(slugify("---")).toBe("");
+  });
+});
+
+describe("indexSeriesPosters", () => {
+  it("joins queue slugs that used slugify(name) to file-stem show rows", () => {
+    const posters = indexSeriesPosters([
+      {
+        platform: "dropout",
+        slug: "dimension-20-adventuring-party",
+        name: "Dimension 20's Adventuring Party",
+        poster_url: "/api/series/dropout/dimension-20-adventuring-party/poster",
+      },
+    ]);
+    expect(
+      seriesPosterUrl(
+        posters,
+        "dropout",
+        "dimension-20-s-adventuring-party",
+        "Dimension 20's Adventuring Party",
+      ),
+    ).toBe("/api/series/dropout/dimension-20-adventuring-party/poster");
   });
 });
 
 describe("suggestFolder", () => {
   it("adds tvdb suffix when set", () => {
     expect(suggestFolder("Dimension 20", null)).toBe("Dimension 20");
-    expect(suggestFolder("Dimension 20", 354216)).toBe(
-      "Dimension 20 [tvdbid=354216]",
-    );
+    expect(suggestFolder("Dimension 20", 354216)).toBe("Dimension 20 [tvdbid=354216]");
   });
 });
 
 describe("uniqueNameError", () => {
   it("detects case-insensitive duplicates", () => {
-    expect(
-      uniqueNameError("game changer", [{ name: "Game Changer", slug: "x" }]),
-    ).toBe("A series named Game Changer already exists");
+    expect(uniqueNameError("game changer", [{ name: "Game Changer", slug: "x" }])).toBe(
+      "A series named Game Changer already exists",
+    );
     expect(uniqueNameError("New", [{ name: "Other" }])).toBeNull();
   });
 });
@@ -35,6 +94,10 @@ describe("parseSeriesPath", () => {
       slug: "dimension-20",
     });
     expect(parseSeriesPath("/")).toBeNull();
+    expect(parseSeriesPath("/series/dropout/game%20changer")).toEqual({
+      platform: "dropout",
+      slug: "game changer",
+    });
   });
 });
 
@@ -88,19 +151,20 @@ describe("filterSeries", () => {
 
   it("filters by platform and query", () => {
     expect(filterSeries(rows, { platform: "youtube" })).toHaveLength(1);
-    expect(filterSeries(rows, { query: "alpha" })[0].slug).toBe("a");
+    expect(filterSeries(rows, { query: "alpha" })[0]?.slug).toBe("a");
   });
 });
 
 describe("seasonFoldMap", () => {
-  it("sets every season and defaults open", () => {
+  it("sets every season and defaults closed", () => {
     const sources = [{ seasons: [1, 2] }, { seasons: [3] }];
     expect(seasonFoldMap(sources, false)).toEqual({
       "0-0": false,
       "0-1": false,
       "1-0": false,
     });
-    expect(isSeasonOpen({}, 0, 0)).toBe(true);
+    expect(isSeasonOpen({}, 0, 0)).toBe(false);
+    expect(isSeasonOpen({ "0-0": true }, 0, 0)).toBe(true);
     expect(isSeasonOpen({ "0-0": false }, 0, 0)).toBe(false);
   });
 });
@@ -122,9 +186,77 @@ describe("seasonMissingLabel", () => {
   });
 });
 
+describe("missing status copy", () => {
+  it("uses one missing label and color class", () => {
+    expect(missingStatusText(0)).toBe("Up to date");
+    expect(missingStatusText(3)).toBe("3 missing");
+    expect(missingStatusClass(0)).toBe("is-ok");
+    expect(missingStatusClass(3)).toBe("is-new");
+    expect(missingStatusText(null)).toBeNull();
+  });
+});
+
+describe("sonarrEpisodeIsOut", () => {
+  it("ignores TBA titles and future air dates", () => {
+    expect(sonarrEpisodeIsOut("TBA", null, "2026-09-21")).toBe(false);
+    expect(sonarrEpisodeIsOut("tbd", "2020-01-01", "2026-09-21")).toBe(false);
+    expect(sonarrEpisodeIsOut("Pilot", "2026-09-22", "2026-09-21")).toBe(false);
+    expect(sonarrEpisodeIsOut("Pilot", "2026-09-21", "2026-09-21")).toBe(true);
+    expect(sonarrEpisodeIsOut("Cut for Time", null, "2026-09-21")).toBe(true);
+  });
+});
+
+describe("sonarr remap search", () => {
+  const episodes = [
+    { season: 1, episode: 2, title: "Pilot" },
+    { season: 3, episode: 11, title: "Slug Eater" },
+    { season: 0, episode: 4, title: "TBA" },
+  ];
+
+  it("filters by code, number, and title", () => {
+    expect(filterSonarrEpisodes(episodes, "S03E11")).toEqual([episodes[1]]);
+    expect(filterSonarrEpisodes(episodes, "e2")).toEqual([episodes[0]]);
+    expect(filterSonarrEpisodes(episodes, "slug")).toEqual([episodes[1]]);
+  });
+
+  it("ranks suggestions, current slot, and episode-number hits", () => {
+    const ranked = rankSonarrRecommendations(episodes, [episodes[2]!], {
+      title: "Slug",
+      mapped_season: 1,
+      mapped_episode: 2,
+      source_episode: 11,
+    });
+    expect(ranked.map((row) => `${row.season}-${row.episode}`)).toEqual(["0-4", "1-2", "3-11"]);
+  });
+});
+
+describe("remapFormDefaults", () => {
+  it("prefills Emby season, episode, and title from the applied mapping", () => {
+    expect(
+      remapFormDefaults({
+        title: "Dropout Title",
+        mapped_title: "Sonarr Title",
+        mapped_season: 7,
+        mapped_episode: 3,
+      }),
+    ).toEqual({ toSeason: "7", toEpisode: "3", title: "Sonarr Title" });
+  });
+
+  it("leaves dest fields empty when unmapped", () => {
+    expect(
+      remapFormDefaults({
+        title: "Loose",
+        mapped_title: null,
+        mapped_season: null,
+        mapped_episode: null,
+      }),
+    ).toEqual({ toSeason: "", toEpisode: "", title: "Loose" });
+  });
+});
+
 describe("emptyListMessage", () => {
   it("distinguishes empty catalog from a failed filter", () => {
-    expect(emptyListMessage(0, 0)).toBe("No series yet.");
+    expect(emptyListMessage(0, 0)).toBe("No series yet");
     expect(emptyListMessage(3, 0)).toBe("No matching series.");
     expect(emptyListMessage(3, 2)).toBe("");
   });
@@ -143,10 +275,7 @@ describe("applySeasonToEpisode", () => {
   };
 
   it("marks only_episodes gaps as skipped", () => {
-    const next = applySeasonToEpisode(
-      { only_episodes: [1], remaps: [], skip_ids: [] },
-      base,
-    );
+    const next = applySeasonToEpisode({ only_episodes: [1], remaps: [], skip_ids: [] }, base);
     expect(next.skipped).toBe(true);
   });
 
@@ -190,7 +319,7 @@ describe("addTvdbSkip", () => {
     const first = addTvdbSkip([], 0, 12);
     expect(first).toEqual([{ season: 0, episodes: [12] }]);
     const second = addTvdbSkip(first, 0, 3);
-    expect(second[0].episodes).toEqual([3, 12]);
+    expect(second[0]?.episodes).toEqual([3, 12]);
   });
 });
 
@@ -219,30 +348,18 @@ describe("skippedTvdbRows", () => {
 describe("fileStatus", () => {
   const disk = new Set(["1-1"]);
   it("prefers skipped then disk presence", () => {
-    expect(
-      fileStatus(
-        { skipped: true, mapped_season: 1, mapped_episode: 1 },
-        disk,
-      ),
-    ).toBe("skipped");
-    expect(
-      fileStatus(
-        { skipped: false, mapped_season: 1, mapped_episode: 1 },
-        disk,
-      ),
-    ).toBe("downloaded");
-    expect(
-      fileStatus(
-        { skipped: false, mapped_season: 1, mapped_episode: 2 },
-        disk,
-      ),
-    ).toBe("missing");
-    expect(
-      fileStatus(
-        { skipped: false, mapped_season: null, mapped_episode: null },
-        disk,
-      ),
-    ).toBe("unmapped");
+    expect(fileStatus({ skipped: true, mapped_season: 1, mapped_episode: 1 }, disk)).toBe(
+      "skipped",
+    );
+    expect(fileStatus({ skipped: false, mapped_season: 1, mapped_episode: 1 }, disk)).toBe(
+      "downloaded",
+    );
+    expect(fileStatus({ skipped: false, mapped_season: 1, mapped_episode: 2 }, disk)).toBe(
+      "missing",
+    );
+    expect(fileStatus({ skipped: false, mapped_season: null, mapped_episode: null }, disk)).toBe(
+      "unmapped",
+    );
   });
 });
 
@@ -279,9 +396,7 @@ describe("catalog remap helpers", () => {
     mapped_episode: 11,
     mapped_title: "Slug Eater",
   };
-  const catalog = [
-    { sourceId: 0, seasonId: 0, season, episode },
-  ];
+  const catalog = [{ sourceId: 0, seasonId: 0, season, episode }];
 
   it("finds a dropout listing", () => {
     expect(findCatalogEpisode(catalog, 4, 11)?.episode.id).toBe("11");
@@ -300,7 +415,7 @@ describe("catalog remap helpers", () => {
       ],
     });
     expect(rows).toHaveLength(1);
-    expect(rows[0].episode.title).toBe("Slug Eater");
+    expect(rows[0]?.episode.title).toBe("Slug Eater");
   });
 
   it("filters the catalog by title and episode number", () => {
@@ -312,15 +427,11 @@ describe("catalog remap helpers", () => {
 
 describe("external series urls", () => {
   it("builds tvdb and sonarr links", () => {
-    expect(tvdbSeriesUrl(361151)).toBe(
-      "https://thetvdb.com/dereferrer/series/361151",
-    );
+    expect(tvdbSeriesUrl(361151)).toBe("https://thetvdb.com/dereferrer/series/361151");
     expect(sonarrSeriesUrl("http://sonarr:8989/", "game-changer", 361151)).toBe(
       "http://sonarr:8989/series/game-changer",
     );
-    expect(sonarrSeriesUrl("http://sonarr:8989", null, 361151)).toContain(
-      "tvdb%3A361151",
-    );
+    expect(sonarrSeriesUrl("http://sonarr:8989", null, 361151)).toContain("tvdb%3A361151");
   });
 });
 
@@ -364,15 +475,21 @@ describe("dest-order map", () => {
   }));
 
   it("colors remaps and leaves dest holes after specials", () => {
-    expect(remapKind(season, catalog[1].episode)).toBe("other-season");
-    expect(remapKind(season, catalog[2].episode)).toBe("default");
-    expect(originLabel(catalog[0])).toBe("Dropout 3 · E1");
+    expect(remapKind(season, catalog[1]!.episode)).toBe("other-season");
+    expect(remapKind(season, catalog[2]!.episode)).toBe("default");
+    expect(originLabel(catalog[0]!)).toBe("Dropout 3 · E1");
+    expect(
+      originLabel({
+        ...catalog[0]!,
+        sourceUrl: "https://www.dropout.tv/smartypants",
+      }),
+    ).toBe("Dropout 3 · E1 · www.dropout.tv/smartypants");
 
     const dest = buildDestMap(catalog, sonarr, new Set());
     const s3 = dest.seasons.find((group) => group.destSeason === 3);
     const specials = dest.seasons.find((group) => group.destSeason === 0);
     expect(s3?.holes).toBe(2);
-    expect(s3?.packable).toBe(true);
+    expect(s3?.packable).toBe(false);
     expect(s3?.slots.map((slot) => [slot.destEpisode, slot.occupants.length])).toEqual([
       [1, 1],
       [2, 0],
@@ -381,9 +498,18 @@ describe("dest-order map", () => {
       [5, 1],
     ]);
     expect(specials?.slots.map((slot) => slot.destEpisode)).toEqual([2, 4]);
-    expect(specials?.slots.every((slot) => slot.occupants[0]?.kind === "other-season")).toBe(
-      true,
-    );
+    expect(specials?.slots.every((slot) => slot.occupants[0]?.kind === "other-season")).toBe(true);
+  });
+
+  it("does not treat TBA or unaired Sonarr rows as dest holes", () => {
+    const dest = buildDestMap(catalog, [
+      ...sonarr,
+      { season: 3, episode: 6, title: "TBA" },
+      { season: 3, episode: 7, title: "Next Week", air_date: "2099-01-01" },
+    ], new Set());
+    const s3 = dest.seasons.find((group) => group.destSeason === 3);
+    expect(s3?.slots.map((slot) => slot.destEpisode)).toEqual([1, 2, 3, 4, 5]);
+    expect(s3?.holes).toBe(2);
   });
 
   it("packs remaining native listings into consecutive dest numbers", () => {
@@ -420,7 +546,7 @@ describe("dest-order map", () => {
       ],
       changes,
     );
-    const packedSeason = packedSources[0].seasons[0];
+    const packedSeason = packedSources[0]!.seasons[0]!;
     expect(packedSeason.remaps).toEqual([
       { dropout_episode: 2, to_season: 0, to_episode: 2, title: "Special A" },
       { dropout_episode: 4, to_season: 0, to_episode: 4, title: "Special B" },
@@ -437,14 +563,22 @@ describe("dest-order map", () => {
         title: "Episode 5",
       },
     ]);
-    expect(remapKind(packedSeason, catalog[2].episode)).toBe("same-season");
+    expect(remapKind(packedSeason, catalog[2]!.episode)).toBe("same-season");
 
     const packedCatalog = catalog.map((row) => ({ ...row, season: packedSeason }));
     const dest = buildDestMap(packedCatalog, sonarr, new Set());
     const s3 = dest.seasons.find((group) => group.destSeason === 3);
-    expect(s3?.slots.filter((slot) => slot.occupants.length > 0).map((slot) => slot.destEpisode)).toEqual(
-      [1, 2, 3],
-    );
+    expect(
+      s3?.slots.filter((slot) => slot.occupants.length > 0).map((slot) => slot.destEpisode),
+    ).toEqual([1, 2, 3]);
     expect(s3?.packable).toBe(false);
+  });
+
+  it("does not count tvdb_skip slots as dest holes", () => {
+    const dest = buildDestMap(catalog, sonarr, new Set(), [{ season: 3, episodes: [2, 4] }]);
+    const s3 = dest.seasons.find((group) => group.destSeason === 3);
+    expect(s3?.holes).toBe(0);
+    expect(s3?.slots.find((slot) => slot.destEpisode === 2)?.skipped).toBe(true);
+    expect(seasonFillStatus(s3!)).toBe("empty");
   });
 });

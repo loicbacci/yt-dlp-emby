@@ -1,0 +1,16 @@
+{
+  "name": "yt-dlp-emby",
+  "short_name": "yt-dlp-emby",
+  "description": "Local admin UI for yt-dlp-emby",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121015",
+  "theme_color": "#121015",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

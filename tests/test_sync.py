@@ -17,7 +17,9 @@ def _playlist(*episodes: EpisodeInfo) -> PlaylistInfo:
     )
 
 
-def _ep(video_id: str, index: int, title: str = "T", duration: float = 60, filesize: int = 100) -> EpisodeInfo:
+def _ep(
+    video_id: str, index: int, title: str = "T", duration: float = 60, filesize: int = 100
+) -> EpisodeInfo:
     return EpisodeInfo(
         video_id=video_id,
         title=title,
@@ -38,7 +40,9 @@ def _record(*episodes: EpisodeRecord) -> PlaylistRecord:
     )
 
 
-def _stored(video_id: str, episode: int, duration: float = 60, filesize: int = 100) -> EpisodeRecord:
+def _stored(
+    video_id: str, episode: int, duration: float = 60, filesize: int = 100
+) -> EpisodeRecord:
     return EpisodeRecord(
         video_id=video_id,
         episode=episode,
@@ -128,3 +132,64 @@ def test_rename_episode_files(tmp_path: Path) -> None:
     assert (season / f"{new}.mkv").is_file()
     assert (season / f"{new}.nfo").is_file()
     assert not (season / f"{old}.mkv").exists()
+
+
+def test_apply_renames_recovers_tmp_prefix(tmp_path: Path) -> None:
+    from yt_dlp_emby.library import RENAME_TMP_PREFIX
+    from yt_dlp_emby.sync import apply_renames
+
+    season = tmp_path / "Season 1"
+    season.mkdir()
+    final = "Example Channel - S01E01 - T"
+    tmp = season / f"{RENAME_TMP_PREFIX}{final}.mkv"
+    tmp.write_bytes(b"vid")
+    apply_renames(season, [])
+    assert (season / f"{final}.mkv").is_file()
+    assert not tmp.exists()
+
+
+def test_recover_rename_temps_without_apply_renames(tmp_path: Path) -> None:
+    from yt_dlp_emby.library import RENAME_TMP_PREFIX
+    from yt_dlp_emby.sync import recover_rename_temps
+
+    season = tmp_path / "Season 1"
+    season.mkdir()
+    final = "Show - S01E01 - Title"
+    tmp = season / f"{RENAME_TMP_PREFIX}{final}.mkv"
+    tmp.write_bytes(b"vid")
+    recover_rename_temps(season)
+    assert (season / f"{final}.mkv").is_file()
+    assert not tmp.exists()
+
+
+def test_filesize_jitter_under_thresholds_is_refresh() -> None:
+    from yt_dlp_emby.sync import content_changed
+
+    stored = _stored("a", 1, filesize=100 * 1024 * 1024)
+    live = _ep("a", 1, filesize=102 * 1024 * 1024)
+    assert content_changed(stored, live) is False
+    plan = plan_sync(_playlist(live), _record(stored), season=1)
+    assert plan[0].kind == ActionKind.REFRESH
+
+
+def test_filesize_jump_over_thresholds_is_replace() -> None:
+    from yt_dlp_emby.sync import content_changed
+
+    stored = _stored("a", 1, filesize=100 * 1024 * 1024)
+    live = _ep("a", 1, filesize=200 * 1024 * 1024)
+    assert content_changed(stored, live) is True
+    plan = plan_sync(_playlist(live), _record(stored), season=1)
+    assert plan[0].kind == ActionKind.REPLACE
+
+
+def test_remove_keeps_old_season_from_stored() -> None:
+    stored = _stored("gone", 2)
+    stored.season = 4
+    plan = plan_sync(
+        _playlist(_ep("a", 1)),
+        _record(_stored("a", 1), stored),
+        season=1,
+    )
+    removed = next(action for action in plan if action.kind == ActionKind.REMOVE)
+    assert removed.old_season == 4
+    assert removed.video_id == "gone"

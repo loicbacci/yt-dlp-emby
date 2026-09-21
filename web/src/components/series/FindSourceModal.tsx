@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useMemo, useRef, useState } from "preact/hooks";
 import type { DropoutCheckHint } from "../../api";
+import { useModal } from "../../hooks/useModal";
 import {
+  type CatalogEpisode,
   applySeasonToEpisode,
   catalogEpisodeKey,
   filterCatalogEpisodes,
   formatMapsTo,
-  type CatalogEpisode,
+  shortUrl,
 } from "../../seriesView";
 import { EpisodeTableSkeleton } from "../Skeleton";
 
@@ -30,32 +32,13 @@ export function FindSourceModal({
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<CatalogEpisode | null>(null);
 
-  useEffect(() => {
-    searchRef.current?.focus();
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = previous;
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+  const dialogRef = useModal<HTMLFormElement>(true, onClose, {
+    initialRef: searchRef as unknown as import("preact").RefObject<HTMLElement | null>,
+  });
 
   const slot = formatMapsTo(target.season, target.episode);
-  const filtered = useMemo(
-    () => filterCatalogEpisodes(catalog, query),
-    [catalog, query],
-  );
-  const suggestedKeys = useMemo(
-    () => new Set(suggestions.map(catalogEpisodeKey)),
-    [suggestions],
-  );
+  const filtered = useMemo(() => filterCatalogEpisodes(catalog, query), [catalog, query]);
+  const suggestedKeys = useMemo(() => new Set(suggestions.map(catalogEpisodeKey)), [suggestions]);
   const searching = Boolean(query.trim());
   const visibleSuggestions = useMemo(() => {
     const allowed = new Set(filtered.map(catalogEpisodeKey));
@@ -63,9 +46,7 @@ export function FindSourceModal({
   }, [suggestions, filtered]);
   const browseRows = useMemo(() => {
     if (searching) return filtered;
-    return filtered.filter(
-      (row) => !suggestedKeys.has(catalogEpisodeKey(row)),
-    );
+    return filtered.filter((row) => !suggestedKeys.has(catalogEpisodeKey(row)));
   }, [filtered, searching, suggestedKeys]);
   const groups = useMemo(() => groupBySeason(browseRows), [browseRows]);
   const otherHints = hints.filter((hint) => hint.kind !== "origin");
@@ -73,6 +54,7 @@ export function FindSourceModal({
   return (
     <div class="modal-backdrop" role="presentation" onClick={onClose}>
       <form
+        ref={dialogRef}
         class="modal remap-modal find-source-modal"
         role="dialog"
         aria-modal="true"
@@ -91,8 +73,7 @@ export function FindSourceModal({
           {slot} {target.title}
         </p>
         <p class="settings-hint">
-          This Sonarr slot has no file. Pick the Dropout episode that should map
-          here.
+          This Sonarr slot has no file. Pick the Dropout episode that should map here.
         </p>
         {otherHints.length > 0 && (
           <p class="settings-hint">{otherHints.map((hint) => hint.text).join(" · ")}</p>
@@ -104,9 +85,7 @@ export function FindSourceModal({
             type="search"
             value={query}
             placeholder="Title, E number, or season"
-            onInput={(e) =>
-              setQuery((e.currentTarget as HTMLInputElement).value)
-            }
+            onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
           />
         </label>
         {loading && filtered.length === 0 ? (
@@ -145,9 +124,7 @@ export function FindSourceModal({
                         key={catalogEpisodeKey(row)}
                         row={row}
                         selected={isPicked(picked, row)}
-                        suggested={
-                          !searching && suggestedKeys.has(catalogEpisodeKey(row))
-                        }
+                        suggested={!searching && suggestedKeys.has(catalogEpisodeKey(row))}
                         onSelect={setPicked}
                         onConfirm={() => onSave(row)}
                       />
@@ -163,9 +140,7 @@ export function FindSourceModal({
             Cancel
           </button>
           <button type="submit" class="btn-modal-save" disabled={!picked}>
-            {picked
-              ? `Map E${picked.episode.source_episode} here`
-              : "Map episode here"}
+            {picked ? `Map E${picked.episode.source_episode} here` : "Map episode here"}
           </button>
         </div>
       </form>
@@ -198,14 +173,15 @@ function SourcePickButton({
   return (
     <button
       type="button"
-      class={[selected && "is-selected", suggested && "is-suggested"]
-        .filter(Boolean)
-        .join(" ")}
+      class={[selected && "is-selected", suggested && "is-suggested"].filter(Boolean).join(" ")}
       onClick={() => onSelect(row)}
       onDblClick={onConfirm}
     >
       <span class="maps-to">E{row.episode.source_episode}</span> {row.episode.title}
-      <span class="run-meta">currently {mapsTo}</span>
+      <span class="run-meta">
+        currently {mapsTo}
+        {row.sourceUrl ? ` · ${shortUrl(row.sourceUrl)}` : ""}
+      </span>
     </button>
   );
 }
@@ -219,15 +195,17 @@ function groupBySeason(
     const key = `${row.sourceId}-${row.seasonId}`;
     const existing = index.get(key);
     if (existing != null) {
-      groups[existing].rows.push(row);
+      const group = groups[existing];
+      if (group) group.rows.push(row);
       continue;
     }
     index.set(key, groups.length);
-    const dropout =
-      row.season.dropout != null ? `Dropout ${row.season.dropout}` : "";
+    const dropout = row.season.dropout != null ? `Dropout ${row.season.dropout}` : "";
+    const url = row.sourceUrl ? shortUrl(row.sourceUrl) : "";
+    const bits = [row.season.label, dropout, url].filter(Boolean);
     groups.push({
       key,
-      label: dropout ? `${row.season.label} · ${dropout}` : row.season.label,
+      label: bits.join(" · "),
       rows: [row],
     });
   }

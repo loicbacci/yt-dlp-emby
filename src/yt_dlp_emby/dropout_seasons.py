@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urljoin, urlparse
+
+from yt_dlp_emby.config import ConfigError
 
 _SEASON_IN_PATH = re.compile(r"/season:(\d+)(?:/|$)")
 _SEASON_HREF = re.compile(r"/season:(\d+)")
@@ -38,9 +39,14 @@ def probe_season_urls(
     misses = 0
     for number in range(1, max_season + 1):
         url = f"{catalog.rstrip('/')}/season:{number}"
+        from yt_dlp_emby.server.series_discover import assert_public_catalog_url
+
         try:
+            assert_public_catalog_url(
+                url
+            )  # accepted risk: single-resolution + redirect guard, no IP pinning
             html = fetch_html(url)
-        except OSError:
+        except (OSError, ConfigError):
             misses += 1
         else:
             if html and len(html) > 200:
@@ -59,6 +65,11 @@ def discover_dropout_seasons(
     fetch_html,
 ) -> list[dict[str, object]]:
     catalog, lone = normalize_dropout_catalog_url(url)
+    from yt_dlp_emby.server.series_discover import assert_public_catalog_url
+
+    assert_public_catalog_url(
+        catalog
+    )  # accepted risk: single-resolution + redirect guard, no IP pinning
     if lone is not None:
         return [
             {

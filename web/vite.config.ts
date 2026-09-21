@@ -3,8 +3,9 @@ import preact from "@preact/preset-vite";
 
 export default defineConfig({
   plugins: [preact()],
+  base: "./",
   build: {
-    outDir: "../src/yt_dlp_emby/server/static",
+    outDir: "dist",
     emptyOutDir: true,
   },
   server: {
@@ -14,12 +15,17 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
+        // Infinite timeout is intentional so SSE (/api/runs/log, /api/runs/events) is not cut off.
         timeout: 0,
         proxyTimeout: 0,
       },
     },
   },
   test: {
-    environment: "node",
+    environment: "jsdom",
+    coverage: {
+      provider: "v8",
+      thresholds: { lines: 70 },
+    },
   },
 });

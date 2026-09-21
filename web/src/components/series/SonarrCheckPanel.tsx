@@ -1,8 +1,8 @@
 import type { DropoutCheck } from "../../api";
-import { formatMapsTo } from "../../seriesView";
-import { EpisodeTable } from "./EpisodeTable";
-import { EpisodeTableSkeleton } from "../Skeleton";
 import type { SeriesDetail } from "../../api";
+import { formatMapsTo, sonarrBadgeLabel } from "../../seriesView";
+import { EpisodeTableSkeleton } from "../Skeleton";
+import { EpisodeTable } from "./EpisodeTable";
 
 export function SonarrCheckPanel({
   detail,
@@ -23,19 +23,27 @@ export function SonarrCheckPanel({
   const warnings = check?.warnings ?? [];
   const names = check?.title_mismatches ?? [];
   const ok = Boolean(check?.ok);
+  const badge = sonarrBadgeLabel(check);
 
   return (
     <section class="settings-section" id="sonarr-check">
       <h2 class="settings-heading sonarr-check-heading">
         Gaps vs Sonarr
         {loading && <span class="spinner" role="status" aria-label="Checking Sonarr" />}
+        {!loading && badge && (
+          <span class={`badge-sonarr ${badge === "ok" ? "is-ok" : "is-new"}`}>
+            {badge === "ok" ? "Up to date" : badge}
+          </span>
+        )}
       </h2>
       <p class="settings-section-lead">
         Sonarr episodes with no file in {detail.path || "this library folder"}.
       </p>
       {loading && <EpisodeTableSkeleton rows={5} />}
       {checkError && !loading && (
-        <p class="settings-hint">{checkError}</p>
+        <div class="validation-error" role="alert">
+          {checkError}
+        </div>
       )}
       {!loading && check && ok && missing.length === 0 && (
         <p class="settings-check-ok">Mapped. Nothing missing.</p>
@@ -51,11 +59,7 @@ export function SonarrCheckPanel({
             status: "missing" as const,
             actions: (
               <>
-                <button
-                  type="button"
-                  class="btn-ghost"
-                  onClick={() => onRemap(row)}
-                >
+                <button type="button" class="btn-ghost" onClick={() => onRemap(row)}>
                   Find episode
                 </button>
                 <button
@@ -74,8 +78,8 @@ export function SonarrCheckPanel({
         <div class="sonarr-notes">
           <h3 class="settings-heading">Warnings</h3>
           <ul class="skip-list">
-            {warnings.map((row) => (
-              <li key={row.code} class="skip-list-row">
+            {warnings.map((row, index) => (
+              <li key={`${row.code}-${row.detail}-${index}`} class="skip-list-row">
                 <span>
                   {row.code} {row.detail}
                 </span>
@@ -88,8 +92,8 @@ export function SonarrCheckPanel({
         <div class="sonarr-notes">
           <h3 class="settings-heading">On-disk title differs</h3>
           <ul class="skip-list">
-            {names.map((row) => (
-              <li key={row.code} class="skip-list-row">
+            {names.map((row, index) => (
+              <li key={`${row.code}-${row.file_title}-${index}`} class="skip-list-row">
                 <span>
                   {row.code} {row.file_title}{" "}
                   <span class="run-meta">(Sonarr: {row.sonarr_title})</span>

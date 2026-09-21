@@ -1,5 +1,6 @@
 import type { CookieJar, CookieKind, ManifestPaths, Source } from "../api";
 import { pathNotices } from "../api";
+import { pathHint } from "../formValidation";
 
 const PLATFORM_LABEL: Record<Source, string> = {
   youtube: "YouTube",
@@ -30,12 +31,14 @@ export function PlatformFields({
   onOpenCookies: () => void;
 }) {
   const notices = pathNotices(paths);
-  const cookieStatus = cookieJar?.usable
-    ? "On file"
-    : cookieJar?.exists
-      ? "Empty file"
-      : "Not set";
+  const cookieStatus = cookieJar?.usable ? "On file" : cookieJar?.exists ? "Empty file" : "Not set";
   const cookieClass = cookieJar?.usable ? "status-done" : "";
+  // Env-locked manifest keys are omitted from PUT (omitLockedPlatform) and
+  // shown read-only, mirroring the config tab's locked fields.
+  const libraryLocked = paths?.library?.source === "env";
+  const oldDirLocked = paths?.old_dir?.source === "env";
+  const libraryDisplay = libraryLocked ? (paths?.library?.effective ?? "") : draft.library;
+  const oldDirDisplay = oldDirLocked ? (paths?.old_dir?.effective ?? "") : draft.old_dir;
 
   return (
     <>
@@ -43,29 +46,54 @@ export function PlatformFields({
         Library and old_dir in {`${kind}.yaml`}. Empty uses config fallback.
       </p>
       {notices.map((notice) => (
-        <div key={notice} class="banner banner-warn">{notice}</div>
+        <div
+          key={notice}
+          class={notice.includes("overridden by") ? "banner" : "banner banner-warn"}
+        >
+          {notice}
+        </div>
       ))}
-      <label class="settings-field">
+      <label class={libraryLocked ? "settings-field is-locked" : "settings-field"}>
         <span class="settings-label">Library</span>
         <input
           type="text"
-          value={draft.library}
+          value={libraryDisplay}
+          disabled={libraryLocked}
           spellcheck={false}
           onInput={(e) =>
             onChange({ ...draft, library: (e.currentTarget as HTMLInputElement).value })
           }
         />
+        {pathHint(libraryDisplay) && !libraryLocked && (
+          <span class="settings-hint">{pathHint(libraryDisplay)}</span>
+        )}
+        {libraryLocked && paths?.library?.env_name && (
+          <span class="settings-hint">
+            {paths.library.env_name} overrides this manifest value. Change it in the environment,
+            not here.
+          </span>
+        )}
       </label>
-      <label class="settings-field">
+      <label class={oldDirLocked ? "settings-field is-locked" : "settings-field"}>
         <span class="settings-label">Old / replaced files</span>
         <input
           type="text"
-          value={draft.old_dir}
+          value={oldDirDisplay}
+          disabled={oldDirLocked}
           spellcheck={false}
           onInput={(e) =>
             onChange({ ...draft, old_dir: (e.currentTarget as HTMLInputElement).value })
           }
         />
+        {pathHint(oldDirDisplay) && !oldDirLocked && (
+          <span class="settings-hint">{pathHint(oldDirDisplay)}</span>
+        )}
+        {oldDirLocked && paths?.old_dir?.env_name && (
+          <span class="settings-hint">
+            {paths.old_dir.env_name} overrides this manifest value. Change it in the environment,
+            not here.
+          </span>
+        )}
       </label>
       <label class="settings-field">
         <span class="settings-label">Cookies path</span>
@@ -78,6 +106,7 @@ export function PlatformFields({
             onChange({ ...draft, cookies: (e.currentTarget as HTMLInputElement).value })
           }
         />
+        {pathHint(draft.cookies) && <span class="settings-hint">{pathHint(draft.cookies)}</span>}
       </label>
       <div class="settings-field">
         <div class="settings-cookie-row">
@@ -90,7 +119,9 @@ export function PlatformFields({
           </button>
         </div>
       </div>
-      <p class="settings-hint">{PLATFORM_LABEL[kind]} tab saves only {`${kind}.yaml`}.</p>
+      <p class="settings-hint">
+        {PLATFORM_LABEL[kind]} tab saves only {`${kind}.yaml`}.
+      </p>
     </>
   );
 }

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import shlex
 import signal
 import sys
@@ -14,12 +16,83 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Deque, Mapping
 
+from yt_dlp_emby.cache import atomic_write_private
 from yt_dlp_emby.server.manifests import ALLOWED
+
+logger = logging.getLogger("yt_dlp_emby.server")
 
 MAX_LINES = 10_000
 MAX_BYTES = 1_048_576
 MAX_LINE_LEN = 8192
+MAX_EVENTS = 5_000
+MAX_EVENTS_BYTES = 2_097_152
+MAX_POLL = 500
+RUN_TIMEOUT = 6 * 3600
+# Shared with the API layer: 2 segments (whole series) or 3 (one episode).
+# Deliberately looser than SxxExx so file-stem slugs with spaces/dots pass.
+ITEM_ID_PATTERN = r"^(youtube|dropout)\|[^|]{1,128}(\|[^|]{1,256})?$"
+ONLY_ID_RE = re.compile(ITEM_ID_PATTERN)
+# events.jsonl poll bounds: stat guard + truncate + per-tick slice.
+MAX_EVENTS_FILE_BYTES = 5 * 1024 * 1024
+POLL_READ_BYTES = 1024 * 1024
+POLL_MAX_LINES = 500
+# Legacy suffix denylist, kept for compatibility. The allowlist below is now
+# authoritative: VERBOSE/DEBUG/FORCE_REFETCH are simply not allowlisted, so the
+# server controls child flags explicitly instead of inheriting them from env.
 SCRUB_SUFFIXES = ("VERBOSE", "DEBUG", "FORCE_REFETCH")
+# Secret-looking keys are NEVER passed to the CLI child (child env is visible
+# via /proc to other local users). Matched case-insensitively on any prefix.
+SECRET_KEY_RE = re.compile(r"(?i)(password|token|secret|api[_-]?key)")
+# Operational YT_DLP_EMBY_*/YT_EMBY_* suffixes the child is allowed to see.
+# The child reads library/old_dir/staging via CLI flags built from these, plus
+# EVENTS/ONLY/DATA plumbing. NOTE: SONARR_API_KEY is intentionally absent — an
+# env-configured Sonarr key no longer reaches the child; runs use the key from
+# data-dir config.toml instead.
+CHILD_YT_EMBY_ALLOW = frozenset(
+    {
+        "EVENTS",
+        "ONLY",
+        "DATA",
+        "CONFIG",
+        "LIBRARY",
+        "OLD_DIR",
+        "STAGING",
+        "BENCH_DEST",
+        "SHOWS_DIR",
+        "COOKIES",
+        "SONARR_URL",
+        "FFMPEG",
+    }
+)
+CHILD_ENV_ALLOW = {
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "TZ",
+    "PYTHONPATH",
+    "PYTHONUNBUFFERED",
+    "VIRTUAL_ENV",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "PYTHONHOME",
+    "LD_LIBRARY_PATH",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "UV_CACHE_DIR",
+    "UV_PYTHON",
+}
 SIGINT_WAIT = 5.0
 SIGTERM_WAIT = 2.0
 EVENTS_NAME = "events.jsonl"
@@ -54,23 +127,58 @@ class RunState:
     phase: str = "idle"
     source: str | None = None
     dry_run: bool = False
-    verbose: bool = False
     force: bool = False
     started_at: str | None = None
     finished_at: str | None = None
     exit_code: int | None = None
 
 
+_SECRET_RE = re.compile(r"(?i)(api[_-]?key|password|secret|token|authorization)([=:\s]+)(\S+)")
+
+
+def _redact_line(text: str) -> str:
+    return _SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}***", text)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _elapsed_seconds(started_at: str | None, finished_at: str | None) -> float | None:
+    if not started_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if finished_at:
+        try:
+            finished = datetime.fromisoformat(finished_at)
+        except ValueError:
+            return None
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+    else:
+        finished = datetime.now(timezone.utc)
+    return max(0.0, (finished - started).total_seconds())
+
+
 def _scrub_env(environ: Mapping[str, str]) -> dict[str, str]:
-    out = dict(environ)
-    for key in list(out):
+    out: dict[str, str] = {}
+    for key, value in environ.items():
+        # Secrets first: drop regardless of any allowlist below.
+        if SECRET_KEY_RE.search(key):
+            continue
+        if key in CHILD_ENV_ALLOW or key.startswith("PYTHON"):
+            out[key] = value
+            continue
         for prefix in ("YT_DLP_EMBY_", "YT_EMBY_"):
-            if key.startswith(prefix) and key[len(prefix) :] in SCRUB_SUFFIXES:
-                del out[key]
+            if key.startswith(prefix):
+                if key[len(prefix) :] in CHILD_YT_EMBY_ALLOW:
+                    out[key] = value
+                break
     return out
 
 
@@ -79,7 +187,6 @@ def default_command(
     manifest_path: Path,
     *,
     dry_run: bool,
-    verbose: bool,
     force: bool,
     action: str = "download",
     library: str | None,
@@ -99,8 +206,6 @@ def default_command(
     argv.extend(["--manifest", str(manifest_path)])
     if dry_run and action == "download":
         argv.append("--dry-run")
-    if verbose:
-        argv.append("--verbose")
     if force and source == "dropout" and action == "download":
         argv.append("--force")
     if library:
@@ -112,9 +217,7 @@ def default_command(
     return argv
 
 
-def format_spawn_command(
-    argv: list[str], extra_env: Mapping[str, str] | None = None
-) -> str:
+def format_spawn_command(argv: list[str], extra_env: Mapping[str, str] | None = None) -> str:
     parts = [f"{key}={shlex.quote(value)}" for key, value in (extra_env or {}).items()]
     parts.append(shlex.join(argv))
     return "$ " + " ".join(parts)
@@ -132,8 +235,7 @@ def sources_for_download(ids: list[str] | None, plan: dict[str, Any]) -> list[st
             if block.get("ok") is False:
                 continue
             pending = any(
-                item.get("action") in {"download", "replace"}
-                for item in block.get("items") or []
+                item.get("action") in {"download", "replace"} for item in block.get("items") or []
             )
             if pending:
                 out.append(name)
@@ -181,7 +283,8 @@ class RunManager:
         self._line_bytes = 0
         self._next_n = 1
         self._partial = ""
-        self._events: Deque[RunEvent] = deque()
+        self._events: Deque[RunEvent] = deque(maxlen=MAX_EVENTS)
+        self._event_bytes = 0
         self._next_event_n = 1
         self._events_path = self.data_dir / EVENTS_NAME
         self._events_offset = 0
@@ -191,9 +294,32 @@ class RunManager:
         self._halt_queue = False
         self._only_path: Path | None = None
         self._run_phase = "idle"
+        self._maintenance_holders = 0
+
+    async def try_acquire_maintenance(self) -> bool:
+        """Atomically fail when a run is active, else hold off new run starts.
+
+        Replaces the check-then-act `snapshot()` status peek: the decision and
+        the hold happen under one lock acquisition, and `_start_queue`/`start`
+        refuse while any hold is outstanding. Also refuses while queued jobs
+        remain so a plan+download chain can't interleave with an edit.
+        """
+        async with self._lock:
+            if self._state.status in {"running", "stopping"}:
+                return False
+            if self._pending_jobs:
+                return False
+            self._maintenance_holders += 1
+            return True
+
+    async def release_maintenance(self) -> None:
+        async with self._lock:
+            self._maintenance_holders = max(0, self._maintenance_holders - 1)
 
     def snapshot(self) -> dict[str, Any]:
-        plan = load_plan_file(self.data_dir)
+        from yt_dlp_emby.server.plan_series import load_live_plan
+
+        plan = load_live_plan(self.data_dir, self._environ)
         plan_summary: dict[str, Any] | None = None
         if plan is not None:
             plan_summary = {
@@ -206,10 +332,13 @@ class RunManager:
             "phase": self._state.phase,
             "source": self._state.source,
             "dry_run": self._state.dry_run,
-            "verbose": self._state.verbose,
+            # Deprecated: the runner never passes --verbose; kept for the web
+            # client's runSchema (web/src/types.ts), which requires the key.
+            "verbose": False,
             "force": self._state.force,
             "started_at": self._state.started_at,
             "finished_at": self._state.finished_at,
+            "elapsed": _elapsed_seconds(self._state.started_at, self._state.finished_at),
             "exit_code": self._state.exit_code,
             "plan": plan_summary,
             "progress": self._last_progress,
@@ -219,7 +348,8 @@ class RunManager:
         return [item for item in self._lines if item.n > after]
 
     def events_after(self, after: int) -> list[RunEvent]:
-        return [item for item in self._events if item.n > after]
+        items = [item for item in self._events if item.n > after]
+        return items[:MAX_POLL]
 
     def _clear_buffer(self) -> None:
         self._lines.clear()
@@ -229,13 +359,14 @@ class RunManager:
 
     def _clear_events(self) -> None:
         self._events.clear()
+        self._event_bytes = 0
         self._events_offset = 0
         self._events_partial = ""
         self._last_progress = None
         self._events_path.unlink(missing_ok=True)
 
     def _append_line(self, text: str) -> None:
-        line = text[:MAX_LINE_LEN]
+        line = _redact_line(text[:MAX_LINE_LEN])
         size = len(line.encode("utf-8")) + 1
         while self._lines and self._line_bytes + size > MAX_BYTES:
             old = self._lines.popleft()
@@ -248,8 +379,17 @@ class RunManager:
         self._line_bytes += size
 
     def _append_event(self, payload: dict[str, Any]) -> None:
+        encoded = len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) + 1
+        while self._events and (
+            self._event_bytes + encoded > MAX_EVENTS_BYTES or len(self._events) >= MAX_EVENTS
+        ):
+            old = self._events.popleft()
+            self._event_bytes -= (
+                len(json.dumps(old.event, separators=(",", ":")).encode("utf-8")) + 1
+            )
         self._events.append(RunEvent(n=self._next_event_n, event=payload))
         self._next_event_n += 1
+        self._event_bytes += encoded
         kind = payload.get("event")
         if kind in {"progress", "item_done", "series"}:
             self._last_progress = payload
@@ -266,16 +406,41 @@ class RunManager:
             self._partial = ""
 
     def _poll_events_file(self) -> None:
-        if not self._events_path.is_file():
+        try:
+            size = self._events_path.stat().st_size
+        except OSError:
             return
-        raw = self._events_path.read_bytes()
-        if len(raw) <= self._events_offset and not self._events_partial:
+        if size > MAX_EVENTS_FILE_BYTES:
+            # Bound disk + memory: drop the backlog rather than tail a giant file.
+            try:
+                with open(self._events_path, "r+b") as handle:
+                    handle.truncate(0)
+            except OSError:
+                return
+            self._events_offset = 0
+            self._events_partial = ""
             return
-        chunk = raw[self._events_offset :]
-        self._events_offset = len(raw)
+        if size < self._events_offset:
+            # File was replaced under us; start over instead of seeking past EOF.
+            self._events_offset = 0
+            self._events_partial = ""
+        if size <= self._events_offset:
+            return
+        try:
+            with open(self._events_path, "rb") as handle:
+                handle.seek(self._events_offset)
+                chunk = handle.read(POLL_READ_BYTES)
+        except OSError:
+            return
+        self._events_offset += len(chunk)
         text = self._events_partial + chunk.decode("utf-8", errors="replace")
         lines = text.split("\n")
         self._events_partial = lines.pop() if lines else ""
+        if len(lines) > POLL_MAX_LINES:
+            # Offset already advanced: stash the overflow for the next tick.
+            rest = lines[POLL_MAX_LINES:]
+            lines = lines[:POLL_MAX_LINES]
+            self._events_partial = "\n".join(rest) + "\n" + self._events_partial
         for line in lines:
             line = line.strip()
             if not line:
@@ -344,7 +509,20 @@ class RunManager:
         if self._partial:
             self._append_line(self._partial)
             self._partial = ""
-        code = await proc.wait()
+        try:
+            code = await asyncio.wait_for(proc.wait(), timeout=RUN_TIMEOUT)
+            timed_out = False
+        except TimeoutError:
+            timed_out = True
+            logger.warning("run exceeded RUN_TIMEOUT=%ss; terminating", RUN_TIMEOUT)
+            self._signal_pid(proc.pid, signal.SIGTERM)
+            try:
+                code = await asyncio.wait_for(proc.wait(), timeout=SIGTERM_WAIT)
+            except TimeoutError:
+                self._signal_pid(proc.pid, signal.SIGKILL)
+                code = await proc.wait()
+        if timed_out:
+            code = 124
         watcher = self._event_task
         if watcher is not None:
             watcher.cancel()
@@ -354,13 +532,31 @@ class RunManager:
                 pass
         self._poll_events_file()
         continue_queue = False
+        source = None
+        dry_run = False
+        only_path = None
         async with self._lock:
+            source = self._state.source
+            dry_run = self._state.dry_run
+            only_path = self._only_path
             self._mark_exited(proc, code)
             continue_queue = (
-                not self._halt_queue
-                and bool(self._pending_jobs)
-                and self._state.status == "exited"
+                not self._halt_queue and bool(self._pending_jobs) and self._state.status == "exited"
             )
+        if source in {"dropout", "youtube"}:
+            try:
+                from yt_dlp_emby.server.plan_series import sync_plan_after_run
+
+                await asyncio.to_thread(
+                    sync_plan_after_run,
+                    self.data_dir,
+                    source,
+                    environ=self._environ,
+                    dry_run=dry_run,
+                    only_path=only_path,
+                )
+            except Exception as exc:
+                logger.debug("plan sync after %s run failed: %s", source, exc)
         if continue_queue:
             await self._start_next_job()
 
@@ -420,14 +616,16 @@ class RunManager:
         jobs = [_QueuedJob(source, False, force) for source in platforms]
         only_path: Path | None = None
         if ids is not None:
+            for item in ids:
+                if not ONLY_ID_RE.match(str(item)):
+                    raise ValueError(f"invalid item id: {item}")
             only_path = self.data_dir / ONLY_NAME
-            only_path.write_text(
+            atomic_write_private(
+                only_path,
                 json.dumps({"ids": ids}, separators=(",", ":")),
-                encoding="utf-8",
+                mode=0o600,
             )
-        return await self._start_queue(
-            jobs, phase="downloading", force=force, only_path=only_path
-        )
+        return await self._start_queue(jobs, phase="downloading", force=force, only_path=only_path)
 
     async def _start_queue(
         self,
@@ -440,6 +638,8 @@ class RunManager:
         async with self._lock:
             if self._state.status in {"running", "stopping"}:
                 raise RuntimeError("already running")
+            if self._maintenance_holders > 0:
+                raise RuntimeError("maintenance in progress")
             self._clear_buffer()
             self._clear_events()
             self._halt_queue = False
@@ -455,7 +655,11 @@ class RunManager:
                 force=force,
                 started_at=_utc_now(),
             )
-            await self._spawn_locked(first)
+            try:
+                await self._spawn_locked(first)
+            except Exception as exc:
+                self._fail_spawn(exc)
+                raise
             return self._state
 
     async def _start_next_job(self) -> None:
@@ -470,11 +674,25 @@ class RunManager:
                 phase=self._run_phase,
                 source=job.source,
                 dry_run=job.dry_run,
-                verbose=self._state.verbose,
                 force=self._state.force,
                 started_at=_utc_now(),
             )
-            await self._spawn_locked(job)
+            try:
+                await self._spawn_locked(job)
+            except Exception as exc:
+                self._fail_spawn(exc)
+
+    def _fail_spawn(self, exc: BaseException) -> None:
+        self._proc = None
+        self._reader_task = None
+        self._event_task = None
+        self._reaper_task = None
+        self._pending_jobs = []
+        self._state.status = "exited"
+        self._state.phase = "exited"
+        self._state.finished_at = _utc_now()
+        self._state.exit_code = 1
+        self._append_line(f"error: {exc}")
 
     async def _spawn_locked(self, job: _QueuedJob) -> None:
         manifest_path = self.data_dir / ALLOWED[job.source]
@@ -493,7 +711,6 @@ class RunManager:
             job.source,
             manifest_path,
             dry_run=job.dry_run,
-            verbose=self._state.verbose,
             force=job.force,
             action="download",
             library=env.get("YT_DLP_EMBY_LIBRARY") or env.get("YT_EMBY_LIBRARY"),
@@ -522,7 +739,6 @@ class RunManager:
         source: str,
         *,
         dry_run: bool = False,
-        verbose: bool = False,
         force: bool = False,
         action: str = "download",
     ) -> RunState:
@@ -547,6 +763,8 @@ class RunManager:
         async with self._lock:
             if self._state.status in {"running", "stopping"}:
                 raise RuntimeError("already running")
+            if self._maintenance_holders > 0:
+                raise RuntimeError("maintenance in progress")
             self._clear_buffer()
             self._clear_events()
             self._halt_queue = False
@@ -558,9 +776,12 @@ class RunManager:
                 phase=phase,
                 source=source,
                 dry_run=use_dry,
-                verbose=verbose,
                 force=use_force,
                 started_at=_utc_now(),
             )
-            await self._spawn_locked(job)
+            try:
+                await self._spawn_locked(job)
+            except Exception as exc:
+                self._fail_spawn(exc)
+                raise
             return self._state

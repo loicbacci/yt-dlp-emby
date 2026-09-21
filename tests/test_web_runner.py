@@ -7,36 +7,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from conftest import command_factory as _factory
+from conftest import wait_exited as _wait_exited
+from conftest import write_youtube_manifest as _write_youtube_manifest
 from yt_dlp_emby.server.runner import RunManager, default_command, format_spawn_command
 
 pytestmark = pytest.mark.web
-
-
-def _write_youtube_manifest(tmp_path) -> None:
-    text = textwrap.dedent(
-        f"""
-        library: {tmp_path / "lib"}
-        old_dir: {tmp_path / "old"}
-        series:
-          - name: Example Channel
-            playlists:
-              - url: https://www.youtube.com/playlist?list=PLaaaa
-        """
-    ).strip()
-    (tmp_path / "youtube.yaml").write_text(text, encoding="utf-8")
-
-
-def _factory(script: str):
-    return lambda *a, **k: [sys.executable, "-c", script]
-
-
-async def _wait_exited(runner: RunManager, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if runner.snapshot()["status"] == "exited":
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"still {runner.snapshot()['status']}")
 
 
 def test_default_command_argv() -> None:
@@ -44,7 +20,6 @@ def test_default_command_argv() -> None:
         "youtube",
         __import__("pathlib").Path("/data/youtube.yaml"),
         dry_run=True,
-        verbose=True,
         force=False,
         library="/lib",
         old_dir="/old",
@@ -53,7 +28,7 @@ def test_default_command_argv() -> None:
     assert argv[:4] == [sys.executable, "-m", "yt_dlp_emby", "youtube"]
     assert "--manifest" in argv
     assert "--dry-run" in argv
-    assert "--verbose" in argv
+    assert "--verbose" not in argv
     assert "--library" in argv and "/lib" in argv
     assert "--force" not in argv
 
@@ -63,7 +38,6 @@ def test_dropout_command_includes_force() -> None:
         "dropout",
         __import__("pathlib").Path("/data/dropout.yaml"),
         dry_run=False,
-        verbose=False,
         force=True,
         action="download",
         library=None,
@@ -80,7 +54,6 @@ def test_dropout_layout_verb_argv() -> None:
         "dropout",
         __import__("pathlib").Path("/data/dropout.yaml"),
         dry_run=True,
-        verbose=False,
         force=False,
         action="layout",
         library=None,
@@ -97,7 +70,6 @@ def test_dropout_check_verb_argv() -> None:
         "dropout",
         __import__("pathlib").Path("/data/dropout.yaml"),
         dry_run=False,
-        verbose=False,
         force=False,
         action="check",
         library=None,
@@ -115,7 +87,6 @@ def test_youtube_layout_is_ignored() -> None:
         "youtube",
         __import__("pathlib").Path("/data/youtube.yaml"),
         dry_run=False,
-        verbose=False,
         force=False,
         action="layout",
         library=None,
@@ -127,13 +98,13 @@ def test_youtube_layout_is_ignored() -> None:
     assert argv[3] == "youtube"
 
 
-def test_youtube_force_rejected() -> None:
+async def test_youtube_force_rejected() -> None:
     runner = RunManager(__import__("pathlib").Path("/tmp"))
     with pytest.raises(ValueError, match="force"):
-        asyncio.run(runner.start("youtube", force=True))
+        await runner.start("youtube", force=True)
 
 
-def test_dropout_rejects_force_on_layout_start(tmp_path) -> None:
+async def test_dropout_rejects_force_on_layout_start(tmp_path) -> None:
     (tmp_path / "dropout.yaml").write_text(
         "library: /lib\nold_dir: /old\nseries:\n"
         "  - name: X\n    path: X\n    url: https://watch.dropout.tv/x\n"
@@ -142,16 +113,18 @@ def test_dropout_rejects_force_on_layout_start(tmp_path) -> None:
     )
     runner = RunManager(tmp_path)
     with pytest.raises(ValueError, match="force"):
-        asyncio.run(runner.start("dropout", force=True, action="layout"))
+        await runner.start("dropout", force=True, action="layout")
 
 
-def test_second_start_raises_while_running(tmp_path) -> None:
+async def test_second_start_raises_while_running(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
+    # Bounded wait (not sleep(30)): a broken stop path fails fast instead of
+    # hanging to pytest-timeout; runner.stop() still SIGTERM/SIGKILLs first.
     script = textwrap.dedent(
         """
-        import signal, sys, time
+        import signal, sys, threading
         signal.signal(signal.SIGINT, lambda s, f: sys.exit(130))
-        time.sleep(30)
+        threading.Event().wait(10)
         """
     )
 
@@ -160,12 +133,18 @@ def test_second_start_raises_while_running(tmp_path) -> None:
         await runner.start("youtube")
         with pytest.raises(RuntimeError, match="already running"):
             await runner.start("youtube")
-        await runner.stop()
+        try:
+            await asyncio.wait_for(runner.stop(), timeout=10)
+        finally:
+            proc = runner._proc
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+        assert runner.snapshot()["status"] == "exited"
 
-    asyncio.run(run())
+    await run()
 
 
-def test_start_after_natural_exit(tmp_path) -> None:
+async def test_start_after_natural_exit(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
 
     async def run() -> None:
@@ -176,19 +155,19 @@ def test_start_after_natural_exit(tmp_path) -> None:
         assert runner.snapshot()["status"] in {"running", "exited"}
         await _wait_exited(runner)
 
-    asyncio.run(run())
+    await run()
 
 
-def test_missing_manifest_raises(tmp_path) -> None:
+async def test_missing_manifest_raises(tmp_path) -> None:
     async def run() -> None:
         runner = RunManager(tmp_path)
         with pytest.raises(FileNotFoundError):
             await runner.start("youtube")
 
-    asyncio.run(run())
+    await run()
 
 
-def test_log_buffer_resets_sequence(tmp_path) -> None:
+async def test_log_buffer_resets_sequence(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     script = 'print("hello")\nprint("world")\n'
 
@@ -206,10 +185,10 @@ def test_log_buffer_resets_sequence(tmp_path) -> None:
         assert second[0].n == 1
         assert max(item.n for item in second) <= first_max
 
-    asyncio.run(run())
+    await run()
 
 
-def test_empty_log_lines_kept(tmp_path) -> None:
+async def test_empty_log_lines_kept(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     script = 'print("a")\nprint()\nprint("b")\n'
 
@@ -222,33 +201,87 @@ def test_empty_log_lines_kept(tmp_path) -> None:
         assert "" in lines
         assert "b" in lines
 
-    asyncio.run(run())
+    await run()
 
 
-def test_stop_sends_sigint(tmp_path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT stop path is POSIX")
+async def test_stop_sends_sigint(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
+    # Bounded wait (not sleep(60)): fail fast instead of pytest-timeout.
     script = textwrap.dedent(
         """
-        import signal, sys, time
+        import signal, sys, threading
         def on_sig(signum, frame):
             sys.exit(130)
         signal.signal(signal.SIGINT, on_sig)
-        time.sleep(60)
+        threading.Event().wait(15)
         """
     )
 
     async def run() -> None:
         runner = RunManager(tmp_path, command_factory=_factory(script))
         await runner.start("youtube")
-        await runner.stop()
+        try:
+            await asyncio.wait_for(runner.stop(), timeout=12)
+        finally:
+            proc = runner._proc
+            if proc is not None and proc.returncode is None:
+                proc.kill()
         snap = runner.snapshot()
         assert snap["status"] == "exited"
         assert snap["exit_code"] == 130
 
-    asyncio.run(run())
+    await run()
 
 
-def test_env_scrub_on_child(monkeypatch, tmp_path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="signal escalation is POSIX")
+async def test_stop_escalates_sigterm_then_sigkill(tmp_path, monkeypatch) -> None:
+    """stop() falls back to SIGTERM, then SIGKILL, when SIGINT is ignored."""
+    import yt_dlp_emby.server.runner as runner_mod
+
+    _write_youtube_manifest(tmp_path)
+    monkeypatch.setattr(runner_mod, "SIGINT_WAIT", 0.3)
+    monkeypatch.setattr(runner_mod, "SIGTERM_WAIT", 0.3)
+
+    async def run_case(script: str) -> dict:
+        runner = RunManager(tmp_path, command_factory=_factory(script))
+        await runner.start("youtube")
+        try:
+            await asyncio.wait_for(runner.stop(), timeout=10)
+        finally:
+            proc = runner._proc
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+        return runner.snapshot()
+
+    async def run() -> None:
+        # Ignores SIGINT only -> SIGTERM exits it.
+        term_script = textwrap.dedent(
+            """
+            import signal, threading
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            threading.Event().wait(10)
+            """
+        )
+        snap = await run_case(term_script)
+        assert snap["status"] == "exited"
+
+        # Ignores SIGINT and SIGTERM -> SIGKILL exits it.
+        kill_script = textwrap.dedent(
+            """
+            import signal, threading
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            threading.Event().wait(10)
+            """
+        )
+        snap = await run_case(kill_script)
+        assert snap["status"] == "exited"
+
+    await run()
+
+
+async def test_env_scrub_on_child(monkeypatch, tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     monkeypatch.setenv("YT_DLP_EMBY_VERBOSE", "1")
     captured: dict = {}
@@ -263,15 +296,15 @@ def test_env_scrub_on_child(monkeypatch, tmp_path) -> None:
             environ={**os.environ, "YT_DLP_EMBY_VERBOSE": "1"},
             command_factory=factory,
         )
-        await runner.start("youtube", verbose=False)
+        await runner.start("youtube")
         await asyncio.sleep(0.2)
         await runner.stop()
 
-    asyncio.run(run())
+    await run()
     assert "--verbose" not in captured["argv"]
 
 
-def test_download_passes_only_file(tmp_path) -> None:
+async def test_download_passes_only_file(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     plan = tmp_path / "plan.json"
     plan.write_text(
@@ -281,6 +314,7 @@ def test_download_passes_only_file(tmp_path) -> None:
         '"size":null,"series":"Example Channel","slug":"example-channel","platform":"youtube"}]}}}',
         encoding="utf-8",
     )
+
     def factory(source, manifest_path, **kwargs):
         return [sys.executable, "-c", "pass"]
 
@@ -292,10 +326,10 @@ def test_download_passes_only_file(tmp_path) -> None:
         assert only.is_file()
         assert "youtube|example-channel|S01E01" in only.read_text(encoding="utf-8")
 
-    asyncio.run(run())
+    await run()
 
 
-def test_plan_runs_sequential_sources(tmp_path) -> None:
+async def test_plan_runs_sequential_sources(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     (tmp_path / "dropout.yaml").write_text(
         "library: /lib\nold_dir: /old\nseries:\n"
@@ -315,10 +349,10 @@ def test_plan_runs_sequential_sources(tmp_path) -> None:
         await _wait_exited(runner)
         assert calls == ["dropout", "youtube"]
 
-    asyncio.run(run())
+    await run()
 
 
-def test_web_run_enables_color(tmp_path) -> None:
+async def test_web_run_enables_color(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
     captured: dict = {}
 
@@ -344,7 +378,7 @@ def test_web_run_enables_color(tmp_path) -> None:
         assert output[0] == "1"
         assert output[1] == "<unset>"
 
-    asyncio.run(run())
+    await run()
 
 
 def test_event_sequence_survives_clear(tmp_path) -> None:
@@ -382,7 +416,7 @@ def test_format_spawn_command_quotes_and_env() -> None:
     assert "-m yt_dlp_emby dropout download" in line
 
 
-def test_spawn_logs_command(tmp_path) -> None:
+async def test_spawn_logs_command(tmp_path) -> None:
     _write_youtube_manifest(tmp_path)
 
     async def run() -> None:
@@ -394,5 +428,43 @@ def test_spawn_logs_command(tmp_path) -> None:
         assert "-c" in lines[0]
         assert "done" in lines
 
-    asyncio.run(run())
+    await run()
 
+
+async def test_start_download_missing_manifest_does_not_stick_running(tmp_path) -> None:
+    import json
+
+    (tmp_path / "plan.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "force": False,
+                "sources": {
+                    "youtube": {
+                        "ok": True,
+                        "error": None,
+                        "seasons": [],
+                        "items": [
+                            {
+                                "id": "youtube|example|S01E01",
+                                "action": "download",
+                                "code": "S01E01",
+                                "title": "One",
+                                "platform": "youtube",
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def run() -> None:
+        runner = RunManager(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            await runner.start_download(None)
+        assert runner.snapshot()["status"] == "exited"
+        assert runner.snapshot()["exit_code"] == 1
+
+    await run()

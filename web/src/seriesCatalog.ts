@@ -1,12 +1,10 @@
 import { useIsRestoring, useQueries, useQuery } from "@tanstack/preact-query";
-import { apiClient, type SeriesEpisode, type SeriesSource, type Source } from "./api";
+import { type SeriesEpisode, type SeriesSource, type Source, apiClient } from "./api";
 import { DISK_STALE_MS, EPISODE_STALE_MS } from "./queryClient";
 import { queryKeys } from "./queryKeys";
 import { diskSlotKey, seasonFoldKey } from "./seriesView";
 
-export function onDiskSet(
-  slots: { season: number; episode: number }[] | undefined,
-): Set<string> {
+export function onDiskSet(slots: { season: number; episode: number }[] | undefined): Set<string> {
   const next = new Set<string>();
   for (const slot of slots ?? []) {
     next.add(diskSlotKey(slot.season, slot.episode));
@@ -43,8 +41,7 @@ export function useSeriesCatalog(
   const episodeQueries = useQueries({
     queries: jobs.map((job) => ({
       queryKey: queryKeys.episodes(platform, slug, job.sourceId, job.seasonId),
-      queryFn: () =>
-        apiClient.getSeriesEpisodes(platform, slug, job.sourceId, job.seasonId),
+      queryFn: () => apiClient.getSeriesEpisodes(platform, slug, job.sourceId, job.seasonId),
       staleTime: EPISODE_STALE_MS,
       enabled: Boolean(slug),
     })),
@@ -60,12 +57,11 @@ export function useSeriesCatalog(
   for (const [index, job] of jobs.entries()) {
     const key = seasonFoldKey(job.sourceId, job.seasonId);
     const query = episodeQueries[index];
+    if (!query) continue;
     if (query.data) {
       episodeMap[key] = query.data.episodes ?? [];
     }
-    loadingMap[key] = Boolean(
-      (query.isPending && !query.data) || (restoring && !query.data),
-    );
+    loadingMap[key] = Boolean((query.isPending && !query.data) || (restoring && !query.data));
   }
   return {
     episodeMap,

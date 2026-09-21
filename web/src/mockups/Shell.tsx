@@ -70,6 +70,15 @@ export function Twist({ open }: { open: boolean }) {
   );
 }
 
+/** Fixture-only wrappers for narrow/light state variants. */
+export function Narrow({ children }: { children: ComponentChildren }) {
+  return <div class="mock-narrow">{children}</div>;
+}
+
+export function Light({ children }: { children: ComponentChildren }) {
+  return <div class="mock-light">{children}</div>;
+}
+
 export function Spinner({ size = 16 }: { size?: number }) {
   return (
     <span

@@ -5,10 +5,10 @@ import {
   type ManifestPaths,
   type Source,
   apiClient,
-  confirmDirtySwitch,
   pathNotices,
 } from "../api";
 import { go } from "../nav";
+import { ConfirmModal } from "./ConfirmModal";
 import { ManifestEditor } from "./ManifestEditor";
 
 const ROOT = "";
@@ -34,6 +34,9 @@ export function AdvancedYamlPanel({
   const [activePath, setActivePath] = useState(ROOT);
   const [error, setError] = useState<string | null>(null);
   const [paths, setPaths] = useState<ManifestPaths | null>(null);
+  const [pendingSwitch, setPendingSwitch] = useState<
+    { kind: "source"; value: Source } | { kind: "tab"; value: string } | null
+  >(null);
 
   const active = tabs[activePath] ?? tabs[ROOT];
   const text = active?.text ?? "";
@@ -44,6 +47,16 @@ export function AdvancedYamlPanel({
     onDirtyChange?.(anyDirty);
     return () => onDirtyChange?.(false);
   }, [anyDirty, onDirtyChange]);
+
+  useEffect(() => {
+    if (!anyDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [anyDirty]);
 
   const load = async (kind: Source) => {
     const manifest = await apiClient.getManifest(kind);
@@ -80,6 +93,11 @@ export function AdvancedYamlPanel({
     setError(null);
     try {
       if (activePath === ROOT) {
+        const check = await apiClient.validateManifest(source, text);
+        if (check.ok === false) {
+          setError(check.error || "Manifest is invalid");
+          return;
+        }
         const manifest = await apiClient.putManifest(source, text);
         const imports: ManifestImport[] = manifest.imports ?? [];
         setTabs((current) => {
@@ -103,6 +121,11 @@ export function AdvancedYamlPanel({
         setImportPaths(imports.map((item) => item.path));
         setPaths(manifest.paths ?? null);
       } else {
+        // Accepted deviation: no pre-save validateManifest call for imports.
+        // POST /api/manifests/{kind}/validate parses text against the ROOT
+        // manifest schema, so it would wrongly reject valid series files.
+        // Import saves rely on server-side write_import parsing (same 400
+        // error path) plus the live yamlLooksBroken hint in ManifestEditor.
         const saved = await apiClient.putImport(source, activePath, text);
         setTabs((current) => ({
           ...current,
@@ -130,8 +153,8 @@ export function AdvancedYamlPanel({
   return (
     <div>
       <p class="settings-hint">
-        Edit root manifests and imports. Series catalog lives under Series; downloads use
-        the Run page queue.
+        Edit root manifests and imports. Series catalog lives under Series; downloads use the Run
+        page queue.
       </p>
       <div class="run-toolbar" style={{ marginBottom: "12px" }}>
         <label>
@@ -139,8 +162,13 @@ export function AdvancedYamlPanel({
           <select
             value={source}
             onChange={(e) => {
-              if (anyDirty && !confirmDirtySwitch()) return;
-              setSource((e.target as HTMLSelectElement).value as Source);
+              const next = (e.target as HTMLSelectElement).value as Source;
+              if (next === source) return;
+              if (anyDirty) {
+                setPendingSwitch({ kind: "source", value: next });
+                return;
+              }
+              setSource(next);
             }}
           >
             <option value="dropout">dropout.yaml</option>
@@ -158,11 +186,16 @@ export function AdvancedYamlPanel({
         tabs={editorTabs}
         activePath={activePath}
         onTabChange={(next) => {
-          if (text !== savedText && !confirmDirtySwitch()) return;
+          if (next === activePath) return;
+          if (text !== savedText) {
+            setPendingSwitch({ kind: "tab", value: next });
+            return;
+          }
           setActivePath(next);
           setError(null);
         }}
-        onChange={(value) =>
+        onChange={(value) => {
+          setError(null);
           setTabs((current) => ({
             ...current,
             [activePath]: {
@@ -170,10 +203,29 @@ export function AdvancedYamlPanel({
               savedText: current[activePath]?.savedText ?? "",
               exists: current[activePath]?.exists ?? false,
             },
-          }))
-        }
+          }));
+        }}
         onSave={save}
       />
+      {pendingSwitch && (
+        <ConfirmModal
+          title="Unsaved changes"
+          message="Discard unsaved yaml changes?"
+          confirmLabel="Discard"
+          danger
+          onCancel={() => setPendingSwitch(null)}
+          onConfirm={() => {
+            const pending = pendingSwitch;
+            setPendingSwitch(null);
+            if (pending.kind === "source") {
+              setSource(pending.value);
+            } else {
+              setActivePath(pending.value);
+              setError(null);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

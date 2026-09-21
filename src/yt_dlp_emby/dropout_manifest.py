@@ -10,6 +10,24 @@ import yaml
 
 from yt_dlp_emby.config import ConfigError, format_yaml_error
 from yt_dlp_emby.cookies import cookies_file_usable
+from yt_dlp_emby.library import series_relpath
+from yt_dlp_emby.manifest_common import (
+    CHILD_FORBIDDEN_KEYS,
+    int_field,
+    load_yaml_mapping,
+    optional_path,
+    optional_str_path,
+    parse_imports_list,
+    require_str,
+    validate_series_name,
+)
+
+_require_str = require_str
+_optional_path = optional_path
+_optional_str_path = optional_str_path
+_int_field = int_field
+_parse_imports_list = parse_imports_list
+_load_yaml_mapping = load_yaml_mapping
 
 __all__ = [
     "CHILD_FORBIDDEN_KEYS",
@@ -18,6 +36,7 @@ __all__ = [
     "DropoutSeason",
     "DropoutSeries",
     "DropoutSource",
+    "dropout_series_slugs",
     "filter_dropout_manifest",
     "load_dropout_manifest",
     "merge_series_by_path",
@@ -25,8 +44,6 @@ __all__ = [
     "parse_dropout_series_file",
     "season_page_url",
 ]
-
-CHILD_FORBIDDEN_KEYS = frozenset({"library", "old_dir", "cookies", "staging", "imports"})
 
 
 @dataclass(frozen=True)
@@ -73,33 +90,6 @@ class DropoutManifest:
     cookies: Path | None = None
     path: Path | None = None
     imports: tuple[str, ...] = ()
-
-
-def _require_str(data: dict[str, Any], key: str, context: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"Missing {key} in {context}")
-    return value.strip()
-
-
-def _optional_path(value: Any) -> Path | None:
-    if value is None or value == "":
-        return None
-    return Path(str(value))
-
-
-def _optional_str_path(value: Any, key: str, context: str) -> Path | None:
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{key} must be a string in {context}")
-    return Path(value.strip())
-
-
-def _int_field(value: Any, key: str, context: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(f"{key} must be an integer in {context}")
-    return value
 
 
 def _parse_only_episodes(raw: Any, context: str) -> tuple[int, ...] | None:
@@ -248,8 +238,11 @@ def _parse_series(raw: Any, index: int) -> DropoutSeries:
     context = f"series[{index}]"
     if not isinstance(raw, dict):
         raise ConfigError(f"Series entry must be a mapping in {context}")
-    name = _require_str(raw, "name", context)
-    path = _require_str(raw, "path", context)
+    name = validate_series_name(_require_str(raw, "name", context), context)
+    try:
+        path = series_relpath(_require_str(raw, "path", context))
+    except ValueError as exc:
+        raise ConfigError(f"{exc} in {context}") from exc
     has_urls = "urls" in raw
     if has_urls and ("url" in raw or "seasons" in raw):
         raise ConfigError(f"Series {name!r} cannot mix urls with url/seasons")
@@ -288,7 +281,8 @@ def _parse_series(raw: Any, index: int) -> DropoutSeries:
 def season_page_url(source: DropoutSource, season: DropoutSeason) -> str:
     if season.url:
         return season.url.rstrip("/")
-    assert source.url is not None and season.dropout is not None
+    if not source.url or season.dropout is None:
+        raise ConfigError("Season needs a url or a source url plus dropout number")
     return f"{source.url.rstrip('/')}/season:{season.dropout}"
 
 
@@ -326,30 +320,6 @@ def merge_series_by_path(series_list: Sequence[DropoutSeries]) -> tuple[DropoutS
             )
         )
     return tuple(merged)
-
-
-def _parse_imports_list(raw: Any) -> tuple[str, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise ConfigError("imports must be a list of paths")
-    if not raw:
-        return ()
-    paths: list[str] = []
-    for item in raw:
-        if not isinstance(item, str) or not item.strip():
-            raise ConfigError("imports entries must be non-empty strings")
-        paths.append(item.strip())
-    return tuple(paths)
-
-
-def _load_yaml_mapping(path: Path) -> Any:
-    if not path.is_file():
-        raise ConfigError(f"Import file not found: {path}")
-    try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ConfigError(format_yaml_error(exc)) from exc
 
 
 def parse_dropout_series_file(data: Any, path: Path) -> tuple[DropoutSeries, ...]:
@@ -437,6 +407,12 @@ def _series_matches(series: DropoutSeries, needles: Sequence[str]) -> bool:
     return False
 
 
+def _season_filter_number(season: DropoutSeason) -> int | None:
+    if season.dropout is not None:
+        return season.dropout
+    return season.to_season
+
+
 def filter_dropout_manifest(
     manifest: DropoutManifest,
     *,
@@ -447,6 +423,7 @@ def filter_dropout_manifest(
     seasons = list(dropout_seasons or [])
     if not names and not seasons:
         return manifest
+    wanted = set(seasons)
     kept: list[DropoutSeries] = []
     for series in manifest.series:
         if names and not _series_matches(series, names):
@@ -456,18 +433,37 @@ def filter_dropout_manifest(
             continue
         sources: list[DropoutSource] = []
         for source in series.sources:
-            selected = tuple(
-                season
-                for season in source.seasons
-                if season.enabled
-                and season.dropout is not None
-                and season.dropout in seasons
-            )
+            selected = []
+            for season in source.seasons:
+                if not season.enabled:
+                    continue
+                number = _season_filter_number(season)
+                if number in wanted:
+                    if season.dropout not in wanted and season.to_season in wanted:
+                        from yt_dlp_emby.log import warn
+
+                        warn(
+                            f"{series.name}: matching season by to_season={season.to_season} "
+                            "(no dropout number)"
+                        )
+                    selected.append(season)
             if selected:
-                sources.append(replace(source, seasons=selected))
+                sources.append(replace(source, seasons=tuple(selected)))
         if not sources:
             continue
         kept.append(replace(series, sources=tuple(sources)))
     if not kept:
         raise ConfigError("No series/seasons matched --series/--season")
     return replace(manifest, series=tuple(kept))
+
+
+def dropout_series_slugs(manifest: DropoutManifest) -> list[str]:
+    """In-memory disambiguated slugs in manifest.series order.
+
+    Deterministic recompute on each load (no migration). Base is the
+    display name; duplicates get -2 suffixes. Canonical identity for
+    callers is the Emby folder path (see series_ids.canonical_key).
+    """
+    from yt_dlp_emby.series_ids import assign_manifest_slugs
+
+    return assign_manifest_slugs([series.name for series in manifest.series])

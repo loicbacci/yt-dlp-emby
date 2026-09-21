@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
-from collections import Counter
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import tempfile
 import time
+from collections import Counter
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
+from yt_dlp import DownloadError
+
+from yt_dlp_emby.auth import YoutubeAuthError
 from yt_dlp_emby.cache import (
     episode_from_cache,
     episode_to_cache,
@@ -20,37 +23,11 @@ from yt_dlp_emby.cache import (
 from yt_dlp_emby.config import Settings
 from yt_dlp_emby.download import (
     TARGET_HEIGHT,
-    YoutubeAuthError,
     cleanup_stale_staging,
     download_video,
     mark_live_staging,
     promote_episode,
     video_height,
-)
-from yt_dlp_emby.extract import (
-    ChannelArt,
-    EpisodeInfo,
-    PlaylistInfo,
-    episode_from_info,
-    extract_channel_art,
-    extract_playlist,
-    extract_video,
-    with_episode,
-)
-from yt_dlp_emby.images import download_image
-from yt_dlp_emby.job import WorkRow, finish, log_step, note, note_series, print_work_rows, warn_if
-from yt_dlp_emby.library import (
-    EpisodeRecord,
-    LibraryIndex,
-    PlaylistRecord,
-    assign_season,
-    emby_code,
-    episode_stem,
-    load_index,
-    media_exists,
-    save_index,
-    season_dir,
-    series_dir,
 )
 from yt_dlp_emby.events import (
     allowed_item_id,
@@ -63,18 +40,46 @@ from yt_dlp_emby.events import (
     read_events_path,
     set_current_item_id,
 )
+from yt_dlp_emby.extract import (
+    ChannelArt,
+    EpisodeInfo,
+    PlaylistInfo,
+    episode_from_info,
+    extract_channel_art,
+    extract_playlist,
+    extract_video,
+    with_episode,
+)
+from yt_dlp_emby.images import artwork_exists, download_image
+from yt_dlp_emby.job import WorkRow, finish, log_step, note, note_series, print_work_rows, warn_if
+from yt_dlp_emby.library import (
+    EpisodeRecord,
+    LibraryIndex,
+    PlaylistRecord,
+    assign_season,
+    emby_code,
+    episode_stem,
+    load_index,
+    media_exists,
+    sanitize_filename,
+    save_index,
+    season_dir,
+    series_dir,
+)
 from yt_dlp_emby.log import RunStats, error, format_unit_plan
-from yt_dlp_emby.series_ids import slugify
 from yt_dlp_emby.nfo import write_episode_nfo, write_season_nfo, write_tvshow_nfo
 from yt_dlp_emby.progress import DownloadProgress, estimate_media_bytes, format_size_estimate
+from yt_dlp_emby.series_ids import slugify
 from yt_dlp_emby.sync import (
     ActionKind,
     SyncAction,
     apply_renames,
+    episode_files,
     move_episode_files,
     plan_sync,
+    recover_rename_temps,
 )
-from yt_dlp_emby.youtube_manifest import YoutubeManifest
+from yt_dlp_emby.youtube_manifest import YoutubeManifest, youtube_series_slugs
 
 
 def _premiered(playlist: PlaylistInfo) -> str | None:
@@ -109,18 +114,28 @@ def write_series_artwork(
     playlist: PlaylistInfo,
     art: ChannelArt | None,
 ) -> None:
+    key = series.name
     if art and art.avatar_url:
-        download_image(art.avatar_url, series / "poster.jpg")
+        download_image(art.avatar_url, series / "poster.jpg", series_key=key)
     if art and art.banner_url:
-        download_image(art.banner_url, series / "fanart.jpg")
+        download_image(art.banner_url, series / "fanart.jpg", series_key=key)
     if playlist.thumbnail_url:
-        download_image(playlist.thumbnail_url, series / f"season{season_number:02d}-poster.jpg")
-        download_image(playlist.thumbnail_url, season / "poster.jpg")
+        download_image(
+            playlist.thumbnail_url,
+            series / f"season{season_number:02d}-poster.jpg",
+            series_key=key,
+        )
+        download_image(playlist.thumbnail_url, season / "poster.jpg", series_key=key)
 
 
-def write_episode_thumb(season: Path, stem: str, episode: EpisodeInfo) -> None:
+def write_episode_thumb(
+    season: Path, stem: str, episode: EpisodeInfo, *, series_key: str | None = None
+) -> None:
+    dest = season / f"{stem}-thumb.jpg"
+    if artwork_exists(dest):
+        return
     if episode.thumbnail_url:
-        download_image(episode.thumbnail_url, season / f"{stem}-thumb.jpg")
+        download_image(episode.thumbnail_url, dest, series_key=series_key)
 
 
 def _write_series_metadata(
@@ -155,14 +170,16 @@ def _write_episode_sidecars(
     season_number: int,
     episode: EpisodeInfo,
 ) -> None:
-    stem = episode_stem(playlist.channel, season_number, episode.playlist_index, episode.title)
+    stem = episode_stem(
+        playlist.channel, season_number, episode.playlist_index, episode.title, dest=season_path
+    )
     write_episode_nfo(
         season_path / f"{stem}.nfo",
         episode=episode,
         season=season_number,
         episode_number=episode.playlist_index,
     )
-    write_episode_thumb(season_path, stem, episode)
+    write_episode_thumb(season_path, stem, episode, series_key=season_path.parent.name)
 
 
 def _ensure_playlist_record(
@@ -192,16 +209,23 @@ def _upsert_episode(
     playlist: PlaylistInfo,
     season: int,
     episode: EpisodeInfo,
+    *,
+    dest: Path | None = None,
+    height: int | None = None,
 ) -> None:
     record = _ensure_playlist_record(index, playlist, season)
     record.episodes[episode.video_id] = EpisodeRecord(
         video_id=episode.video_id,
         episode=episode.playlist_index,
         title=episode.title,
-        basename=episode_stem(playlist.channel, season, episode.playlist_index, episode.title),
+        basename=episode_stem(
+            playlist.channel, season, episode.playlist_index, episode.title, dest=dest
+        ),
         duration=episode.duration,
         filesize=episode.filesize,
         upload_date=episode.upload_date,
+        height=height,
+        season=season,
     )
 
 
@@ -213,13 +237,17 @@ def _commit_episode(
     season_number: int,
     episode: EpisodeInfo,
     cache: dict[str, dict],
+    *,
+    persist: bool = True,
+    height: int | None = None,
 ) -> PlaylistInfo:
     cache[episode.video_id] = episode_to_cache(episode)
-    save_cache(series, cache)
     playlist = with_episode(playlist, episode)
     _write_episode_sidecars(season_path, playlist, season_number, episode)
-    _upsert_episode(index, playlist, season_number, episode)
-    save_index(series, index)
+    _upsert_episode(index, playlist, season_number, episode, dest=season_path, height=height)
+    if persist:
+        save_cache(series, cache)
+        save_index(series, index)
     return playlist
 
 
@@ -227,24 +255,43 @@ def _upgrade_low_res_actions(
     actions: list[SyncAction],
     season_path: Path,
     ffmpeg: Path,
-) -> None:
+    heights: dict[str, int | None] | None = None,
+) -> dict[str, int | None]:
+    probed: dict[str, int | None] = heights if heights is not None else {}
     for action in actions:
         if action.kind not in {ActionKind.REFRESH, ActionKind.RENAME}:
             continue
-        basename = action.new_basename
-        if not basename:
+        current = action.old_basename or action.new_basename
+        if not current:
             continue
-        dest = season_path / f"{basename}.mkv"
+        dest = season_path / f"{current}.mkv"
         exists = dest.is_file()
-        height = video_height(dest, ffmpeg) if exists else None
         if not exists:
+            probed[action.video_id] = None
+            if (
+                action.kind == ActionKind.RENAME
+                and action.new_basename
+                and (season_path / f"{action.new_basename}.mkv").is_file()
+            ):
+                action.kind = ActionKind.REFRESH
+                continue
             action.kind = ActionKind.ADD
             continue
+        stored_height = action.stored.height if action.stored is not None else None
+        if stored_height is not None:
+            height: int | None = stored_height
+            probed[action.video_id] = height
+        elif action.video_id in probed:
+            height = probed[action.video_id]
+        else:
+            height = video_height(dest, ffmpeg)
+            probed[action.video_id] = height
         if height is None or height >= TARGET_HEIGHT:
             continue
         action.kind = ActionKind.REPLACE
         if not action.old_basename:
-            action.old_basename = basename
+            action.old_basename = current
+    return probed
 
 
 _ROW_ACTION = {
@@ -267,6 +314,8 @@ class YoutubePlaylistJob:
     actions: list[SyncAction]
     listing_seconds: float
     disk_seconds: float
+    heights: dict[str, int | None] = field(default_factory=dict)
+    slug: str | None = None
 
 
 def _action_title(action: SyncAction) -> str:
@@ -295,9 +344,7 @@ def _youtube_download_bytes(actions: list[SyncAction]) -> int | None:
     for action in actions:
         if action.kind not in {ActionKind.ADD, ActionKind.REPLACE} or action.live is None:
             continue
-        nbytes = estimate_media_bytes(
-            filesize=action.live.filesize, duration=action.live.duration
-        )
+        nbytes = estimate_media_bytes(filesize=action.live.filesize, duration=action.live.duration)
         if not nbytes:
             continue
         total += nbytes
@@ -381,8 +428,7 @@ def _prepare_playlist(
     if settings.debug:
         log_step(
             settings,
-            f"Found {len(playlist.episodes)} video(s) in "
-            f"{playlist.channel} / {playlist.title}",
+            f"Found {len(playlist.episodes)} video(s) in {playlist.channel} / {playlist.title}",
         )
 
     disk_started = time.monotonic()
@@ -398,7 +444,7 @@ def _prepare_playlist(
     existing = index.playlists.get(playlist.playlist_id)
     actions = plan_sync(playlist, existing, season_number)
     season_path = season_dir(series, season_number)
-    _upgrade_low_res_actions(actions, season_path, settings.ffmpeg)
+    heights = _upgrade_low_res_actions(actions, season_path, settings.ffmpeg)
     return YoutubePlaylistJob(
         url=url,
         series_name=series_name,
@@ -409,6 +455,7 @@ def _prepare_playlist(
         actions=actions,
         listing_seconds=listing_seconds,
         disk_seconds=time.monotonic() - disk_started,
+        heights=heights,
     )
 
 
@@ -425,7 +472,7 @@ def _fetch_channel_art(playlist: PlaylistInfo, settings: Settings) -> ChannelArt
             verbose=settings.verbose,
             emit_warnings=settings.show_warnings,
         )
-    except Exception as exc:  # noqa: BLE001 — channel art is optional
+    except (OSError, ValueError, RuntimeError, DownloadError) as exc:
         warn_if(settings, f"could not fetch channel artwork: {exc}")
         return None
 
@@ -476,6 +523,7 @@ def run_download(
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
+        read_events_path(os.environ)
         _cleanup_start(settings)
         job = _prepare_playlist(
             url,
@@ -496,6 +544,19 @@ def run_download(
         stats.interrupted = True
         error("interrupted")
         return finish(settings, stats)
+    except Exception as exc:
+        error(str(exc))
+        stats.failed += 1
+        stats.failures.append(("run", str(exc)))
+        emit(
+            {
+                "event": "run_finished",
+                "downloaded": stats.downloaded,
+                "skipped": stats.skipped,
+                "failed": stats.failed,
+            }
+        )
+        return finish(settings, stats)
 
 
 def run_youtube_manifest(
@@ -504,15 +565,19 @@ def run_youtube_manifest(
     format_selector: str | None = None,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
-    read_events_path(os.environ)
-    if settings.dry_run:
-        emit({"event": "run_started", "source": "youtube", "dry_run": True})
     try:
+        read_events_path(os.environ)
+        if settings.dry_run:
+            emit({"event": "run_started", "source": "youtube", "dry_run": True})
         _cleanup_start(settings)
         jobs: list[YoutubePlaylistJob] = []
         last_series: str | None = None
-        for series in manifest.series:
+        series_slugs = youtube_series_slugs(manifest)
+        for series_idx, series in enumerate(manifest.series):
             folder = series.path or series.name
+            slug = (
+                series_slugs[series_idx] if series_idx < len(series_slugs) else slugify(series.name)
+            )
             for item in series.playlists:
                 if not item.enabled:
                     continue
@@ -527,7 +592,7 @@ def run_youtube_manifest(
                         job,
                         actions=[a for a in job.actions if a.video_id not in skip_ids],
                     )
-                slug = slugify(series.name)
+                job = replace(job, slug=slug)
                 if last_series != series.name:
                     emit(
                         {
@@ -540,6 +605,9 @@ def run_youtube_manifest(
                 last_series = note_series(settings, series.name, last_series)
                 if settings.dry_run:
                     skip, download, extras = _youtube_plan_counts(job.actions)
+                    replace_count = sum(
+                        1 for action in job.actions if action.kind == ActionKind.REPLACE
+                    )
                     emit(
                         {
                             "event": "season",
@@ -552,14 +620,16 @@ def run_youtube_manifest(
                             "download": download,
                             "skip": skip,
                             "unmapped": 0,
-                            "replace": extras.get("replace", 0),
+                            "replace": replace_count,
+                            "rename": extras.get("rename", 0),
+                            "remove": extras.get("remove", 0),
                         }
                     )
                     for action in job.actions:
                         kind = _ROW_ACTION.get(action.kind, action.kind.value)
                         if kind == "skip":
                             continue
-                        if kind not in {"download", "replace", "add"}:
+                        if kind not in {"download", "replace", "add", "rename", "remove"}:
                             continue
                         code = emby_code(action.season, action.episode or 0)
                         emit(
@@ -630,6 +700,19 @@ def run_youtube_manifest(
         stats.interrupted = True
         error("interrupted")
         return finish(settings, stats)
+    except Exception as exc:
+        error(str(exc))
+        stats.failed += 1
+        stats.failures.append(("run", str(exc)))
+        emit(
+            {
+                "event": "run_finished",
+                "downloaded": stats.downloaded,
+                "skipped": stats.skipped,
+                "failed": stats.failed,
+            }
+        )
+        return finish(settings, stats)
 
 
 def _apply_youtube_job(
@@ -650,7 +733,7 @@ def _apply_youtube_job(
     series.mkdir(parents=True, exist_ok=True)
     season_path.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    old_dest = settings.old_dir / playlist.channel / stamp
+    old_dest = settings.old_dir / sanitize_filename(playlist.channel) / stamp
 
     moved = [
         action
@@ -661,8 +744,18 @@ def _apply_youtube_job(
         log_step(settings, f"Moving {len(moved)} replaced/removed item(s) to {old_dest}")
     for action in moved:
         assert action.old_basename is not None
-        move_episode_files(season_path, action.old_basename, old_dest)
+        from_dir = (
+            season_dir(series, action.old_season)
+            if action.kind == ActionKind.REMOVE and action.old_season is not None
+            else season_path
+        )
+        move_episode_files(from_dir, action.old_basename, old_dest)
+        remaining = episode_files(from_dir, action.old_basename)
+        if remaining:
+            names = ", ".join(sorted(path.name for path in remaining))
+            warn_if(settings, f"partial move to {old_dest}, kept: {names}")
 
+    recover_rename_temps(season_path)
     rename_pairs = [
         (action.old_basename, action.new_basename)
         for action in actions
@@ -670,7 +763,7 @@ def _apply_youtube_job(
     ]
     if rename_pairs:
         log_step(settings, f"Renaming {len(rename_pairs)} episode(s)")
-    apply_renames(season_path, rename_pairs)
+        apply_renames(season_path, rename_pairs)
 
     index.channel_id = playlist.channel_id
     index.channel_name = playlist.channel
@@ -687,17 +780,25 @@ def _apply_youtube_job(
         stored.episode = action.live.playlist_index
         stored.title = action.live.title
         stored.basename = action.new_basename
+    for video_id, probed_height in job.heights.items():
+        if probed_height is None:
+            continue
+        rec = record.episodes.get(video_id)
+        if rec is not None and rec.height is None:
+            rec.height = probed_height
     save_index(series, index)
 
     log_step(settings, "Writing series NFO files and artwork")
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     write_series_artwork(series, season_path, season_number, playlist, art)
 
-    yt_slug = slugify(job.series_name)
+    yt_slug = job.slug or slugify(job.series_name)
     downloads = [
         action
         for action in actions
-        if action.kind in {ActionKind.ADD, ActionKind.REPLACE} and action.live and action.new_basename
+        if action.kind in {ActionKind.ADD, ActionKind.REPLACE}
+        and action.live
+        and action.new_basename
     ]
     downloads = [
         action
@@ -739,11 +840,16 @@ def _apply_youtube_job(
                 local_stem = work / action.new_basename
                 dest = season_path / action.new_basename
                 already = media_exists(season_path, action.new_basename)
-                existing_height = (
-                    video_height(season_path / f"{action.new_basename}.mkv", settings.ffmpeg)
-                    if already
-                    else None
-                )
+                existing_height: int | None = None
+                if already:
+                    existing_height = job.heights.get(action.video_id)
+                    if existing_height is None and action.stored is not None:
+                        existing_height = action.stored.height
+                    if existing_height is None and action.kind == ActionKind.ADD:
+                        existing_height = video_height(
+                            season_path / f"{action.new_basename}.mkv", settings.ffmpeg
+                        )
+                        job.heights[action.video_id] = existing_height
                 if already and action.kind == ActionKind.ADD:
                     if existing_height is not None and existing_height < TARGET_HEIGHT:
                         log_step(
@@ -762,7 +868,15 @@ def _apply_youtube_job(
                             else action.live
                         )
                         playlist = _commit_episode(
-                            series, season_path, playlist, index, season_number, episode, cache
+                            series,
+                            season_path,
+                            playlist,
+                            index,
+                            season_number,
+                            episode,
+                            cache,
+                            persist=False,
+                            height=existing_height,
                         )
                         continue
                 eta = stats.eta(len(downloads) - i)
@@ -827,8 +941,18 @@ def _apply_youtube_job(
                     episode_from_info(info_dict, action.live.playlist_index),
                 )
                 playlist = _commit_episode(
-                    series, season_path, playlist, index, season_number, episode, cache
+                    series,
+                    season_path,
+                    playlist,
+                    index,
+                    season_number,
+                    episode,
+                    cache,
+                    persist=False,
+                    height=video_height(dest.with_suffix(".mkv"), settings.ffmpeg),
                 )
+                save_cache(series, cache)
+                save_index(series, index)
                 emit(
                     {
                         "event": "item_done",
@@ -841,17 +965,33 @@ def _apply_youtube_job(
 
     for action in sidecars:
         assert action.live is not None
-        episode = _resolve_episode(
-            action.live,
-            cache,
-            settings,
-            force=settings.force_refetch,
-        )
+        if not settings.force_refetch and action.live.video_id in cache:
+            episode = action.live
+        else:
+            episode = _resolve_episode(
+                action.live,
+                cache,
+                settings,
+                force=settings.force_refetch,
+            )
+        stored = record.episodes.get(action.video_id)
+        sidecar_height = stored.height if stored is not None and stored.height is not None else None
+        if sidecar_height is None:
+            sidecar_height = job.heights.get(action.video_id)
         playlist = _commit_episode(
-            series, season_path, playlist, index, season_number, episode, cache
+            series,
+            season_path,
+            playlist,
+            index,
+            season_number,
+            episode,
+            cache,
+            persist=False,
+            height=sidecar_height,
         )
 
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
+    save_cache(series, cache)
     save_index(series, index)
     stats.skipped += len(sidecars)
     return True

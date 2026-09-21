@@ -261,10 +261,7 @@ def format_copy_line(
     if total:
         percent = min(100.0, (copied / total) * 100.0)
         bar = render_bar(percent, width=width, fancy=fancy, color=color)
-        return (
-            f"{label}  [{bar}] {percent:5.1f}%  "
-            f"{format_bytes(copied)}/{format_bytes(total)}"
-        )
+        return f"{label}  [{bar}] {percent:5.1f}%  {format_bytes(copied)}/{format_bytes(total)}"
     return f"{label}  {format_bytes(copied)}"
 
 
@@ -461,9 +458,7 @@ class DownloadProgress(ProgressDisplay):
             self.stop_heartbeat()
             label = stream_label(data)
             self._draw(
-                format_progress_line(
-                    data, width=self.width, label=label, **self._bar_style()
-                )
+                format_progress_line(data, width=self.width, label=label, **self._bar_style())
             )
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             self._emit_step_progress(
@@ -499,9 +494,7 @@ class DownloadProgress(ProgressDisplay):
     def copy_update(self, copied: int, total: int, label: str = "Copy to library") -> None:
         self.stop_heartbeat()
         self._draw(
-            format_copy_line(
-                copied, total, width=self.width, label=label, **self._bar_style()
-            )
+            format_copy_line(copied, total, width=self.width, label=label, **self._bar_style())
         )
         if total:
             self._emit_step_progress(
@@ -576,19 +569,25 @@ class YtdlpLogger:
         site: str | None = None,
         emit_warnings: bool = True,
         emit_errors: bool = True,
+        verbose: bool = False,
     ) -> None:
         self.progress = progress
         self.site = site or (progress.site if progress is not None else "YouTube")
         self.emit_warnings = emit_warnings
         self.emit_errors = emit_errors
+        self.verbose = verbose
         self._have_items = False
         self.warnings: list[str] = []
         self.errors: list[str] = []
 
     def debug(self, message: str) -> None:
+        text = strip_ansi(str(message))
+        if self.verbose:
+            from yt_dlp_emby.log import info
+
+            info(text)
         if self.progress is None or not self.progress.enabled:
             return
-        text = strip_ansi(str(message))
         if text.startswith("[debug]"):
             return
         parsed = parse_playlist_item(text)
@@ -640,16 +639,30 @@ def copy_with_progress(
     label: str = "copy",
     min_size: int = _COPY_BAR_MIN,
 ) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
     size = src.stat().st_size
-    if progress is None or not progress.enabled or size < min_size:
-        shutil.copyfile(src, dest)
-        return
-    copied = 0
-    with src.open("rb") as inf, dest.open("wb") as outf:
-        while True:
-            chunk = inf.read(1024 * 1024)
-            if not chunk:
-                break
-            outf.write(chunk)
-            copied += len(chunk)
-            progress.copy_update(copied, size, label=label)
+    try:
+        if progress is None:
+            shutil.copyfile(src, tmp)
+        elif size < min_size:
+            progress.copy_update(0, size, label=label)
+            shutil.copyfile(src, tmp)
+            progress.copy_update(size, size, label=label)
+        else:
+            copied = 0
+            with src.open("rb") as inf, tmp.open("wb") as outf:
+                while True:
+                    chunk = inf.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    outf.write(chunk)
+                    copied += len(chunk)
+                    progress.copy_update(copied, size, label=label)
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise

@@ -1,5 +1,5 @@
-from pathlib import Path
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
@@ -102,7 +102,34 @@ def test_copy_with_progress_writes_chunks(tmp_path: Path) -> None:
     assert "copy" in stream.getvalue()
 
 
-def test_download_video_returns_extract_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_copy_with_progress_keeps_dest_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yt_dlp_emby.progress import copy_with_progress
+
+    src = tmp_path / "src.bin"
+    dest = tmp_path / "dest.bin"
+    src.write_bytes(b"new-content")
+    dest.write_bytes(b"old-content")
+
+    def fail_copy(source, target, *args, **kwargs):
+        Path(target).write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr("yt_dlp_emby.progress.shutil.copyfile", fail_copy)
+    try:
+        copy_with_progress(src, dest, None)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("expected OSError")
+    assert dest.read_bytes() == b"old-content"
+    assert not dest.with_name(dest.name + ".tmp").exists()
+
+
+def test_download_video_returns_extract_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from yt_dlp_emby.download import download_video
 
     class FakeYDL:
@@ -429,7 +456,8 @@ def test_promote_episode_copies_pt_dot_title(tmp_path: Path) -> None:
 def test_download_video_empty_info_is_not_auth_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yt_dlp_emby.download import YoutubeAuthError, download_video
+    from yt_dlp_emby.auth import YoutubeAuthError
+    from yt_dlp_emby.download import download_video
 
     class FakeYDL:
         def __init__(self, opts: dict) -> None:
@@ -456,7 +484,9 @@ def test_download_video_empty_info_is_not_auth_error(
     except YoutubeAuthError:
         raise AssertionError("empty extract_info must not be treated as a bot check")
     except RuntimeError as exc:
-        assert "did not produce an mkv" in str(exc) or "extract_info returned no metadata" in str(exc)
+        assert "did not produce an mkv" in str(exc) or "extract_info returned no metadata" in str(
+            exc
+        )
     else:
         raise AssertionError("expected RuntimeError")
 
@@ -541,7 +571,7 @@ def test_cleanup_stale_staging_removes_unresumable_leftovers(tmp_path: Path) -> 
     (leftover / "partial.temp.mkv").write_bytes(b"x")
     dropout_left = staging / "yt-dlp-emby-dropout-xyz"
     dropout_left.mkdir()
-    cookies = temp_dir / "yt-dlp-emby-cookies-zzzz.txt"
+    cookies = temp_dir / "yt-dlp-emby-cookies-2000000000-zzzz.txt"
     cookies.write_text("cookies")
     legacy = temp_dir / "yt-emby-oldrun"
     legacy.mkdir()
@@ -600,4 +630,16 @@ def test_cleanup_stale_staging_skips_live_run_dir(tmp_path: Path) -> None:
     assert cleanup_stale_staging(temp_dir=tmp_path) == 1
     assert live.is_dir()
     assert (live / ".yt-dlp-emby-pid").is_file()
+    assert not dead.exists()
+
+
+def test_cleanup_stale_staging_keeps_live_cookie_copy(tmp_path: Path) -> None:
+    import os
+
+    live = tmp_path / f"yt-dlp-emby-cookies-{os.getpid()}-live.txt"
+    live.write_text("cookies")
+    dead = tmp_path / "yt-dlp-emby-cookies-2000000000-dead.txt"
+    dead.write_text("cookies")
+    assert cleanup_stale_staging(temp_dir=tmp_path) == 1
+    assert live.is_file()
     assert not dead.exists()

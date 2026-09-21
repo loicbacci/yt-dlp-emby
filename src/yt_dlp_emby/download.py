@@ -7,12 +7,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from yt_dlp import YoutubeDL
 
-from yt_dlp_emby.auth import YoutubeAuthError, auth_error_from_exception
+from yt_dlp_emby.auth import auth_error_from_exception
 from yt_dlp_emby.config import Settings
 from yt_dlp_emby.cookies import sandbox_cookiefile
 from yt_dlp_emby.extract import js_runtime_opts
@@ -23,13 +24,34 @@ LOW_RES_FORMAT = "worst[height<=144]/worst"
 TARGET_HEIGHT = 1080
 _VIDEO_EXTS = {".mkv", ".mp4", ".webm", ".m4a", ".m4v"}
 _STALE_STAGING_PREFIXES = ("yt-dlp-emby-", "yt-emby-")
+_COOKIE_FILE_PREFIX = "yt-dlp-emby-cookies-"
 _STAGING_PID = ".yt-dlp-emby-pid"
 _LEGACY_STAGING_PID = ".yt-emby-pid"
+_STALE_COOKIE_AGE = 2 * 60 * 60
+_WARNED_FFPROBE_FALLBACK = False
+
+
+def _process_fingerprint(pid: int) -> str | None:
+    """Linux starttime from /proc so a reused PID is not treated as this process."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    rparen = text.rfind(")")
+    if rparen < 0:
+        return None
+    fields = text[rparen + 2 :].split()
+    if len(fields) < 20:
+        return None
+    return fields[19]
 
 
 def mark_live_staging(work_dir: Path) -> None:
     """Record this process so a later launch will not delete this run's temp dir."""
-    (work_dir / _STAGING_PID).write_text(str(os.getpid()), encoding="utf-8")
+    pid = os.getpid()
+    stamp = _process_fingerprint(pid)
+    payload = f"{pid} {stamp}" if stamp else str(pid)
+    (work_dir / _STAGING_PID).write_text(payload + "\n", encoding="utf-8")
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -52,12 +74,34 @@ def _staging_in_use(path: Path) -> bool:
     for name in (_STAGING_PID, _LEGACY_STAGING_PID):
         try:
             text = (path / name).read_text(encoding="utf-8").strip()
-            pid = int(text)
-        except (OSError, ValueError):
+            parts = text.split()
+            pid = int(parts[0])
+        except (OSError, ValueError, IndexError):
             continue
-        if _pid_is_running(pid):
-            return True
+        if not _pid_is_running(pid):
+            continue
+        if len(parts) >= 2:
+            current = _process_fingerprint(pid)
+            if current is not None and current != parts[1]:
+                continue
+        return True
     return False
+
+
+def _cookie_file_in_use(path: Path) -> bool:
+    name = path.name
+    if not name.startswith(_COOKIE_FILE_PREFIX):
+        return False
+    rest = name[len(_COOKIE_FILE_PREFIX) :]
+    pid_part = rest.split("-", 1)[0]
+    try:
+        pid = int(pid_part)
+    except ValueError:
+        try:
+            return time.time() - path.stat().st_mtime < _STALE_COOKIE_AGE
+        except OSError:
+            return False
+    return _pid_is_running(pid)
 
 
 class _YdlErrorLog:
@@ -75,6 +119,7 @@ class _YdlErrorLog:
         self.debug(message)
 
     def warning(self, message: str) -> None:
+        self.errors.append(str(message))
         if self.verbose:
             sys.stderr.write(f"{message}\n")
 
@@ -122,6 +167,8 @@ def cleanup_stale_staging(
                 if path.is_dir():
                     shutil.rmtree(path)
                 elif path.is_file():
+                    if _cookie_file_in_use(path):
+                        continue
                     path.unlink()
                 else:
                     continue
@@ -154,6 +201,21 @@ def remove_staged_episode(src_stem: Path) -> None:
             pass
 
 
+def _tool_version(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            [str(path), "-version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    line = (result.stdout or result.stderr or "").splitlines()
+    return line[0].strip() if line else None
+
+
 def _is_library_artifact(rest: str) -> bool:
     """True for the finished .mkv and subtitle sidecars, not yt-dlp temps or stream fragments."""
     lower = rest.lower()
@@ -167,9 +229,25 @@ def _is_library_artifact(rest: str) -> bool:
 def video_height(path: Path, ffmpeg: Path) -> int | None:
     """Return the video stream height, or None if it cannot be probed."""
     probe = ffmpeg.with_name("ffprobe")
-    if not probe.is_file():
+    sibling_missing = not probe.is_file()
+    if sibling_missing:
         found = shutil.which("ffprobe")
         probe = Path(found) if found else probe
+        if found:
+            global _WARNED_FFPROBE_FALLBACK
+            if not _WARNED_FFPROBE_FALLBACK:
+                _WARNED_FFPROBE_FALLBACK = True
+                from yt_dlp_emby.log import warn
+
+                ffmpeg_ver = _tool_version(ffmpeg)
+                probe_ver = _tool_version(probe)
+                if ffmpeg_ver and probe_ver and ffmpeg_ver != probe_ver:
+                    warn(
+                        f"ffprobe not next to {ffmpeg}; using {probe} "
+                        f"({probe_ver} vs ffmpeg {ffmpeg_ver})"
+                    )
+                else:
+                    warn(f"ffprobe not next to {ffmpeg}; using {probe} (versions may differ)")
     if not probe.is_file():
         return None
     try:
@@ -298,14 +376,10 @@ def download_video(
                 if not info:
                     progress.close()
                     blob = "\n".join(log.errors)
-                    auth = auth_error_from_exception(
-                        url, RuntimeError(blob or "download failed")
-                    )
+                    auth = auth_error_from_exception(url, RuntimeError(blob or "download failed"))
                     if auth is not None:
                         raise auth
-                    raise RuntimeError(
-                        blob.strip() or "extract_info returned no metadata"
-                    )
+                    raise RuntimeError(blob.strip() or "extract_info returned no metadata")
                 progress.set_steps(plan_download_steps(info, copy=True))
                 info = ydl.process_ie_result(info, download=True)
         except Exception as exc:
@@ -315,11 +389,7 @@ def download_video(
                 raise auth from exc
             raise
     progress.close()
-    mkv = (
-        dest_stem
-        if dest_stem.name.endswith(".mkv")
-        else Path(f"{dest_stem}.mkv")
-    )
+    mkv = dest_stem if dest_stem.name.endswith(".mkv") else Path(f"{dest_stem}.mkv")
     ok = bool(info and info.get("id") and mkv.is_file() and mkv.stat().st_size > 0)
     if ok:
         return info

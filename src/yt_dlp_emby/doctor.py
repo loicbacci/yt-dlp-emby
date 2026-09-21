@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Mapping
 
-from yt_dlp_emby.config import env_value
+from yt_dlp_emby.config import env_value, inspect_config
 from yt_dlp_emby.cookies import cookies_file_usable
 from yt_dlp_emby.extract import find_node
 from yt_dlp_emby.ffmpeg import FFmpegNotFoundError, find_ffmpeg
@@ -59,6 +60,17 @@ def run_doctor(
     failed = 0
 
     try:
+        path, exists, fields = inspect_config(environ=environ, cwd=cwd, config_path=None)
+        info(f"{green('ok') if exists else dim('skip')}      config  {path}")
+        if exists:
+            for key in ("library", "old_dir", "staging"):
+                field = fields.get(key)
+                if field and field.effective:
+                    info(dim(f"         {key:8} {field.source}: {field.effective}"))
+    except Exception as exc:  # noqa: BLE001
+        warn(f"could not inspect config: {exc}")
+
+    try:
         ffmpeg = find_ffmpeg(ffmpeg_location, environ=environ)
         info(f"{green('ok')}      ffmpeg  {ffmpeg}")
     except FFmpegNotFoundError as exc:
@@ -81,7 +93,9 @@ def run_doctor(
         if default.is_file():
             cookie_path = default
     if cookie_path is None:
-        info(f"{dim('skip')}    cookies  (pass --cookies or put cookies.txt in the current directory)")
+        info(
+            f"{dim('skip')}    cookies  (pass --cookies or put cookies.txt in the current directory)"
+        )
     elif not cookie_path.is_file():
         warn(f"cookies file not found: {cookie_path}")
         failed += 1
@@ -95,9 +109,9 @@ def run_doctor(
         staging_path = Path(staging)
         try:
             staging_path.mkdir(parents=True, exist_ok=True)
-            probe = staging_path / ".yt-dlp-emby-doctor"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink()
+            fd, tmp_name = tempfile.mkstemp(prefix=".yt-dlp-emby-doctor-", dir=str(staging_path))
+            os.close(fd)
+            Path(tmp_name).unlink()
             info(f"{green('ok')}      staging {staging_path}")
             failed += _report_disk(staging_path, "staging")
         except OSError as exc:

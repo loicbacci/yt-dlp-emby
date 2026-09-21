@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 from typing import Mapping
 
-
 FFMPEG_INSTALL_HELP = """ffmpeg not found on PATH (needed to merge video+audio into mkv).
 
   Debian/Ubuntu:  sudo apt install ffmpeg
@@ -28,7 +27,9 @@ def find_ffmpeg(explicit: str | None, environ: Mapping[str, str]) -> Path:
         if path.is_dir():
             path = path / "ffmpeg"
         if not path.is_file():
-            raise FFmpegNotFoundError(f"ffmpeg-location {path} does not exist.\n{FFMPEG_INSTALL_HELP}")
+            raise FFmpegNotFoundError(
+                f"ffmpeg-location {path} does not exist.\n{FFMPEG_INSTALL_HELP}"
+            )
         return path.resolve()
 
     found = shutil.which("ffmpeg")

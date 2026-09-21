@@ -10,6 +10,24 @@ import yaml
 
 from yt_dlp_emby.config import ConfigError, format_yaml_error
 from yt_dlp_emby.cookies import cookies_file_usable
+from yt_dlp_emby.library import series_relpath
+from yt_dlp_emby.manifest_common import (
+    CHILD_FORBIDDEN_KEYS,
+    int_field,
+    load_yaml_mapping,
+    optional_path,
+    optional_str_path,
+    parse_imports_list,
+    require_str,
+    validate_series_name,
+)
+
+_require_str = require_str
+_optional_path = optional_path
+_optional_str_path = optional_str_path
+_int_field = int_field
+_parse_imports_list = parse_imports_list
+_load_yaml_mapping = load_yaml_mapping
 
 __all__ = [
     "CHILD_FORBIDDEN_KEYS",
@@ -20,9 +38,8 @@ __all__ = [
     "parse_youtube_series_file",
     "load_youtube_manifest",
     "filter_youtube_manifest",
+    "youtube_series_slugs",
 ]
-
-CHILD_FORBIDDEN_KEYS = frozenset({"library", "old_dir", "cookies", "staging", "imports"})
 
 
 @dataclass(frozen=True)
@@ -51,33 +68,6 @@ class YoutubeManifest:
     cookies: Path | None = None
     path: Path | None = None
     imports: tuple[str, ...] = ()
-
-
-def _require_str(data: dict[str, Any], key: str, context: str) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"Missing {key} in {context}")
-    return value.strip()
-
-
-def _optional_path(value: Any) -> Path | None:
-    if value is None or value == "":
-        return None
-    return Path(str(value))
-
-
-def _optional_str_path(value: Any, key: str, context: str) -> Path | None:
-    if value is None or value == "":
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"{key} must be a string in {context}")
-    return Path(value.strip())
-
-
-def _int_field(value: Any, key: str, context: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(f"{key} must be an integer in {context}")
-    return value
 
 
 def _parse_skip_ids(raw: Any, context: str) -> tuple[str, ...]:
@@ -124,13 +114,16 @@ def _parse_series(raw: Any, index: int) -> YoutubeSeries:
     context = f"series[{index}]"
     if not isinstance(raw, dict):
         raise ConfigError(f"Series entry must be a mapping in {context}")
-    name = _require_str(raw, "name", context)
+    name = validate_series_name(_require_str(raw, "name", context), context)
     path_raw = raw.get("path")
     path = None
     if path_raw is not None:
         if not isinstance(path_raw, str) or not path_raw.strip():
             raise ConfigError(f"path must be a non-empty string in {context}")
-        path = path_raw.strip()
+        try:
+            path = series_relpath(path_raw.strip())
+        except ValueError as exc:
+            raise ConfigError(f"{exc} in {context}") from exc
     tvdb_id_raw = raw.get("tvdb_id")
     tvdb_id = None
     if tvdb_id_raw is not None:
@@ -152,30 +145,6 @@ def _parse_series(raw: Any, index: int) -> YoutubeSeries:
             raise ConfigError(f"Duplicate playlist URL in series {name!r}: {item.url}")
         seen.add(item.url)
     return YoutubeSeries(name=name, playlists=playlists, path=path, tvdb_id=tvdb_id)
-
-
-def _parse_imports_list(raw: Any) -> tuple[str, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise ConfigError("imports must be a list of paths")
-    if not raw:
-        return ()
-    paths: list[str] = []
-    for item in raw:
-        if not isinstance(item, str) or not item.strip():
-            raise ConfigError("imports entries must be non-empty strings")
-        paths.append(item.strip())
-    return tuple(paths)
-
-
-def _load_yaml_mapping(path: Path) -> Any:
-    if not path.is_file():
-        raise ConfigError(f"Import file not found: {path}")
-    try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ConfigError(format_yaml_error(exc)) from exc
 
 
 def parse_youtube_series_file(data: Any, path: Path) -> tuple[YoutubeSeries, ...]:
@@ -284,3 +253,15 @@ def filter_youtube_manifest(
     if not kept:
         raise ConfigError("No series matched --series")
     return replace(manifest, series=tuple(kept))
+
+
+def youtube_series_slugs(manifest: YoutubeManifest) -> list[str]:
+    """In-memory disambiguated slugs in manifest.series order.
+
+    Deterministic recompute on each load (no migration). Base is the
+    display name; duplicates get -2 suffixes. Canonical identity for
+    callers is path override else name (see series_ids.canonical_key).
+    """
+    from yt_dlp_emby.series_ids import assign_manifest_slugs
+
+    return assign_manifest_slugs([series.name for series in manifest.series])

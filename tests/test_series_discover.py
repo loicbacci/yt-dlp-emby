@@ -11,9 +11,7 @@ from yt_dlp_emby.server.series_discover import (
 
 def test_playlist_url_from_entry_ignores_videos() -> None:
     assert (
-        _playlist_url_from_entry(
-            {"_type": "video", "url": "https://www.youtube.com/watch?v=abc"}
-        )
+        _playlist_url_from_entry({"_type": "video", "url": "https://www.youtube.com/watch?v=abc"})
         is None
     )
     assert (

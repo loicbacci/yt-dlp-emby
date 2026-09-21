@@ -1,5 +1,5 @@
 import type { Run } from "../api";
-import { go } from "../nav";
+import { idleRun, useAppRun } from "../useAppQueries";
 import { StatusChip } from "./StatusChip";
 
 export function Header({
@@ -8,18 +8,28 @@ export function Header({
   onLogout,
   onNavigate,
 }: {
-  run: Run;
+  run?: Run;
   current?: "dashboard" | "series" | "settings";
   onLogout: () => void;
   onNavigate?: (url: string) => void;
 }) {
-  const goTo = (url: string) => (event: Event) => {
-    event.preventDefault();
-    if (onNavigate) {
-      onNavigate(url);
+  const runQuery = useAppRun();
+  const live = runQuery.data ?? run ?? idleRun;
+  const loading = runQuery.isPending && !runQuery.data && !run;
+  const goTo = (url: string) => (event: MouseEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
       return;
     }
-    go(url);
+    if (!onNavigate) return;
+    event.preventDefault();
+    onNavigate(url);
   };
 
   return (
@@ -54,7 +64,7 @@ export function Header({
         </a>
       </nav>
       <div class="header-actions">
-        <StatusChip run={run} />
+        <StatusChip run={live} loading={loading} />
         <button type="button" class="btn-ghost" onClick={onLogout}>
           Log out
         </button>

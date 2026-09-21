@@ -7,8 +7,12 @@ export type ShowsListLoading = "idle" | "manifests" | "refresh";
 
 export function ShowsList({
   loading = "idle",
+  empty = false,
+  loadError = null,
 }: {
   loading?: ShowsListLoading;
+  empty?: boolean;
+  loadError?: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState<Platform>("all");
@@ -16,6 +20,7 @@ export function ShowsList({
   const refreshing = loading === "refresh";
   const readingManifests = loading === "manifests";
   const rows = useMemo(() => {
+    if (empty) return [];
     const filtered = MOCK_SHOWS.filter((row) => {
       if (platform !== "all" && row.platform !== platform) return false;
       if (!query.trim()) return true;
@@ -23,7 +28,7 @@ export function ShowsList({
     });
     if (readingManifests) return filtered.slice(0, 4);
     return filtered;
-  }, [platform, query, readingManifests]);
+  }, [platform, query, readingManifests, empty]);
 
   return (
     <MockShell current="shows">
@@ -57,18 +62,32 @@ export function ShowsList({
           value={query}
           onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
         />
-        {(["all", "dropout", "youtube"] as const).map((chip) => (
+        {(["all", "youtube", "dropout"] as const).map((chip) => (
           <button
             key={chip}
             type="button"
             class={platform === chip ? "mock-chip is-active" : "mock-chip"}
             onClick={() => setPlatform(chip)}
           >
-            {chip === "all" ? "All" : chip === "dropout" ? "Dropout" : "YouTube"}
+            {chip === "all" ? "All" : chip === "youtube" ? "YouTube" : "Dropout"}
           </button>
         ))}
       </div>
-      {rows.map((row) => {
+      {loadError ? (
+        <div class="mock-error-card" role="alert">
+          <p>{loadError}</p>
+          <button type="button" class="mock-ghost">
+            Retry
+          </button>
+        </div>
+      ) : rows.length === 0 ? (
+        <div class="mock-empty">
+          <p>No series yet. Add your first show to get started.</p>
+          <button type="button" class="mock-primary">
+            Add show
+          </button>
+        </div>
+      ) : rows.map((row) => {
         const missing = missingCount(row);
         return (
           <article
@@ -114,8 +133,8 @@ export function ShowsList({
             />
           </article>
         );
-      })}
-      {readingManifests ? (
+        })}
+      {readingManifests && !loadError && rows.length > 0 ? (
         <div class="mock-list-status" role="status">
           <Spinner />
           Reading remaining manifests…

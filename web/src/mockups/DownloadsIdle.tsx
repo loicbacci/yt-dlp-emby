@@ -1,9 +1,17 @@
+import { Fragment } from "preact";
 import { useMemo, useState } from "preact/hooks";
 import { downloadQueue } from "./mockCatalog";
 import { MockShell, Poster, Twist } from "./Shell";
 
-export function DownloadsIdle() {
-  const rows = useMemo(() => downloadQueue(), []);
+export function DownloadsIdle({
+  empty = false,
+  loadError = null,
+}: {
+  empty?: boolean;
+  loadError?: string | null;
+}) {
+  const allRows = useMemo(() => downloadQueue(), []);
+  const rows = empty ? [] : allRows;
   const [openShow, setOpenShow] = useState("dimension-20");
   const [openSeason, setOpenSeason] = useState("dimension-20-s28");
   const [selected, setSelected] = useState<Set<string>>(() => {
@@ -48,7 +56,21 @@ export function DownloadsIdle() {
           Check for new episodes
         </button>
       </div>
-      {rows.map(({ show, seasons }) => {
+      {loadError ? (
+        <div class="mock-error-card" role="alert">
+          <p>{loadError}</p>
+          <button type="button" class="mock-ghost">
+            Retry
+          </button>
+        </div>
+      ) : rows.length === 0 ? (
+        <div class="mock-empty">
+          <p>No queue yet. Add series under Shows, then Refresh queue.</p>
+          <button type="button" class="mock-primary">
+            Refresh queue
+          </button>
+        </div>
+      ) : rows.map(({ show, seasons }) => {
         const ids = seasons.flatMap((season) => season.episodes.map((ep) => ep.id));
         const picked = ids.filter((id) => selected.has(id)).length;
         const expanded = openShow === show.id;
@@ -174,21 +196,25 @@ export function DownloadsIdle() {
           </section>
         );
       })}
-      <details class="mock-disclosure">
-        <summary>
-          Already in library (earlier Dimension 20 seasons, plus caught-up shows)
-          <Twist open={false} />
-        </summary>
-        <p>
-          Fantasy High through Burrow's End are treated as on disk for this mock.
-        </p>
-      </details>
-      <footer class="mock-bar">
-        <span>{selected.size} selected</span>
-        <button type="button" class="mock-primary">
-          Download {selected.size} episodes
-        </button>
-      </footer>
+      {rows.length > 0 && (
+        <Fragment>
+          <details class="mock-disclosure">
+            <summary>
+              Already in library (earlier Dimension 20 seasons, plus caught-up shows)
+              <Twist open={false} />
+            </summary>
+            <p>
+              Fantasy High through Burrow's End are treated as on disk for this mock.
+            </p>
+          </details>
+          <footer class="mock-bar">
+            <span>{selected.size} selected</span>
+            <button type="button" class="mock-primary">
+              Download {selected.size} episodes
+            </button>
+          </footer>
+        </Fragment>
+      )}
     </MockShell>
   );
 }

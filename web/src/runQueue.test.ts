@@ -1,26 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionLabel,
+  actionsForIds,
   applyCheck,
   applyProgress,
   buildTree,
+  countChipText,
   downloadLabel,
   effectiveDownloadIds,
   emptyProgress,
+  finishedEpisodes,
   formatBinaryBytes,
   formatEta,
   formatItemSize,
   formatProgressStats,
+  groupByDestSeason,
   heroFrom,
+  isDownloadHeavy,
   itemId,
+  listingLabel,
   mergeProgress,
-  overlayProgress,
-  platformLabel,
   needsConfirm,
+  overlayProgress,
   partitionSeasons,
   pendingIds,
+  platformLabel,
+  queueHeading,
   remainingEpisodes,
-  finishedEpisodes,
-  groupByDestSeason,
+  runLabel,
   runStatsLine,
   seriesInActiveDownload,
   sourcesFor,
@@ -140,9 +147,7 @@ const d20Plan = {
 
 describe("itemId", () => {
   it("is stable", () => {
-    expect(itemId("dropout", "dimension-20", "S21E04")).toBe(
-      "dropout|dimension-20|S21E04",
-    );
+    expect(itemId("dropout", "dimension-20", "S21E04")).toBe("dropout|dimension-20|S21E04");
   });
 });
 
@@ -151,7 +156,7 @@ describe("partitionSeasons", () => {
     const { pending, complete } = partitionSeasons(d20Plan.sources.dropout.seasons);
     expect(pending).toHaveLength(1);
     expect(complete).toHaveLength(1);
-    expect(pending[0].dest_season).toBe(21);
+    expect(pending[0]?.dest_season).toBe(21);
   });
 });
 
@@ -160,7 +165,7 @@ describe("buildTree", () => {
     const tree = buildTree(d20Plan);
     const d20 = tree.find((s) => s.slug === "dimension-20");
     expect(d20?.seasons).toHaveLength(1);
-    expect(d20?.seasons[0].seasonTitle).toBe("Fantasy High Junior Year");
+    expect(d20?.seasons[0]?.seasonTitle).toBe("Fantasy High Junior Year");
     expect(d20?.pendingCount).toBe(3);
   });
 
@@ -172,22 +177,16 @@ describe("buildTree", () => {
         youtube: {
           ok: true,
           error: null,
-          seasons: [
-            ...d20Plan.sources.dropout.seasons,
-            ...d20Plan.sources.youtube.seasons,
-          ],
-          items: [
-            ...d20Plan.sources.dropout.items,
-            ...d20Plan.sources.youtube.items,
-          ],
+          seasons: [...d20Plan.sources.dropout.seasons, ...d20Plan.sources.youtube.seasons],
+          items: [...d20Plan.sources.dropout.items, ...d20Plan.sources.youtube.items],
         },
       },
     });
     const d20 = tree.filter((s) => s.slug === "dimension-20");
     expect(d20).toHaveLength(1);
-    expect(d20[0].platform).toBe("dropout");
-    expect(d20[0].seasons).toHaveLength(1);
-    expect(d20[0].seasons[0].seasonTitle).toBe("Fantasy High Junior Year");
+    expect(d20[0]?.platform).toBe("dropout");
+    expect(d20[0]?.seasons).toHaveLength(1);
+    expect(d20[0]?.seasons[0]?.seasonTitle).toBe("Fantasy High Junior Year");
     const yt = tree.find((s) => s.slug === "professor-messer");
     expect(yt?.seasons).toHaveLength(1);
   });
@@ -310,7 +309,7 @@ describe("buildTree", () => {
     });
     const d20 = tree.find((s) => s.slug === "dimension-20");
     expect(d20?.seasons.map((s) => s.destSeason)).toEqual([11, 12, 0]);
-    expect(d20?.seasons[0].pending.map((e) => e.code)).toEqual(["S11E01", "S11E02"]);
+    expect(d20?.seasons[0]?.pending.map((e) => e.code)).toEqual(["S11E01", "S11E02"]);
     expect(pendingIds(tree)).toEqual([
       "dropout|dimension-20|S11E01",
       "dropout|dimension-20|S11E02",
@@ -399,16 +398,20 @@ describe("selection helpers", () => {
   it("triState", () => {
     expect(triState(new Set(), all)).toBe("none");
     expect(triState(new Set(all), all)).toBe("all");
-    expect(triState(new Set([all[0]]), all)).toBe("some");
+    expect(triState(new Set([all[0]!]), all)).toBe("some");
   });
 
   it("applyCheck", () => {
-    const next = applyCheck(new Set(), [all[0], all[1]], true);
+    const next = applyCheck(new Set(), [all[0]!, all[1]!], true);
     expect(next.size).toBe(2);
   });
 
   it("effectiveDownloadIds empty selection means all", () => {
     expect(effectiveDownloadIds(new Set(), all)).toEqual(all);
+  });
+
+  it("effectiveDownloadIds explicit clear means none", () => {
+    expect(effectiveDownloadIds(new Set(), all, { cleared: true })).toEqual([]);
   });
 
   it("downloadLabel always has a number", () => {
@@ -422,7 +425,7 @@ describe("selection helpers", () => {
 
   it("sourcesFor", () => {
     expect(sourcesFor([], tree)).toEqual(["dropout", "youtube"]);
-    expect(sourcesFor([all[0]], tree)).toEqual(["dropout"]);
+    expect(sourcesFor([all[0]!], tree)).toEqual(["dropout"]);
   });
 });
 
@@ -456,7 +459,7 @@ describe("unmapped-only series", () => {
     };
     const tree = buildTree(plan);
     expect(visibleSeries(tree, "")).toHaveLength(1);
-    expect(tree[0].unmapped).toHaveLength(1);
+    expect(tree[0]?.unmapped).toHaveLength(1);
   });
 });
 
@@ -478,19 +481,16 @@ describe("platformLabel", () => {
 describe("remainingEpisodes", () => {
   it("hides finished rows during a download", () => {
     const tree = buildTree(d20Plan);
-    const season = tree.find((s) => s.slug === "dimension-20")!.seasons[0];
+    const season = tree.find((s) => s.slug === "dimension-20")!.seasons[0]!;
     const overlay = overlayProgress(tree, {
       ...emptyProgress(),
-      currentId: season.pending[1].id,
+      currentId: season.pending[1]!.id,
       percent: 40,
       phase: "video",
-      doneIds: new Set([season.pending[0].id]),
+      doneIds: new Set([season.pending[0]!.id]),
     });
-    const live = overlay.find((s) => s.slug === "dimension-20")!.seasons[0];
-    expect(remainingEpisodes(live, true).map((e) => e.code)).toEqual([
-      "S21E02",
-      "S21E03",
-    ]);
+    const live = overlay.find((s) => s.slug === "dimension-20")!.seasons[0]!;
+    expect(remainingEpisodes(live, true).map((e) => e.code)).toEqual(["S21E02", "S21E03"]);
     expect(finishedEpisodes(live).map((e) => e.code)).toEqual(["S21E01"]);
   });
 });
@@ -578,9 +578,19 @@ describe("overlayProgress", () => {
       phase: "video",
       doneIds: new Set(["dropout|dimension-20|S21E01"]),
     });
-    const eps = overlay[0].seasons[0].pending;
+    const eps = overlay[0]?.seasons[0]?.pending ?? [];
     expect(eps.find((e) => e.id.endsWith("E01"))?.status).toBe("done");
     expect(eps.find((e) => e.id.endsWith("E02"))?.status).toBe("downloading");
+  });
+
+  it("marks failed ids", () => {
+    const tree = buildTree(d20Plan);
+    const overlay = overlayProgress(tree, {
+      ...emptyProgress(),
+      failedIds: new Set(["dropout|dimension-20|S21E03"]),
+    });
+    const eps = overlay[0]?.seasons[0]?.pending ?? [];
+    expect(eps.find((e) => e.id.endsWith("E03"))?.status).toBe("failed");
   });
 });
 
@@ -654,6 +664,78 @@ describe("mergeProgress steps", () => {
   });
 });
 
+describe("rename and remove plan items", () => {
+  it("keeps rename items visible in the queue", () => {
+    const tree = buildTree({
+      generated_at: null,
+      force: false,
+      sources: {
+        youtube: {
+          ok: true,
+          error: null,
+          seasons: [
+            {
+              platform: "youtube",
+              slug: "example",
+              series: "Example",
+              dest_season: 1,
+              season_title: null,
+              folder: "Season 1",
+              download: 0,
+              skip: 0,
+              unmapped: 0,
+              replace: 0,
+              rename: 1,
+              remove: 1,
+            },
+          ],
+          items: [
+            {
+              id: "youtube|example|S01E01",
+              action: "rename",
+              code: "S01E01",
+              title: "Moved",
+              dest_season: 1,
+              season_title: null,
+              folder: "Season 1",
+              size: null,
+              series: "Example",
+              slug: "example",
+              platform: "youtube",
+            },
+            {
+              id: "youtube|example|S01E02",
+              action: "remove",
+              code: "S01E02",
+              title: "Gone",
+              dest_season: 1,
+              season_title: null,
+              folder: "Season 1",
+              size: null,
+              series: "Example",
+              slug: "example",
+              platform: "youtube",
+            },
+          ],
+        },
+      },
+    });
+    expect(tree[0]?.pendingCount).toBe(2);
+    expect(pendingIds(tree)).toEqual(["youtube|example|S01E01", "youtube|example|S01E02"]);
+    expect(actionLabel("rename")).toBe("Rename");
+    expect(actionLabel("remove")).toBe("Remove");
+    expect(runLabel(2, ["rename", "remove"])).toBe("Apply 2 changes");
+    expect(runLabel(1, ["rename"])).toBe("Rename 1 episode");
+    expect(runLabel(3, ["download", "replace"])).toBe("Download 3 episodes");
+    expect(queueHeading(2, ["rename", "remove"])).toBe("2 queued changes");
+    expect(queueHeading(3, ["download"])).toBe("3 new episodes");
+    expect(countChipText(2, false, ["rename"])).toBe("2 queued");
+    expect(countChipText(2, false, ["download"])).toBe("2 new");
+    expect(isDownloadHeavy(["rename"])).toBe(false);
+    expect(actionsForIds(pendingIds(tree), tree)).toEqual(["rename", "remove"]);
+  });
+});
+
 describe("runStatsLine", () => {
   it("counts done against the original queue size", () => {
     expect(
@@ -669,5 +751,28 @@ describe("runStatsLine", () => {
         4,
       ),
     ).toBe("1/4 done · 0 failed · Dropout");
+  });
+});
+
+describe("listingLabel", () => {
+  it("names the platform without an ellipsis", () => {
+    expect(listingLabel("youtube")).toBe("Listing YouTube");
+    expect(listingLabel("dropout")).toBe("Listing Dropout");
+  });
+
+  it("renders a bare Listing… for unknown sources", () => {
+    expect(listingLabel(null)).toBe("Listing…");
+    expect(listingLabel(undefined)).toBe("Listing…");
+    expect(listingLabel("other")).toBe("Listing…");
+  });
+
+  it("is shared by the stats line and hero heading", () => {
+    expect(runStatsLine({ phase: "planning", source: "youtube" }, emptyProgress(), 0)).toBe(
+      "Listing YouTube",
+    );
+    expect(runStatsLine({ phase: "planning", source: null }, emptyProgress(), 0)).toBe("Listing…");
+    expect(heroFrom({ phase: "planning", source: null }, [], emptyProgress(), null).heading).toBe(
+      "Listing…",
+    );
   });
 });

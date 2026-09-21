@@ -1,19 +1,21 @@
-let navigate: ((url: string) => void) | null = null;
-let pending: string | null = null;
+type NavigateFn = (url: string, options?: { replace?: boolean }) => void;
 
-export function setNavigator(fn: ((url: string) => void) | null) {
+let navigate: NavigateFn | null = null;
+let pending: string[] = [];
+
+export function setNavigator(fn: NavigateFn | null) {
   navigate = fn;
-  if (fn && pending) {
-    const url = pending;
-    pending = null;
-    fn(url);
+  if (fn && pending.length) {
+    const urls = pending;
+    pending = [];
+    for (const url of urls) fn(url);
   }
 }
 
-export function go(url: string) {
+export function go(url: string, options?: { replace?: boolean }) {
   if (navigate) {
-    navigate(url);
+    navigate(url, options);
     return;
   }
-  pending = url;
+  pending.push(url);
 }
