@@ -7,7 +7,6 @@ import {
   omitLockedPlatform,
   pathNotices,
   routeForSession,
-  runKeyFor,
   slotDisplay,
   slotIsSet,
   slotText,
@@ -78,42 +77,6 @@ describe("pathNotices", () => {
   });
 });
 
-describe("runKeyFor", () => {
-  it("uses started_at so a new run resets the log viewer", () => {
-    expect(
-      runKeyFor({
-        status: "running",
-        phase: "downloading",
-        source: "youtube",
-        dry_run: false,
-        verbose: false,
-        force: false,
-        started_at: "2026-01-01T00:00:00+00:00",
-        finished_at: null,
-        exit_code: null,
-        plan: null,
-      }),
-    ).toBe("2026-01-01T00:00:00+00:00");
-  });
-
-  it("uses idle when never started", () => {
-    expect(
-      runKeyFor({
-        status: "idle",
-        phase: "idle",
-        source: null,
-        dry_run: false,
-        verbose: false,
-        force: false,
-        started_at: null,
-        finished_at: null,
-        exit_code: null,
-        plan: null,
-      }),
-    ).toBe("idle");
-  });
-});
-
 describe("messageFromErrorBody", () => {
   it("reads both envelopes", () => {
     expect(messageFromErrorBody({ error: "plain" }, "x")).toBe("plain");
@@ -136,7 +99,6 @@ describe("masked config slots", () => {
       library: strField("/lib"),
       old_dir: strField("/old"),
       staging: strField(null),
-      bench_dest: strField(null),
       shows_dir: strField("shows"),
       sonarr_url: strField("http://localhost:8989"),
       sonarr_api_key: {

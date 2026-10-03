@@ -10,17 +10,12 @@ export const queryKeys = {
   missing: (platform: string, slug: string) => ["series-missing", `${platform}|${slug}`] as const,
   missingBatch: (keys: string[]) => ["series-missing-batch", ...keys] as const,
   sonarrEpisodes: (tvdbId: number) => ["sonarr-episodes", tvdbId] as const,
-  check: (slug: string, skipKey = "") => ["series-check", slug, skipKey] as const,
-  layout: (slug: string) => ["series-layout", slug] as const,
   config: () => ["app-config"] as const,
   cookies: () => ["cookies"] as const,
-  plan: () => ["plan"] as const,
-  run: () => ["run"] as const,
+  plan: (force?: boolean, create?: boolean) =>
+    force === undefined && create === undefined
+      ? (["plan"] as const)
+      : (["plan", force ?? false, create ?? false] as const),
+  jobs: () => ["jobs"] as const,
   session: () => ["session"] as const,
 };
-
-export const persistQueryRoots = new Set(["series-list", "series", "episodes", "sonarr-episodes"]);
-
-export function shouldPersistQuery(queryKey: readonly unknown[]): boolean {
-  return typeof queryKey[0] === "string" && persistQueryRoots.has(queryKey[0]);
-}

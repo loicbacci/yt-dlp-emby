@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { shouldPersistQuery } from "./queryKeys";
 import { mergeOnDisk, onDiskSet } from "./seriesCatalog";
 import { seriesUiKey } from "./seriesUiStore";
-
-describe("shouldPersistQuery", () => {
-  it("persists catalog, not derived disk or run snapshots", () => {
-    expect(shouldPersistQuery(["episodes", "dropout", "clip", 0, 0])).toBe(true);
-    expect(shouldPersistQuery(["disk", "dropout", "clip"])).toBe(false);
-    expect(shouldPersistQuery(["series-list"])).toBe(true);
-    expect(shouldPersistQuery(["series-missing", "dropout|clip"])).toBe(false);
-    expect(shouldPersistQuery(["run"])).toBe(false);
-  });
-});
 
 describe("onDiskSet", () => {
   it("maps slots to keys and prefers the disk payload", () => {

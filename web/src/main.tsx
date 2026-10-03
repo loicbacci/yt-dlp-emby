@@ -1,12 +1,12 @@
-import { PersistQueryClientProvider } from "@tanstack/preact-query-persist-client";
+import { QueryClientProvider } from "@tanstack/preact-query";
 import { render } from "preact";
 import { App } from "./App";
-import { persistQueryOptions, queryClient } from "./queryClient";
+import { queryClient } from "./queryClient";
 import "./styles.css";
 
 render(
-  <PersistQueryClientProvider client={queryClient} persistOptions={persistQueryOptions}>
+  <QueryClientProvider client={queryClient}>
     <App />
-  </PersistQueryClientProvider>,
+  </QueryClientProvider>,
   document.getElementById("app")!,
 );

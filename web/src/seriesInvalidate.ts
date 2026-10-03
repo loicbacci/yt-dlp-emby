@@ -25,7 +25,6 @@ export async function invalidateSeriesState(
       queryClient.invalidateQueries({
         queryKey: queryKeys.missing(item.platform, item.slug),
       }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.check(item.slug) }),
     );
     if (item.tvdb_id != null) {
       jobs.push(
@@ -60,7 +59,6 @@ export async function invalidateAfterQueueRebuild(
       queryClient.invalidateQueries({
         queryKey: queryKeys.missing(item.platform, item.slug),
       }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.check(item.slug) }),
     );
     if (item.tvdb_id != null) {
       jobs.push(

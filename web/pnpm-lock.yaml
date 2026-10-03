@@ -11,15 +11,9 @@ importers:
       '@tanstack/preact-query':
         specifier: ^5.103.1
         version: 5.103.1(preact@10.29.8)
-      '@tanstack/preact-query-persist-client':
-        specifier: ^5.103.1
-        version: 5.103.1(@tanstack/preact-query@5.103.1(preact@10.29.8))(preact@10.29.8)
       '@tanstack/preact-store':
         specifier: ^0.13.2
         version: 0.13.2(preact@10.29.8)
-      '@tanstack/query-sync-storage-persister':
-        specifier: ^5.103.1
-        version: 5.103.1
       preact:
         specifier: ^10.26.5
         version: 10.29.8(preact-render-to-string@6.7.0)
@@ -617,12 +611,6 @@ packages:
   '@skidding/launch-editor@2.13.2':
     resolution: {integrity: sha512-BphfE/1Prmsjj5K7mZzKU5wHf360pu7CdylfR6UqRHrzw/qMgqnQA/0yTDHDe1VsPuGpQt2QeSbbu48WY4bj0g==}
 
-  '@tanstack/preact-query-persist-client@5.103.1':
-    resolution: {integrity: sha512-mVjWoNxs3mIQxL/aBauefdAfR5kWA42nV/chAMmprCIJV2RkLvJt4ssYD4OaDSClf0G1vTKh4jkxJ7sxET6LKg==}
-    peerDependencies:
-      '@tanstack/preact-query': ^5.103.1
-      preact: ^10.0.0
-
   '@tanstack/preact-query@5.103.1':
     resolution: {integrity: sha512-x24ZNupkOBMgsm175Jy4d9SgkCEKfgFATDSnBxxsxbR8jLtQ6/VLiC7e3HO8nKwgwTlknl8IYH2EwT0XrZVpng==}
     peerDependencies:
@@ -635,12 +623,6 @@ packages:
 
   '@tanstack/query-core@5.103.1':
     resolution: {integrity: sha512-rms8HqTGp6zA00dM+cUQ2eBcgzNJefuu5CAMB37i/6MiGT1zulPOytCFu2a0qjLqVR2n1jENPj9woqFQNuCzWA==}
-
-  '@tanstack/query-persist-client-core@5.103.1':
-    resolution: {integrity: sha512-ybirgB/kkFeMDk97W1ZTH09Wy5zageg6bC1LkxKFUCRFRbsGD+nm9+WVFVllce34O6aKWR3XDBBk2G04bpJYYg==}
-
-  '@tanstack/query-sync-storage-persister@5.103.1':
-    resolution: {integrity: sha512-NnLrTEkaJikyFdJzXFklrXzaljuv4rxLXdulsdZM6huzX/B4ftoi415Qajs34CXECoowqCM5WcrMMSuyGUSM9g==}
 
   '@tanstack/store@0.11.1':
     resolution: {integrity: sha512-mzTOBhypOuDJAy/D8n2MfUZ1HFkXnmSETviRyhqEC8LUE7/IZQExOTxMANj3KjTofYTkFNpBY67qaVrT41YccA==}
@@ -2530,12 +2512,6 @@ snapshots:
     dependencies:
       shell-quote: 1.10.0
 
-  '@tanstack/preact-query-persist-client@5.103.1(@tanstack/preact-query@5.103.1(preact@10.29.8))(preact@10.29.8)':
-    dependencies:
-      '@tanstack/preact-query': 5.103.1(preact@10.29.8)
-      '@tanstack/query-persist-client-core': 5.103.1
-      preact: 10.29.8(preact-render-to-string@6.7.0)
-
   '@tanstack/preact-query@5.103.1(preact@10.29.8)':
     dependencies:
       '@tanstack/query-core': 5.103.1
@@ -2547,15 +2523,6 @@ snapshots:
       preact: 10.29.8(preact-render-to-string@6.7.0)
 
   '@tanstack/query-core@5.103.1': {}
-
-  '@tanstack/query-persist-client-core@5.103.1':
-    dependencies:
-      '@tanstack/query-core': 5.103.1
-
-  '@tanstack/query-sync-storage-persister@5.103.1':
-    dependencies:
-      '@tanstack/query-core': 5.103.1
-      '@tanstack/query-persist-client-core': 5.103.1
 
   '@tanstack/store@0.11.1': {}
 

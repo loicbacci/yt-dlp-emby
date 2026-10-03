@@ -4,6 +4,7 @@ import { apiClient, routeForSession } from "./api";
 import { logoutAndClear } from "./auth";
 import { Header } from "./components/Header";
 import { ToastHost } from "./components/Toast";
+import { JobLifecycle } from "./hooks/useJobs";
 import { setNavigator } from "./nav";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
@@ -134,6 +135,7 @@ export function App() {
       </a>
       <NavigatorBridge />
       <SessionGate />
+      <JobLifecycle />
       <ToastHost />
     </LocationProvider>
   );

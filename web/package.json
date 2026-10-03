@@ -1,7 +1,7 @@
 {
   "name": "yt-dlp-emby-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "packageManager": "pnpm@10.6.5",
   "engineStrict": true,
@@ -22,9 +22,7 @@
   },
   "dependencies": {
     "@tanstack/preact-query": "^5.103.1",
-    "@tanstack/preact-query-persist-client": "^5.103.1",
     "@tanstack/preact-store": "^0.13.2",
-    "@tanstack/query-sync-storage-persister": "^5.103.1",
     "preact": "^10.26.5",
     "preact-iso": "^2.9.2",
     "zod": "^3.24.2"

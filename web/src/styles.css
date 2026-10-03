@@ -1411,7 +1411,8 @@ a.source-url:hover {
 }
 
 .episode-status.is-unmapped,
-.episode-status.is-skipped {
+.episode-status.is-skipped,
+.episode-status.is-unknown {
   color: var(--text-muted);
 }
 
@@ -2092,6 +2093,16 @@ a.show-copy:hover .show-name {
   background: var(--text-muted);
 }
 
+.dot-status.unknown {
+  background: var(--text-muted);
+  opacity: 0.55;
+}
+
+.count-chip.is-unknown {
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
 .status-pill {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -2499,4 +2510,80 @@ a.show-copy:hover .show-name {
   .run-shell {
     padding-bottom: calc(96px + env(safe-area-inset-bottom));
   }
+}
+
+.app-header > .job-progress {
+  flex: 1 0 100%;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  background: var(--surface, #181818);
+}
+
+.job-progress-main,
+.job-progress-actions,
+.job-progress-stage,
+.job-progress-time {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.job-progress-main {
+  justify-content: space-between;
+}
+
+.job-progress-main > div:first-child {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.job-progress-stage,
+.job-progress-time,
+.job-progress-result {
+  color: var(--muted, #aaa);
+  font-size: 0.88em;
+}
+
+.job-progress-error {
+  color: var(--danger, #ff8585);
+}
+
+.job-log-details,
+.job-history,
+.job-results {
+  margin-top: 8px;
+}
+
+.job-log-details pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.job-history ul,
+.job-results ul {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.job-history li,
+.job-results li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.refresh-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }

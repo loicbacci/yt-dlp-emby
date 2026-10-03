@@ -15,9 +15,6 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
-        // Infinite timeout is intentional so SSE (/api/runs/log, /api/runs/events) is not cut off.
-        timeout: 0,
-        proxyTimeout: 0,
       },
     },
   },

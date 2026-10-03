@@ -1,4 +1,4 @@
-import { useIsRestoring, useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { ApiError, apiClient } from "../api";
 import { logoutAndClear } from "../auth";
@@ -6,22 +6,16 @@ import { ConfirmModal } from "../components/ConfirmModal";
 import { Header } from "../components/Header";
 import { OnboardingChecklist } from "../components/OnboardingChecklist";
 import { Poster, posterLetter } from "../components/Poster";
-import { type RefreshPart, RefreshSplit } from "../components/RefreshSplit";
+import { RefreshSplit } from "../components/RefreshSplit";
 import { SeriesListSkeleton, Skeleton } from "../components/Skeleton";
 import { pushToast } from "../components/Toast";
 import { CreateSeriesModal } from "../components/series/CreateSeriesModal";
 import { useDismiss } from "../hooks/useDismiss";
+import { useJobs } from "../hooks/useJobs";
 import { useOnline } from "../hooks/useOnline";
 import { go } from "../nav";
 import { queryKeys } from "../queryKeys";
 import { formatRelativeTime, newestRefreshIso } from "../relativeTime";
-import { invalidateSeriesState } from "../seriesInvalidate";
-import {
-  beginRefresh,
-  endRefresh,
-  refreshSeriesKey,
-  useAnyRefreshing,
-} from "../seriesRefreshStore";
 import type { SeriesPlatform, SeriesSummary } from "../seriesView";
 import {
   countLabel,
@@ -33,10 +27,10 @@ import {
 import { writeSearch } from "../urlState";
 
 export function SeriesList() {
-  const restoring = useIsRestoring();
   const queryClient = useQueryClient();
   const online = useOnline();
-  const refreshingKeys = useAnyRefreshing();
+  const jobsQuery = useJobs();
+  const activeJob = jobsQuery.data?.active;
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const [query, setQuery] = useState(params.get("q") ?? "");
   const [platform, setPlatform] = useState<SeriesPlatform | "all">(() => {
@@ -106,9 +100,7 @@ export function SeriesList() {
   });
 
   const listError = listQuery.error instanceof Error ? listQuery.error.message : null;
-  const listLoading = Boolean(
-    (listQuery.isPending && !listQuery.data) || (restoring && !listQuery.data),
-  );
+  const listLoading = Boolean(listQuery.isPending && !listQuery.data);
 
   useEffect(() => {
     writeSearch({
@@ -123,53 +115,25 @@ export function SeriesList() {
   );
   const lastRefresh = formatRelativeTime(newestRefreshIso(filtered));
 
-  type RefreshItemsArg = {
-    items: { platform: SeriesPlatform; slug: string; tvdb_id?: number | null }[];
-    part?: RefreshPart;
-  };
   const refreshMut = useMutation({
-    mutationFn: ({ items, part = "all" }: RefreshItemsArg) =>
-      apiClient.refreshSeries(
-        items.map((item) => ({ platform: item.platform, slug: item.slug })),
-        part === "all" ? undefined : [part],
-      ),
-    onMutate: async ({ items }: RefreshItemsArg) => {
-      const keys = items.map((item) => refreshSeriesKey(item.platform, item.slug));
-      await queryClient.cancelQueries({ queryKey: queryKeys.seriesList() });
-      const prevList = queryClient.getQueryData(queryKeys.seriesList());
-      beginRefresh(keys);
+    mutationFn: (items: { platform: SeriesPlatform; slug: string }[]) =>
+      apiClient.startJob({ kind: "refresh", items, expected_revision: planQuery.data?.revision }),
+    onMutate: () => {
       setActionError(null);
-      return { prevList, keys, items };
     },
-    onError: (err, _arg, ctx) => {
-      if (ctx?.prevList) queryClient.setQueryData(queryKeys.seriesList(), ctx.prevList);
+    onError: (err) => {
       const message = err instanceof ApiError ? err.message : "Refresh failed";
       setActionError(message);
       pushToast(message, "alert");
     },
-    onSuccess: (body) => {
-      const failed = body.results.filter((row) => row.error);
-      if (failed.length) {
-        const message = failed.map((row) => `${row.slug}: ${row.error}`).join("; ");
-        setActionError(message);
-        pushToast(message, "alert");
-      } else {
-        pushToast("Refresh complete");
-      }
-    },
-    onSettled: (_body, _err, arg, ctx) => {
-      endRefresh(ctx?.keys ?? []);
-      void invalidateSeriesState(queryClient, arg?.items ?? ctx?.items ?? []);
-    },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
   });
-  const refreshItems = (
-    items: { platform: SeriesPlatform; slug: string; tvdb_id?: number | null }[],
-    part: RefreshPart = "all",
-  ) => {
-    if (!items.length || refreshMut.isPending) return;
-    refreshMut.mutate({ items, part });
+  const refreshItems = (items: { platform: SeriesPlatform; slug: string }[]) => {
+    if (!items.length || refreshMut.isPending || activeJob) return;
+    refreshMut.mutate(items);
   };
-  const refreshInProgress = refreshMut.isPending || refreshingKeys.length > 0;
+  const refreshInProgress = refreshMut.isPending || Boolean(activeJob);
+  const activeTargets = activeJob?.kind === "refresh" ? (activeJob.progress?.target ?? "") : "";
 
   const deleteMut = useMutation({
     mutationFn: (row: SeriesSummary) => apiClient.deleteSeries(row.platform, row.slug),
@@ -221,7 +185,6 @@ export function SeriesList() {
               <RefreshSplit
                 disabled={refreshInProgress || !filtered.length}
                 busy={refreshInProgress}
-                showSonarr={filtered.some((row) => row.tvdb_id != null)}
                 title={
                   refreshInProgress
                     ? "Refresh already running"
@@ -229,7 +192,24 @@ export function SeriesList() {
                       ? "No shows to refresh"
                       : undefined
                 }
-                onRefresh={(part) => void refreshItems(filtered, part)}
+                onRefresh={() =>
+                  void refreshItems(filtered.map(({ platform, slug }) => ({ platform, slug })))
+                }
+                onSonarrCheck={() => {
+                  const items = filtered
+                    .filter((row) => row.platform === "dropout" && row.tvdb_id != null)
+                    .map(({ platform, slug }) => ({ platform, slug }));
+                  if (items.length && !activeJob) {
+                    void apiClient
+                      .startJob({ kind: "check", items })
+                      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }))
+                      .catch((err) =>
+                        setActionError(
+                          err instanceof Error ? err.message : "Sonarr check failed to start",
+                        ),
+                      );
+                  }
+                }}
               />
               <button
                 type="button"
@@ -313,11 +293,9 @@ export function SeriesList() {
                   null
                 }
                 missingLoading={
-                  row.platform === "dropout" &&
-                  row.missing_count == null &&
-                  (missingBatch.isPending || restoring)
+                  row.platform === "dropout" && row.missing_count == null && missingBatch.isPending
                 }
-                refreshing={refreshingKeys.includes(refreshSeriesKey(row.platform, row.slug))}
+                refreshing={Boolean(activeTargets.includes(`${row.platform}|${row.slug}`))}
                 menuOpen={menuOpen === `${row.platform}-${row.slug}`}
                 registerTrigger={(el) => {
                   const key = `${row.platform}-${row.slug}`;
@@ -330,15 +308,7 @@ export function SeriesList() {
                   menuTriggerRef.current = triggerRefs.current.get(key) ?? null;
                   closeMenuAndRefocus();
                 }}
-                onRefresh={() =>
-                  void refreshItems([
-                    {
-                      platform: row.platform,
-                      slug: row.slug,
-                      tvdb_id: row.tvdb_id,
-                    },
-                  ])
-                }
+                onRefresh={() => void refreshItems([{ platform: row.platform, slug: row.slug }])}
                 onDelete={() => {
                   setActionError(null);
                   setPendingDelete(row);
@@ -397,7 +367,8 @@ function SeriesRow({
   onRefresh: () => void;
   onDelete: () => void | Promise<void>;
 }) {
-  const statusText = missingStatusText(missing);
+  const statusText =
+    missing == null && row.platform === "dropout" ? "Unknown" : missingStatusText(missing);
   const statusClass = missingStatusClass(missing);
   const href = `/series/${row.platform}/${encodeURIComponent(row.slug)}`;
 
@@ -424,6 +395,11 @@ function SeriesRow({
               {countLabel(row.season_count, "season", "seasons")}
             </span>
             {row.path ? <span class="show-row-path">{row.path}</span> : null}
+            {row.freshness === "stale" && <span class="run-meta">Refresh required</span>}
+            {row.freshness === "unavailable" && <span class="run-meta">Library unavailable</span>}
+            {row.last_success_at && (
+              <span class="run-meta">Last success {formatRelativeTime(row.last_success_at)}</span>
+            )}
           </div>
         </div>
       </a>

@@ -4,9 +4,9 @@ import type {
   ConfigValues,
   CookieKind,
   CookieStatus,
-  DownloadOptions,
-  DropoutCheck,
-  DropoutLayout,
+  JobRequest,
+  JobSnapshot,
+  JobStart,
   Manifest,
   ManifestImport,
   ManifestPaths,
@@ -15,7 +15,6 @@ import type {
   MissingRow,
   PlanFile,
   PlatformSettings,
-  Run,
   SeriesDetail,
   SeriesEpisode,
   Session,
@@ -25,10 +24,13 @@ import type {
 } from "./types";
 import {
   isMaskedSecret,
+  jobSnapshotSchema,
+  jobStartSchema,
+  jobsListSchema,
   parseWith,
   planFileSchema,
-  runSchema,
   seriesDetailSchema,
+  seriesEpisodesResponseSchema,
   slotDisplay,
   slotIsSet,
   slotText,
@@ -47,8 +49,6 @@ export type {
   CookieStatus,
   DropoutCheck,
   DropoutCheckHint,
-  DropoutLayout,
-  DownloadOptions,
   EpisodeFileStatus,
   Manifest,
   ManifestImport,
@@ -60,6 +60,13 @@ export type {
   PlanSourceBlock,
   PlatformSettings,
   Run,
+  JobKind,
+  JobLog,
+  JobProgress,
+  JobRequest,
+  JobSnapshot,
+  JobStart,
+  JobStatus,
   RunPhase,
   RunProgressEvent,
   RunStatus,
@@ -130,7 +137,12 @@ function seriesUrl(platform: Source, slug: string, suffix = ""): string {
   return `/api/series/${platform}/${encodeURIComponent(slug)}${suffix}`;
 }
 
-async function api<T>(path: string, init?: RequestInit, parse?: (data: unknown) => T): Promise<T> {
+async function api<T>(
+  path: string,
+  init?: RequestInit,
+  parse?: (data: unknown) => T,
+  expectedStatus?: number,
+): Promise<T> {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const { signal: initSignal, headers: _headers, ...rest } = init ?? {};
   const response = await fetch(path, {
@@ -148,6 +160,12 @@ async function api<T>(path: string, init?: RequestInit, parse?: (data: unknown) 
     }
     if (response.status === 401) throw new UnauthorizedError(message);
     throw new ApiError(response.status, message);
+  }
+  if (expectedStatus != null && response.status !== expectedStatus) {
+    throw new ApiError(
+      response.status,
+      `Expected HTTP ${expectedStatus}, received ${response.status}`,
+    );
   }
   if (response.status === 204) {
     return undefined as T;
@@ -167,10 +185,6 @@ export function routeForSession(session: Session, path: string): string {
   return path;
 }
 
-export function runKeyFor(run: Run): string {
-  return run.started_at ?? "idle";
-}
-
 export function valuesFromConfig(config: AppConfig): ConfigValues {
   // slotText maps masked secret objects to "": sonarr_api_key is write-only in
   // the UI (masked last-4 shown separately) and must never round-trip into PUT.
@@ -179,7 +193,6 @@ export function valuesFromConfig(config: AppConfig): ConfigValues {
     library: value("library"),
     old_dir: value("old_dir"),
     staging: value("staging"),
-    bench_dest: value("bench_dest"),
     shows_dir: value("shows_dir"),
     sonarr_url: value("sonarr_url"),
     sonarr_api_key: value("sonarr_api_key"),
@@ -281,33 +294,40 @@ export const apiClient = {
       method: "PUT",
       body: JSON.stringify({ text }),
     }),
-  getRun: () => api<Run>("/api/runs", undefined, (data) => parseWith(runSchema, data, "Run")),
-  getPlan: () =>
-    api<PlanFile>("/api/runs/plan", undefined, (data) => parseWith(planFileSchema, data, "Plan")),
-  startPlan: (force = false, create = false) =>
-    api<Run>(
-      "/api/runs/plan",
-      {
-        method: "POST",
-        body: JSON.stringify({ force, create }),
-      },
-      (data) => parseWith(runSchema, data, "Run"),
+  getPlan: (force = false, create = false) =>
+    api<PlanFile>(`/api/plans/latest?force=${force}&create=${create}`, undefined, (data) =>
+      parseWith(planFileSchema, data, "Plan"),
     ),
-  startDownload: (options: DownloadOptions) =>
-    api<Run>(
-      "/api/runs",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          ids: options.ids,
-          force: options.force ?? false,
-          create: options.create ?? false,
-        }),
-      },
-      (data) => parseWith(runSchema, data, "Run"),
+  getJobs: (offset = 0, limit = 20) =>
+    api<{ active: JobSnapshot | null; history: JobSnapshot[]; total: number }>(
+      `/api/jobs?offset=${offset}&limit=${limit}`,
+      undefined,
+      (data) => parseWith(jobsListSchema, data, "Jobs"),
     ),
-  stopRun: () =>
-    api<Run>("/api/runs/stop", { method: "POST" }, (data) => parseWith(runSchema, data, "Run")),
+  getJob: (id: string, logAfter = 0) =>
+    api<JobSnapshot>(
+      `/api/jobs/${encodeURIComponent(id)}?log_after=${logAfter}`,
+      undefined,
+      (data) => parseWith(jobSnapshotSchema, data, "Job"),
+    ),
+  startJob: (request: JobRequest) =>
+    api<JobStart>(
+      "/api/jobs",
+      { method: "POST", body: JSON.stringify(request) },
+      (data) => parseWith(jobStartSchema, data, "Job start"),
+      202,
+    ),
+  cancelJob: (id: string) =>
+    api<JobSnapshot>(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }, (data) =>
+      parseWith(jobSnapshotSchema, data, "Job"),
+    ),
+  retryJob: (id: string) =>
+    api<JobStart>(
+      `/api/jobs/${encodeURIComponent(id)}/retry`,
+      { method: "POST" },
+      (data) => parseWith(jobStartSchema, data, "Job start"),
+      202,
+    ),
   getPlatform: (kind: Source) => api<PlatformSettings>(`/api/platform/${kind}`),
   putPlatform: (
     kind: Source,
@@ -344,7 +364,12 @@ export const apiClient = {
       (data) => parseWith(seriesDetailSchema, data, "Series"),
     ),
   getSeriesDisk: (platform: Source, slug: string) =>
-    api<{ on_disk: { season: number; episode: number }[] }>(seriesUrl(platform, slug, "/disk")),
+    api<{
+      on_disk: { season: number; episode: number }[];
+      state?: "ready" | "unavailable" | "stale";
+      error?: string | null;
+      scanned_at?: string | null;
+    }>(seriesUrl(platform, slug, "/disk")),
   getSeriesMissing: (platform: Source, slug: string) =>
     api<MissingRow>(seriesUrl(platform, slug, "/missing")),
   getSeriesMissingBatch: async (items: { platform: Source; slug: string }[]) => {
@@ -384,10 +409,6 @@ export const apiClient = {
     );
     return Object.fromEntries(entries);
   },
-  getDropoutCheck: (slug: string) =>
-    api<DropoutCheck>(`/api/series/dropout/${encodeURIComponent(slug)}/check`),
-  getDropoutLayout: (slug: string) =>
-    api<DropoutLayout>(`/api/series/dropout/${encodeURIComponent(slug)}/layout`),
   putSeries: (platform: Source, slug: string, body: SeriesDetail) =>
     api<SeriesDetail>(
       seriesUrl(platform, slug),
@@ -417,25 +438,16 @@ export const apiClient = {
       { method: "DELETE" },
       (data) => parseWith(seriesDetailSchema, data, "Series"),
     ),
-  refreshSeriesSource: (platform: Source, slug: string, sourceIndex: number) =>
-    api<SeriesDetail>(
-      seriesUrl(platform, slug, `/sources/${sourceIndex}/refresh`),
-      { method: "POST" },
-      (data) => parseWith(seriesDetailSchema, data, "Series"),
-    ),
-  refreshSeries: (items: { platform: Source; slug: string }[], parts?: string[]) =>
-    api<{
-      ok: boolean;
-      results: { platform: string; slug: string; error: string | null }[];
-    }>("/api/series/refresh", {
-      method: "POST",
-      body: JSON.stringify({ items, parts }),
-    }),
   getSeriesEpisodes: (platform: Source, slug: string, sourceIndex: number, seasonId: number) =>
     api<{
       episodes: SeriesEpisode[];
       on_disk?: { season: number; episode: number }[];
-    }>(seriesUrl(platform, slug, `/sources/${sourceIndex}/seasons/${seasonId}/episodes`)),
+      disk_state?: "ready" | "unavailable" | "stale";
+    }>(
+      seriesUrl(platform, slug, `/sources/${sourceIndex}/seasons/${seasonId}/episodes`),
+      undefined,
+      (data) => parseWith(seriesEpisodesResponseSchema, data, "Series episodes"),
+    ),
   getSonarrEpisodes: (tvdbId: number) =>
     api<{ title: string; title_slug: string | null; episodes: SonarrEpisode[] }>(
       `/api/sonarr/episodes?tvdb_id=${tvdbId}`,

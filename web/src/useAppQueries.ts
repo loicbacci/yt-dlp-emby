@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/preact-query";
 import { ApiError, type Run, apiClient } from "./api";
-import { isBrowserOnline, isPageVisible } from "./hooks/useOnline";
+import { useJobs } from "./hooks/useJobs";
 import { queryKeys } from "./queryKeys";
 
 export const idleRun: Run = {
@@ -26,33 +26,49 @@ export function useSession() {
   });
 }
 
-function useAuthenticated(): boolean {
-  const session = useSession();
-  return session.data?.authenticated === true;
-}
-
 export function useAppRun() {
-  const enabled = useAuthenticated();
-  return useQuery({
-    queryKey: queryKeys.run(),
-    queryFn: () => apiClient.getRun(),
-    enabled,
-    refetchInterval: (query) => {
-      if (!isBrowserOnline() || !isPageVisible()) return false;
-      return query.state.data?.status === "running" ? 2000 : 10_000;
-    },
-    refetchIntervalInBackground: false,
-    staleTime: 1000,
-  });
+  const jobs = useJobs();
+  const job = jobs.data?.active ?? jobs.data?.focused;
+  const active = Boolean(job && ["queued", "running", "stopping"].includes(job.status));
+  const data: Run | undefined = job
+    ? {
+        status: job.status === "stopping" ? "stopping" : active ? "running" : "exited",
+        phase:
+          active && job.kind === "refresh"
+            ? "planning"
+            : active && job.kind === "download"
+              ? "downloading"
+              : job.status === "stopping"
+                ? "stopping"
+                : "exited",
+        source: null,
+        dry_run: false,
+        verbose: false,
+        force: false,
+        started_at: job.started_at ?? job.created_at,
+        finished_at: job.finished_at,
+        exit_code:
+          job.status === "succeeded"
+            ? 0
+            : job.status === "cancelled"
+              ? 130
+              : job.status === "failed" || job.status === "interrupted"
+                ? 1
+                : null,
+        plan: null,
+        progress: null,
+      }
+    : undefined;
+  return { ...jobs, data, isPending: jobs.isPending };
 }
 
-export function usePlan() {
-  const enabled = useAuthenticated();
+export function usePlan(force = false, create = false) {
+  const enabled = useSession().data?.authenticated === true;
   return useQuery({
-    queryKey: queryKeys.plan(),
+    queryKey: queryKeys.plan(force, create),
     queryFn: async () => {
       try {
-        return await apiClient.getPlan();
+        return await apiClient.getPlan(force, create);
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) return null;
         throw err;
@@ -60,7 +76,5 @@ export function usePlan() {
     },
     enabled,
     staleTime: 5_000,
-    refetchInterval: () => (isBrowserOnline() && isPageVisible() ? 10_000 : false),
-    refetchIntervalInBackground: false,
   });
 }

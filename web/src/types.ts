@@ -9,11 +9,10 @@ export type ConfigKey =
   | "library"
   | "old_dir"
   | "staging"
-  | "bench_dest"
   | "shows_dir"
   | "sonarr_url"
   | "sonarr_api_key";
-export type EpisodeFileStatus = "downloaded" | "missing" | "skipped" | "unmapped";
+export type EpisodeFileStatus = "downloaded" | "missing" | "skipped" | "unmapped" | "unknown";
 
 export type Session = { setup_required: boolean; authenticated: boolean };
 export type ManifestImport = { path: string; text: string; exists: boolean };
@@ -79,9 +78,73 @@ export type PlanSourceBlock = {
 };
 
 export type PlanFile = {
+  plan_id?: string;
+  revision?: string;
+  readiness?: "ready" | "stale" | "unavailable" | string;
   generated_at: string | null;
   force: boolean;
   sources: Record<string, PlanSourceBlock>;
+};
+
+export type JobKind = "refresh" | "download" | "check" | "diagnostics";
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "stopping"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+export type JobProgress = {
+  stage: string;
+  target: string | null;
+  completed: number;
+  total: number | null;
+  item?: Record<string, unknown> | null;
+};
+export type JobLog = { n: number; ts: string; line: string };
+export type JobSnapshot = {
+  id: string;
+  kind: JobKind;
+  status: JobStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  progress: JobProgress | null;
+  result: unknown;
+  error: unknown;
+  logs: JobLog[];
+  log_cursor: number;
+  logs_truncated: boolean;
+  can_cancel: boolean;
+  can_retry: boolean;
+};
+export type JobStart = { job_id: string; status: "queued" };
+export type JobRequest =
+  | {
+      kind: "refresh";
+      items: { platform: Source; slug: string }[];
+      source_index?: number;
+      expected_revision?: string;
+    }
+  | {
+      kind: "download";
+      plan_id: string;
+      ids: string[];
+      force?: boolean;
+      create?: boolean;
+    }
+  | { kind: "check"; items: { platform: Source; slug: string }[] }
+  | { kind: "diagnostics"; checks: string[] };
+export type LibrarySnapshot = {
+  status: "ready" | "unavailable";
+  series_exists: boolean | null;
+  episodes: number | null;
+  episode_fingerprints: unknown;
+  revision: string | null;
+  scanned_at: string | null;
+  mount_identity: unknown;
+  error: string | null;
 };
 
 export type RunProgressEvent =
@@ -115,12 +178,6 @@ export type Run = {
   progress?: RunProgressEvent | null;
 };
 
-export type DownloadOptions = {
-  ids: string[] | null;
-  force?: boolean;
-  create?: boolean;
-};
-
 export type DropoutCheckHint = {
   text: string;
   kind: string;
@@ -141,20 +198,6 @@ export type DropoutCheck = {
   }[];
   warnings: { code: string; detail: string }[];
   title_mismatches: { code: string; file_title: string; sonarr_title: string }[];
-};
-
-export type DropoutLayout = {
-  folders: {
-    dest_season: number | null;
-    label: string;
-    folder?: string;
-    episodes: {
-      code: string | null;
-      title: string;
-      status: string;
-      origin: string | null;
-    }[];
-  }[];
 };
 
 export type ConfigField = {
@@ -263,6 +306,9 @@ export type SeriesDetail = {
   tvdb_skip: { season: number; episodes: number[] }[];
   sources: SeriesSource[];
   poster_url?: string;
+  freshness?: "ready" | "stale" | "unavailable";
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
   refreshed?: {
     listings: string | null;
     disk: string | null;
@@ -298,44 +344,117 @@ export type SonarrPing = {
 export type MissingRow = { missing_count: number | null; complete: boolean };
 
 const sourceSchema = z.enum(["youtube", "dropout"]);
+export const episodeFileStatusSchema = z.enum([
+  "downloaded",
+  "missing",
+  "skipped",
+  "unmapped",
+  "unknown",
+]);
 
-// Accepted deviation: response schemas stay shallow (top-level shape + passthrough).
-// Deep per-field zod schemas for PlanFile/SeriesDetail were skipped as low-ROI:
-// the server owns validation and the UI reads narrow slices plus runtime guards.
-const runProgressSchema: z.ZodType<RunProgressEvent> = z.union([
-  z.object({ event: z.literal("series") }).passthrough(),
-  z.object({ event: z.literal("item_steps") }).passthrough(),
-  z.object({ event: z.literal("progress") }).passthrough(),
-  z.object({ event: z.literal("item_done") }).passthrough(),
-]) as z.ZodType<RunProgressEvent>;
-
-export const runSchema = z
+export const dropoutCheckSchema = z
   .object({
-    status: z.enum(["idle", "running", "stopping", "exited"]),
-    phase: z.enum(["idle", "planning", "downloading", "stopping", "exited"]),
-    source: sourceSchema.nullable(),
-    dry_run: z.boolean(),
-    verbose: z.boolean(),
-    force: z.boolean(),
-    started_at: z.string().nullable(),
-    finished_at: z.string().nullable(),
-    exit_code: z.number().nullable(),
-    plan: z
-      .object({
-        generated_at: z.string().nullable(),
-        force: z.boolean(),
-        pending: z.number(),
-      })
-      .nullable(),
-    progress: runProgressSchema.nullable().optional(),
+    ok: z.boolean(),
+    missing: z.array(
+      z
+        .object({
+          season: z.number(),
+          episode: z.number(),
+          code: z.string(),
+          title: z.string(),
+          hints: z.array(
+            z
+              .object({
+                text: z.string(),
+                kind: z.string(),
+                sure: z.boolean().optional(),
+                dropout_season: z.number().nullable().optional(),
+                dropout_episode: z.number().nullable().optional(),
+                series_name: z.string().nullable().optional(),
+              })
+              .passthrough(),
+          ),
+        })
+        .passthrough(),
+    ),
+    warnings: z.array(z.object({ code: z.string(), detail: z.string() }).passthrough()),
+    title_mismatches: z.array(
+      z
+        .object({ code: z.string(), file_title: z.string(), sonarr_title: z.string() })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
+// Plan bodies retain their established tree shape while adding an executable
+// revision and a readiness signal for job admission.
 export const planFileSchema = z
   .object({
+    plan_id: z.string().min(1),
+    revision: z.string().min(1),
+    readiness: z.string(),
     generated_at: z.string().nullable(),
     force: z.boolean(),
     sources: z.record(z.string(), z.unknown()),
+  })
+  .passthrough();
+
+export const jobProgressSchema = z.object({
+  stage: z.string(),
+  target: z.string().nullable().optional(),
+  completed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative().nullable(),
+  item: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+export const jobLogSchema = z.object({
+  n: z.number().int().nonnegative(),
+  ts: z.string(),
+  line: z.string(),
+});
+export const jobSnapshotSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.enum(["refresh", "download", "check", "diagnostics"]),
+    status: z.enum([
+      "queued",
+      "running",
+      "stopping",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "interrupted",
+    ]),
+    created_at: z.string(),
+    started_at: z.string().nullable(),
+    finished_at: z.string().nullable(),
+    progress: jobProgressSchema.nullable(),
+    result: z.unknown(),
+    error: z.unknown(),
+    logs: z.array(jobLogSchema).max(200),
+    log_cursor: z.number().int().nonnegative(),
+    logs_truncated: z.boolean(),
+    can_cancel: z.boolean(),
+    can_retry: z.boolean(),
+  })
+  .passthrough();
+export const jobStartSchema = z.object({ job_id: z.string().min(1), status: z.literal("queued") });
+export const jobsListSchema = z
+  .object({
+    active: jobSnapshotSchema.nullable(),
+    history: z.array(jobSnapshotSchema),
+    total: z.number().int().nonnegative(),
+  })
+  .passthrough();
+export const librarySnapshotSchema = z
+  .object({
+    status: z.enum(["ready", "unavailable"]),
+    series_exists: z.boolean().nullable(),
+    episodes: z.number().int().nonnegative().nullable(),
+    episode_fingerprints: z.unknown(),
+    revision: z.string().nullable(),
+    scanned_at: z.string().nullable(),
+    mount_identity: z.unknown(),
+    error: z.string().nullable(),
   })
   .passthrough();
 
@@ -357,6 +476,27 @@ export const seriesDetailSchema = z
       }),
     ),
     sources: z.array(z.unknown()),
+  })
+  .passthrough();
+
+export const seriesEpisodeSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    url: z.string(),
+    source_episode: z.number(),
+    skipped: z.boolean(),
+    mapped_season: z.number().nullable(),
+    mapped_episode: z.number().nullable(),
+    mapped_title: z.string().nullable(),
+    status: episodeFileStatusSchema.optional(),
+  })
+  .passthrough();
+export const seriesEpisodesResponseSchema = z
+  .object({
+    episodes: z.array(seriesEpisodeSchema),
+    on_disk: z.array(z.object({ season: z.number(), episode: z.number() })).optional(),
+    disk_state: z.enum(["ready", "unavailable", "stale"]).optional(),
   })
   .passthrough();
 

@@ -16,6 +16,9 @@ export type SeriesSummary = {
   season_count: number;
   missing_count?: number | null;
   listings_complete?: boolean;
+  freshness?: "ready" | "stale" | "unavailable";
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
   poster_url?: string;
   refreshed?: {
     listings: string | null;
@@ -241,11 +244,13 @@ export function fileStatus(
     mapped_episode: number | null;
   },
   onDisk: ReadonlySet<string>,
+  diskReady = true,
 ): EpisodeFileStatus {
   if (episode.skipped) return "skipped";
   if (episode.mapped_season == null || episode.mapped_episode == null) {
     return "unmapped";
   }
+  if (!diskReady) return "unknown";
   return onDisk.has(diskSlotKey(episode.mapped_season, episode.mapped_episode))
     ? "downloaded"
     : "missing";
@@ -255,6 +260,7 @@ export function episodeStatusLabel(status: EpisodeFileStatus): string {
   if (status === "downloaded") return "downloaded";
   if (status === "missing") return "missing";
   if (status === "unmapped") return "unmapped";
+  if (status === "unknown") return "unknown";
   return "skipped";
 }
 
@@ -314,6 +320,7 @@ export type DestSeasonGroup = {
 export type DestMap = {
   seasons: DestSeasonGroup[];
   leftovers: DestOccupant[];
+  diskReady: boolean;
 };
 
 export function isTvdbSkipped(
@@ -326,10 +333,14 @@ export function isTvdbSkipped(
   );
 }
 
-export function seasonFillStatus(group: {
-  slots: DestSlot[];
-  holes: number;
-}): "ok" | "partial" | "empty" {
+export function seasonFillStatus(
+  group: {
+    slots: DestSlot[];
+    holes: number;
+  },
+  diskReady = true,
+): "ok" | "partial" | "empty" | "unknown" {
+  if (!diskReady) return "unknown";
   const downloaded = group.slots.filter((slot) =>
     slot.occupants.some((occ) => occ.status === "downloaded"),
   ).length;
@@ -447,13 +458,14 @@ export function buildDestMap(
     | undefined,
   onDisk: ReadonlySet<string>,
   tvdbSkip?: { season: number; episodes: number[] }[],
+  diskReady = true,
 ): DestMap {
   const leftovers: DestOccupant[] = [];
   const bySlot = new Map<string, DestOccupant[]>();
   for (const row of catalog) {
     const mapped = applySeasonToEpisode(row.season, row.episode);
     const kind = remapKind(row.season, row.episode);
-    const status = fileStatus(mapped, onDisk);
+    const status = fileStatus(mapped, onDisk, diskReady);
     const occupant: DestOccupant = { row, mapped, kind, status };
     if (mapped.skipped || mapped.mapped_season == null || mapped.mapped_episode == null) {
       leftovers.push(occupant);
@@ -522,7 +534,7 @@ export function buildDestMap(
       };
     });
 
-  return { seasons, leftovers };
+  return { seasons, leftovers, diskReady };
 }
 
 export type PackRemap = {

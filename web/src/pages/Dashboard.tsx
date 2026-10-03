@@ -4,16 +4,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
 import { memo } from "preact/compat";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { ApiError, type Run, apiClient, runKeyFor } from "../api";
+import { ApiError, apiClient } from "../api";
 import { logoutAndClear } from "../auth";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { Header } from "../components/Header";
-import { LogViewer } from "../components/LogViewer";
 import { OnboardingChecklist, pathsUnset } from "../components/OnboardingChecklist";
 import { Poster, posterLetter } from "../components/Poster";
 import { QueueSkeleton } from "../components/Skeleton";
 import { pushToast, useDocumentTitle } from "../components/Toast";
 import { useDismiss } from "../hooks/useDismiss";
+import { useJobs } from "../hooks/useJobs";
 import { useOnline } from "../hooks/useOnline";
 import { useExpandedSeasons, useQueueSelection } from "../hooks/useQueueSelection";
 import { useRunEvents } from "../hooks/useRunEvents";
@@ -24,10 +24,8 @@ import {
   type QueueSeries,
   actionLabel,
   actionsForIds,
-  applyProgress,
   buildTree,
   countChipText,
-  emptyProgress,
   episodeForId,
   formatBinaryBytes,
   formatEta,
@@ -35,7 +33,6 @@ import {
   formatProgressStats,
   heroFrom,
   isDownloadHeavy,
-  mergeProgress,
   needsConfirm,
   overlayProgress,
   pendingIds,
@@ -50,7 +47,6 @@ import {
   upToDateSeries,
   visibleSeries,
 } from "../runQueue";
-import { invalidateAfterQueueRebuild } from "../seriesInvalidate";
 import { indexSeriesPosters, seriesPosterUrl, shortUrl } from "../seriesView";
 import { writeSearch } from "../urlState";
 import { idleRun, useAppRun, usePlan } from "../useAppQueries";
@@ -59,14 +55,16 @@ export function Dashboard() {
   const queryClient = useQueryClient();
   const online = useOnline();
   const runQuery = useAppRun();
-  const planQuery = usePlan();
+  const jobsQuery = useJobs();
+  const activeJob = jobsQuery.data?.active ?? null;
   const run = runQuery.data ?? idleRun;
-  const runKey = runKeyFor(run);
-  const plan = planQuery.data ?? null;
+  const runKey = activeJob?.id ?? "idle";
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const [query, setQuery] = useState(params.get("q") ?? "");
   const [force, setForce] = useState(params.get("force") === "1");
   const [createFolders, setCreateFolders] = useState(params.get("create") === "1");
+  const planQuery = usePlan(force, createFolders);
+  const plan = planQuery.data ?? null;
   const [showForce, setShowForce] = useState(false);
   const forceToggleRef = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,12 +74,14 @@ export function Dashboard() {
   const expanded = useExpandedSeasons(params.get("open"), params.get("seasons"));
   const [pendingDownload, setPendingDownload] = useState<{
     count: number;
-    ids: string[] | null;
+    ids: string[];
     actions: string[];
   } | null>(null);
   const [activeDownloadIds, setActiveDownloadIds] = useState<Set<string> | null>(null);
 
-  const tree = useMemo(() => (plan ? buildTree(plan) : []), [plan]);
+  const planReady = plan?.readiness === "ready";
+  const planUnknown = Boolean(plan && !planReady);
+  const tree = useMemo(() => (plan && planReady ? buildTree(plan) : []), [plan, planReady]);
   const treeRef = useRef(tree);
   treeRef.current = tree;
   const events = useRunEvents(runKey, treeRef, online);
@@ -110,10 +110,6 @@ export function Dashboard() {
     () => selection.effective(allPending),
     [selection.selected, selection.touched, allPending],
   );
-
-  const applyRun = (next: Run) => {
-    queryClient.setQueryData(queryKeys.run(), next);
-  };
 
   useEffect(() => {
     // Deep-link query/flags plus selection and open folds. Episode ids are
@@ -148,22 +144,6 @@ export function Dashboard() {
   ]);
 
   useEffect(() => {
-    if (planQuery.data?.force) setForce(true);
-  }, [planQuery.data?.force]);
-
-  useEffect(() => {
-    if (!runQuery.data?.progress || typeof runQuery.data.progress.event !== "string") return;
-    const ev = runQuery.data.progress;
-    if (ev.event === "series" && "name" in ev && typeof ev.name === "string") {
-      events.setListingSeries(ev.name);
-    }
-    if (ev.event === "item_steps" || ev.event === "progress" || ev.event === "item_done") {
-      const { progress: patch } = applyProgress(treeRef.current, ev);
-      events.setProgress((current) => mergeProgress(current, patch));
-    }
-  }, [runQuery.dataUpdatedAt]);
-
-  useEffect(() => {
     if (downloading && progress.currentId) {
       for (const series of displayTree) {
         for (const season of series.seasons) {
@@ -191,58 +171,45 @@ export function Dashboard() {
   }, [visible, downloading]);
 
   const startPlanMut = useMutation({
-    mutationFn: () => apiClient.startPlan(force, createFolders),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.run() });
-      const prev = queryClient.getQueryData<Run>(queryKeys.run());
-      applyRun({ ...(prev ?? idleRun), status: "running", phase: "planning" });
-      return { prev };
+    mutationFn: (items: { platform: "youtube" | "dropout"; slug: string }[]) =>
+      apiClient.startJob({ kind: "refresh", items, expected_revision: plan?.revision }),
+    onError: (err) => {
+      const message = err instanceof ApiError ? err.message : "Refresh failed to start";
+      setError(message);
+      pushToast(message, "alert");
     },
-    onError: (err, _v, ctx) => {
-      if (ctx?.prev) applyRun(ctx.prev);
-      setError(err instanceof ApiError ? err.message : "Refresh failed");
-      pushToast(err instanceof Error ? err.message : "Refresh failed", "alert");
-    },
-    onSuccess: (next) => applyRun(next),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
   });
 
   const startDownloadMut = useMutation({
-    mutationFn: ({ ids }: { ids: string[] | null; count: number }) =>
-      apiClient.startDownload({ ids, force, create: createFolders }),
-    onMutate: async ({ ids, count }) => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.run() });
-      const prev = queryClient.getQueryData<Run>(queryKeys.run());
-      events.setProgress(emptyProgress());
-      setActiveDownloadIds(new Set(ids ?? allPending));
-      applyRun({ ...(prev ?? idleRun), status: "running", phase: "downloading" });
-      return { prev, count };
-    },
-    onError: (err, _v, ctx) => {
-      if (ctx?.prev) applyRun(ctx.prev);
-      setActiveDownloadIds(null);
+    mutationFn: ({ ids }: { ids: string[]; count: number }) =>
+      apiClient.startJob({
+        kind: "download",
+        plan_id: plan?.plan_id ?? "",
+        ids,
+        force,
+        create: createFolders,
+      }),
+    onError: (err) => {
       setError(err instanceof ApiError ? err.message : "Download failed");
       pushToast(err instanceof Error ? err.message : "Download failed", "alert");
     },
-    onSuccess: (next) => applyRun(next),
+    onSuccess: (_start, vars) => {
+      setActiveDownloadIds(new Set(vars.ids));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() });
+    },
   });
 
   const stopMut = useMutation({
-    mutationFn: () => apiClient.stopRun(),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: queryKeys.run() });
-      const prev = queryClient.getQueryData<Run>(queryKeys.run());
-      applyRun({ ...(prev ?? idleRun), status: "stopping", phase: "stopping" });
-      return { prev };
-    },
-    onError: (err, _v, ctx) => {
-      if (ctx?.prev) applyRun(ctx.prev);
+    mutationFn: () => apiClient.cancelJob(activeJob!.id),
+    onError: (err) => {
       pushToast(err instanceof Error ? err.message : "Stop failed", "alert");
       setError(err instanceof Error ? err.message : "Stop failed");
     },
-    onSuccess: (next) => {
-      applyRun(next);
+    onSuccess: () => {
       setStopOpen(false);
       pushToast("Stopping…");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() });
     },
   });
 
@@ -252,7 +219,15 @@ export function Dashboard() {
       return;
     }
     const count = effective.length;
-    const ids = selection.selected.size === 0 && !selection.touched ? null : effective;
+    const ids = effective;
+    if (!plan?.plan_id || plan.readiness !== "ready") {
+      setError("Refresh the queue before downloading; the plan is stale or unavailable");
+      return;
+    }
+    if (!ids.length) {
+      setError("Select at least one episode to download");
+      return;
+    }
     if (needsConfirm(count)) {
       setPendingDownload({ count, ids, actions: runActions });
       return;
@@ -261,9 +236,8 @@ export function Dashboard() {
   };
 
   useEffect(() => {
-    if (run.status === "exited") {
+    if (activeJob && !["queued", "running", "stopping"].includes(activeJob.status)) {
       setActiveDownloadIds(null);
-      void invalidateAfterQueueRebuild(queryClient);
       if (run.exit_code === 0) {
         pushToast("Download done");
         if (notifyOptIn && "Notification" in window && Notification.permission === "granted") {
@@ -271,14 +245,14 @@ export function Dashboard() {
         }
       }
     }
-  }, [run.status, run.finished_at, queryClient, notifyOptIn]);
+  }, [activeJob?.id, activeJob?.status, run.exit_code, notifyOptIn]);
 
   const runActions = useMemo(() => actionsForIds(effective, tree), [effective, tree]);
   const allActions = useMemo(() => actionsForIds(allPending, tree), [allPending, tree]);
   const downloadCount = effective.length;
   const primaryLabel = runLabel(downloadCount, runActions);
   const hero = heroFrom(run, displayTree, progress, listingSeries, allPending.length);
-  const hasManifest = plan !== null;
+  const hasManifest = planReady;
   // No silent disables: the primary button always explains why it is disabled.
   const primaryReason = busy
     ? "Blocked while a run is in progress"
@@ -401,14 +375,14 @@ export function Dashboard() {
         <main class="run-main" id="main">
           {!online && (
             <div class="banner banner-warn" role="status">
-              You appear offline. Polling and live events are paused.
+              You appear offline. Job updates are paused.
             </div>
           )}
           <OnboardingChecklist
             config={configQuery.isPending ? undefined : (configQuery.data ?? null)}
             cookies={cookiesQuery.isPending ? undefined : (cookiesQuery.data ?? null)}
             seriesCount={posterQuery.isPending ? undefined : (posterQuery.data?.series.length ?? 0)}
-            planReady={plan !== null}
+            planReady={planReady}
           />
           {setupPathsMissing && (
             <p class="run-hint" role="status">
@@ -438,7 +412,13 @@ export function Dashboard() {
             <QueueSkeleton />
           ) : (
             <>
-              {!hasManifest && !busy && (
+              {planUnknown && !busy && (
+                <p class="run-hint" role="status">
+                  Queue counts are unknown because the last plan is stale or the library is
+                  unavailable. Refresh to rebuild it.
+                </p>
+              )}
+              {!hasManifest && !planUnknown && !busy && (
                 <p class="run-hint">
                   No queue yet. Add series under <a href="/series">Shows</a>, then Refresh queue.
                 </p>
@@ -508,9 +488,11 @@ export function Dashboard() {
                 <section class="dl-hero">
                   <div>
                     <h1>
-                      {planning || run.phase === "stopping"
-                        ? hero.heading
-                        : queueHeading(allPending.length, allActions)}
+                      {planUnknown && !busy
+                        ? "Queue status unknown"
+                        : planning || run.phase === "stopping"
+                          ? hero.heading
+                          : queueHeading(allPending.length, allActions)}
                     </h1>
                     {heroSub ? <p class="run-hero-sub">{heroSub}</p> : null}
                   </div>
@@ -539,15 +521,22 @@ export function Dashboard() {
                     <button
                       type="button"
                       class="btn-secondary"
-                      disabled={busy || startPlanMut.isPending || setupPathsMissing}
+                      disabled={
+                        busy || startPlanMut.isPending || setupPathsMissing || posterQuery.isPending
+                      }
                       title={setupPathsMissing ? "Set library paths in Settings first" : undefined}
                       onClick={() => {
                         setError(null);
                         events.setListingSeries(null);
-                        startPlanMut.mutate();
+                        startPlanMut.mutate(
+                          (posterQuery.data?.series ?? []).map((row) => ({
+                            platform: row.platform,
+                            slug: row.slug,
+                          })),
+                        );
                       }}
                     >
-                      Refresh queue
+                      Refresh
                     </button>
                     <button
                       ref={forceToggleRef}
@@ -571,7 +560,7 @@ export function Dashboard() {
                             onChange={(e) => setForce((e.target as HTMLInputElement).checked)}
                             disabled={busy}
                           />
-                          Re-download files already on disk
+                          Replace Dropout episodes already on disk (Force)
                         </label>
                         <label>
                           <input
@@ -652,10 +641,6 @@ export function Dashboard() {
               </section>
             </>
           )}
-          <details class="run-log-details">
-            <summary>Details · technical log</summary>
-            <LogViewer runKey={runKey} compact />
-          </details>
         </main>
         <footer class="run-bar">
           <div class="run-bar-inner">

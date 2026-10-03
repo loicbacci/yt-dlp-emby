@@ -48,6 +48,9 @@ export function SonarrCheckPanel({
       {!loading && check && ok && missing.length === 0 && (
         <p class="settings-check-ok">Mapped. Nothing missing.</p>
       )}
+      {!loading && !check && !checkError && (
+        <p class="settings-hint">Run Sonarr Check to compare this show with its library files.</p>
+      )}
       {!loading && check && missing.length > 0 && (
         <EpisodeTable
           indexLabel="Slot"

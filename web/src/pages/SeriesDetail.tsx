@@ -4,7 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
 import { useSelector } from "@tanstack/preact-store";
 import { useLocation } from "preact-iso";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import {
   ApiError,
   type DropoutCheck,
@@ -17,7 +17,7 @@ import { logoutAndClear } from "../auth";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { Header } from "../components/Header";
 import { Poster, posterLetter } from "../components/Poster";
-import { type RefreshPart, RefreshSplit } from "../components/RefreshSplit";
+import { RefreshSplit } from "../components/RefreshSplit";
 import { SeriesDetailSkeleton, Skeleton } from "../components/Skeleton";
 import { pushToast } from "../components/Toast";
 import { UrlField } from "../components/UrlField";
@@ -30,6 +30,7 @@ import { SonarrCheckPanel } from "../components/series/SonarrCheckPanel";
 import { SourceBlock } from "../components/series/SourceBlock";
 import { TvdbSkipPanel } from "../components/series/TvdbSkipPanel";
 import { isHttpUrl, parseOptionalInt, urlMatchesPlatform } from "../formValidation";
+import { useJobs } from "../hooks/useJobs";
 import { useOnline } from "../hooks/useOnline";
 import { moveRovingIndex } from "../hooks/useRoving";
 import { go } from "../nav";
@@ -37,12 +38,6 @@ import { queryKeys } from "../queryKeys";
 import { formatRelativeTime } from "../relativeTime";
 import { useSeriesCatalog } from "../seriesCatalog";
 import { invalidateSeriesState } from "../seriesInvalidate";
-import {
-  beginRefresh,
-  endRefresh,
-  refreshSeriesKey,
-  useSeriesRefreshing,
-} from "../seriesRefreshStore";
 import {
   type SeriesTab,
   patchSeriesFold,
@@ -65,9 +60,9 @@ import {
   sonarrSeriesUrl,
   tvdbSeriesUrl,
 } from "../seriesView";
-import { tvdbSkipKey } from "../types";
+import { dropoutCheckSchema } from "../types";
 import { writeSearch } from "../urlState";
-import { useAppRun } from "../useAppQueries";
+import { usePlan } from "../useAppQueries";
 
 const EMPTY_FOLDS: Record<string, boolean> = {};
 
@@ -86,8 +81,9 @@ export function SeriesDetail() {
   const slug = parsed?.slug ?? "";
   const queryClient = useQueryClient();
   const online = useOnline();
-  const runQuery = useAppRun();
-  const run = runQuery.data;
+  const jobsQuery = useJobs();
+  const activeJob = jobsQuery.data?.active;
+  const planQuery = usePlan();
   const seriesKey = queryKeys.series(platform, slug);
 
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
@@ -95,7 +91,9 @@ export function SeriesDetail() {
   const [folderView, setFolderView] = useState<SeriesTab>(
     viewParam === "sources" || viewParam === "yaml" ? viewParam : "emby",
   );
-  const refreshing = useSeriesRefreshing(platform, slug);
+  const refreshing = Boolean(
+    activeJob?.kind === "refresh" && activeJob.progress?.target?.includes(slug),
+  );
   const cached = queryClient.getQueryData<SeriesDetailModel>(seriesKey) ?? null;
   const [detail, setDetail] = useState<SeriesDetailModel | null>(cached);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(cached);
@@ -137,17 +135,11 @@ export function SeriesDetail() {
   });
   const uiKey = seriesUiKey(platform, slug);
   const seasonFolds = useSelector(seriesUiStore, (state) => state.folds[uiKey] ?? EMPTY_FOLDS);
-  const { episodeMap, loadingMap, onDisk } = useSeriesCatalog(
+  const { episodeMap, loadingMap, onDisk, diskReady, diskState, diskError } = useSeriesCatalog(
     platform,
     slug,
     seriesQuery.data?.sources,
   );
-  const checkQuery = useQuery({
-    queryKey: queryKeys.check(slug, tvdbSkipKey(detail?.tvdb_skip)),
-    queryFn: () => apiClient.getDropoutCheck(slug),
-    enabled: platform === "dropout" && Boolean(slug) && detail?.tvdb_id != null,
-    staleTime: 5 * 60 * 1000,
-  });
   const configQuery = useQuery({
     queryKey: queryKeys.config(),
     queryFn: () => apiClient.getConfig(),
@@ -159,19 +151,38 @@ export function SeriesDetail() {
     enabled: platform === "dropout" && detail?.tvdb_id != null,
     staleTime: 30 * 60 * 1000,
   });
-  const check = checkQuery.data ?? null;
-  const checkError = checkQuery.error instanceof Error ? checkQuery.error.message : null;
+  const checkJobs = [jobsQuery.data?.focused, ...(jobsQuery.data?.history ?? [])].filter(
+    (job, index, all): job is NonNullable<typeof job> =>
+      Boolean(job && all.findIndex((candidate) => candidate?.id === job.id) === index),
+  );
+  const latestCheck = checkJobs.find(
+    (job) => job.kind === "check" && ["succeeded", "failed"].includes(job.status),
+  );
+  const checkTarget = Array.isArray(
+    (latestCheck?.result as { results?: unknown[] } | null)?.results,
+  )
+    ? (latestCheck?.result as { results: Record<string, unknown>[] }).results.find(
+        (row) => row.platform === platform && row.slug === slug,
+      )
+    : undefined;
+  const parsedCheck = dropoutCheckSchema.safeParse(checkTarget?.report);
+  const check = parsedCheck.success ? parsedCheck.data : null;
+  const checkError =
+    typeof checkTarget?.error === "string"
+      ? checkTarget.error
+      : !check && latestCheck?.error != null
+        ? String(latestCheck.error)
+        : null;
   const checkLoading =
-    Boolean(detail?.tvdb_id) &&
-    platform === "dropout" &&
-    (checkQuery.isPending || (checkQuery.isFetching && !checkQuery.data));
+    platform === "dropout" && detail?.tvdb_id != null && activeJob?.kind === "check";
   const catalog = useMemo(
     () => catalogEpisodes(detail?.sources, episodeMap),
     [detail?.sources, episodeMap],
   );
   const destMap = useMemo(
-    () => buildDestMap(catalog, sonarrMetaQuery.data?.episodes, onDisk, detail?.tvdb_skip),
-    [catalog, sonarrMetaQuery.data?.episodes, onDisk, detail?.tvdb_skip],
+    () =>
+      buildDestMap(catalog, sonarrMetaQuery.data?.episodes, onDisk, detail?.tvdb_skip, diskReady),
+    [catalog, sonarrMetaQuery.data?.episodes, onDisk, detail?.tvdb_skip, diskReady],
   );
   const sonarrUrl = effectiveConfigValue(configQuery.data?.fields.sonarr_url);
   const sonarrHref =
@@ -183,8 +194,7 @@ export function SeriesDetail() {
   // Avoids JSON.stringify per render; server-changed check still compares on refetch.
   const dirty = dirtyTick > 0;
   const markDirty = () => setDirtyTick((tick) => tick + 1);
-  const runActive = run?.status === "running" || run?.status === "stopping";
-  const prevRunStatus = useRef(run?.status);
+  const runActive = Boolean(activeJob);
 
   useEffect(() => {
     if (!parsed) go("/series", { replace: true });
@@ -221,16 +231,6 @@ export function SeriesDetail() {
       .then((body) => setExisting(body.series))
       .catch(() => {});
   }, [platform, slug]);
-
-  useEffect(() => {
-    if (
-      prevRunStatus.current === "running" &&
-      (run?.status === "exited" || run?.status === "idle")
-    ) {
-      void invalidateSeriesState(queryClient, [{ platform, slug, tvdb_id: detail?.tvdb_id }]);
-    }
-    prevRunStatus.current = run?.status;
-  }, [run?.status, platform, slug, queryClient]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -370,49 +370,34 @@ export function SeriesDetail() {
   });
 
   const refreshSourceMut = useMutation({
-    mutationFn: (sourceId: number) => apiClient.refreshSeriesSource(platform, slug, sourceId),
-    onMutate: async (sourceId) => {
-      await queryClient.cancelQueries({ queryKey: seriesKey });
-      const prev = queryClient.getQueryData<SeriesDetailModel>(seriesKey);
-      const prevDetail = detail;
+    mutationFn: (sourceId: number) =>
+      apiClient.startJob({
+        kind: "refresh",
+        items: [{ platform, slug }],
+        source_index: sourceId,
+        expected_revision: planQuery.data?.revision,
+      }),
+    onMutate: (sourceId) => {
       setRefreshingSourceId(sourceId);
       setError(null);
-      markDirty();
-      return { prev, prevDetail };
     },
-    onError: (err, sourceId, ctx) => {
-      if (ctx?.prev) {
-        queryClient.setQueryData(seriesKey, ctx.prev);
-      }
+    onError: (err) => {
       const message = err instanceof ApiError ? err.message : "Refresh failed";
-      const base = ctx?.prevDetail ?? detail;
-      if (base) {
-        const next: SeriesDetailModel = {
-          ...base,
-          sources: base.sources.map((src, idx) =>
-            idx === sourceId ? { ...src, error: message } : src,
-          ),
-        };
-        setDetail(next);
-      }
-      // Error display is not a dirty edit; clear the in-flight mark.
+      setRefreshingSourceId(null);
       setDirtyTick(0);
       pushToast(message, "alert");
     },
-    onSuccess: (body) => {
-      queryClient.setQueryData(seriesKey, body);
-      setDetail(body);
-      setSaved(body);
-      setDirtyTick(0);
-      pushToast("Source refreshed");
-    },
-    onSettled: (_body, _err, _sourceId, ctx) => {
-      setRefreshingSourceId(null);
-      void invalidateSeriesState(queryClient, [
-        { platform, slug, tvdb_id: ctx?.prevDetail?.tvdb_id ?? detail?.tvdb_id },
-      ]);
+    onSuccess: () => {
+      pushToast("Source refresh started");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() });
     },
   });
+
+  useEffect(() => {
+    if (activeJob && !["queued", "running", "stopping"].includes(activeJob.status)) {
+      setRefreshingSourceId(null);
+    }
+  }, [activeJob?.id, activeJob?.status]);
 
   const addingUrl = addUrlMut.isPending;
   // Covers add/remove/refresh plus skip/toggle/remap/title/dest (all via persistMut).
@@ -684,7 +669,6 @@ export function SeriesDetail() {
       setRemap(null);
       setModalError(null);
       flashSaved("Remap saved");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.check(slug) });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Remap failed";
       setModalError(message);
@@ -719,29 +703,20 @@ export function SeriesDetail() {
     go(url);
   };
 
-  const refreshMetadata = async (part: RefreshPart = "all") => {
+  const refreshMetadata = async () => {
     if (runActive) return;
-    const key = refreshSeriesKey(platform, slug);
-    beginRefresh([key]);
     try {
-      const body = await apiClient.refreshSeries(
-        [{ platform, slug }],
-        part === "all" ? undefined : [part],
-      );
-      const failed = body.results.find((row) => row.error);
-      if (failed?.error) {
-        setError(failed.error);
-        pushToast(failed.error, "alert");
-      } else {
-        pushToast("Refresh complete");
-      }
-      await invalidateSeriesState(queryClient, [{ platform, slug, tvdb_id: detail?.tvdb_id }]);
+      await apiClient.startJob({
+        kind: "refresh",
+        items: [{ platform, slug }],
+        expected_revision: planQuery.data?.revision,
+      });
+      pushToast("Refresh started");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() });
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Refresh failed";
+      const message = err instanceof ApiError ? err.message : "Refresh failed to start";
       setError(message);
       pushToast(message, "alert");
-    } finally {
-      endRefresh([key]);
     }
   };
 
@@ -877,9 +852,24 @@ export function SeriesDetail() {
                 <RefreshSplit
                   disabled={refreshing || runActive}
                   busy={refreshing}
-                  showSonarr={detail.tvdb_id != null}
-                  title={runActive ? "Blocked while a run is in progress" : undefined}
-                  onRefresh={(part) => void refreshMetadata(part)}
+                  title={runActive ? "Another job is active" : undefined}
+                  onRefresh={() => void refreshMetadata()}
+                  onSonarrCheck={
+                    detail.tvdb_id != null
+                      ? () => {
+                          void apiClient
+                            .startJob({ kind: "check", items: [{ platform, slug }] })
+                            .then(() =>
+                              queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
+                            )
+                            .catch((err) =>
+                              setError(
+                                err instanceof Error ? err.message : "Sonarr check failed to start",
+                              ),
+                            );
+                        }
+                      : undefined
+                  }
                 />
                 <p class="refresh-stamps">
                   {[
@@ -888,6 +878,14 @@ export function SeriesDetail() {
                     detail.refreshed?.disk && `Disk ${formatRelativeTime(detail.refreshed.disk)}`,
                     detail.refreshed?.sonarr &&
                       `Sonarr ${formatRelativeTime(detail.refreshed.sonarr)}`,
+                    detail.freshness === "stale" ? "Refresh required" : null,
+                    detail.freshness === "unavailable" ? "Library unavailable" : null,
+                    detail.last_success_at
+                      ? `Last success ${formatRelativeTime(detail.last_success_at)}`
+                      : null,
+                    detail.last_attempt_at && !detail.last_success_at
+                      ? `Last attempt ${formatRelativeTime(detail.last_attempt_at)}`
+                      : null,
                   ]
                     .filter(Boolean)
                     .join(" · ") || "Not refreshed yet"}
@@ -965,6 +963,12 @@ export function SeriesDetail() {
           </div>
           {folderView === "emby" && (
             <div id="map-panel-emby" role="tabpanel" aria-labelledby="map-tab-emby">
+              {!diskReady && (
+                <div class="banner banner-warn" role="status">
+                  Library state is {diskState}. Episode file counts are unknown.
+                  {diskError ? ` ${diskError}` : ""}
+                </div>
+              )}
               <LibrarySeasons
                 destMap={destMap}
                 loading={
@@ -1066,7 +1070,9 @@ export function SeriesDetail() {
                     {urlError}
                   </div>
                 )}
-                {runActive && <div class="banner banner-warn">a run is in progress</div>}
+                {runActive && (
+                  <div class="banner banner-warn">A background job is in progress.</div>
+                )}
                 {error && (
                   <div class="validation-error" role="alert">
                     {error}
@@ -1086,6 +1092,7 @@ export function SeriesDetail() {
                     refreshing={refreshing}
                     sourceBusy={refreshingSourceId === sourceId || removingSourceId === sourceId}
                     onDisk={onDisk}
+                    diskReady={diskReady}
                     disabled={runActive || mutationBusy}
                     destErrors={destErrors}
                     skipErrors={skipErrors}

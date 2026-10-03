@@ -357,6 +357,9 @@ describe("fileStatus", () => {
     expect(fileStatus({ skipped: false, mapped_season: 1, mapped_episode: 2 }, disk)).toBe(
       "missing",
     );
+    expect(fileStatus({ skipped: false, mapped_season: 1, mapped_episode: 2 }, disk, false)).toBe(
+      "unknown",
+    );
     expect(fileStatus({ skipped: false, mapped_season: null, mapped_episode: null }, disk)).toBe(
       "unmapped",
     );

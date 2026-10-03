@@ -1,7 +1,7 @@
 import { apiClient } from "./api";
 import { pushToast } from "./components/Toast";
 import { go } from "./nav";
-import { queryClient, queryPersister } from "./queryClient";
+import { queryClient } from "./queryClient";
 
 export function returnToFromLocation(search = window.location.search): string {
   const next = new URLSearchParams(search).get("next");
@@ -18,11 +18,6 @@ export async function logoutAndClear(): Promise<void> {
     pushToast(err instanceof Error ? `Logout failed: ${err.message}` : "Logout failed", "alert");
   } finally {
     queryClient.clear();
-    try {
-      await queryPersister.removeClient();
-    } catch {
-      pushToast("Failed to clear cached data", "alert");
-    }
     go("/login");
   }
 }

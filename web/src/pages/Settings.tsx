@@ -37,7 +37,6 @@ const emptyValues: ConfigValues = {
   library: "",
   old_dir: "",
   staging: "",
-  bench_dest: "",
   shows_dir: "",
   sonarr_url: "",
   sonarr_api_key: "",
@@ -66,11 +65,6 @@ const FALLBACK_FIELDS: { key: ConfigKey; label: string; hint: string }[] = [
 ];
 
 const HOST_FIELDS: { key: ConfigKey; label: string; hint: string; password?: boolean }[] = [
-  {
-    key: "bench_dest",
-    label: "Bench destination",
-    hint: "Destination for `yt-dlp-emby bench` (defaults to library).",
-  },
   {
     key: "shows_dir",
     label: "Shows folder",

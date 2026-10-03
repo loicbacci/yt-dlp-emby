@@ -19,6 +19,7 @@ export function SeasonAccordion({
   loading,
   refreshing,
   onDisk,
+  diskReady = true,
   destError,
   skipErrors,
   open,
@@ -37,6 +38,7 @@ export function SeasonAccordion({
   loading: boolean;
   refreshing?: boolean;
   onDisk: ReadonlySet<string>;
+  diskReady?: boolean;
   destError?: string | null;
   skipErrors?: Record<string, string>;
   open: boolean;
@@ -62,11 +64,11 @@ export function SeasonAccordion({
 
   // Memoized per-episode derivations: applySeasonToEpisode + fileStatus run
   // once per episodes/season/onDisk change instead of on every parent render.
-  const { shown, remapped, skipped, missing, downloaded } = useMemo(() => {
+  const { shown, remapped, skipped, missing, downloaded, unknown } = useMemo(() => {
     const rows =
       episodes?.map((ep) => {
         const next = applySeasonToEpisode(season, ep);
-        return { ...next, status: fileStatus(next, onDisk) };
+        return { ...next, status: fileStatus(next, onDisk, diskReady) };
       }) ?? null;
     const isRemapped = (ep: NonNullable<typeof rows>[number]) => {
       const kind = remapKind(season, ep);
@@ -78,19 +80,22 @@ export function SeasonAccordion({
       skipped: rows?.filter((ep) => ep.skipped).length ?? 0,
       missing: rows?.filter((ep) => season.enabled && ep.status === "missing").length ?? 0,
       downloaded: rows?.filter((ep) => ep.status === "downloaded").length ?? 0,
+      unknown: rows?.some((ep) => ep.status === "unknown") ?? false,
     };
-  }, [episodes, season, onDisk]);
+  }, [episodes, season, onDisk, diskReady]);
   const destHint = dest == null ? "" : ` → ${dest === 0 ? "Specials" : `Season ${dest}`}`;
   const showSkeleton = Boolean(refreshing || (loading && !shown));
   const chipClass = !season.enabled
     ? ""
-    : missing
-      ? "is-new"
-      : downloaded
-        ? "is-ok"
-        : shown?.length
-          ? "is-empty"
-          : "";
+    : unknown
+      ? "is-unknown"
+      : missing
+        ? "is-new"
+        : downloaded
+          ? "is-ok"
+          : shown?.length
+            ? "is-empty"
+            : "";
 
   return (
     <div
@@ -112,7 +117,7 @@ export function SeasonAccordion({
           ) : (
             <span class={`count-chip ${chipClass}`.trim()}>
               {shown ? `${shown.length} episodes` : "…"}
-              {missing ? ` · ${missing} missing` : ""}
+              {unknown ? " · library status unknown" : missing ? ` · ${missing} missing` : ""}
               {remapped ? ` · ${remapped} remapped` : ""}
               {skipped ? ` · ${skipped} skipped` : ""}
             </span>

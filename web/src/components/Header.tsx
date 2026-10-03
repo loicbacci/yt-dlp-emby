@@ -1,21 +1,16 @@
-import type { Run } from "../api";
-import { idleRun, useAppRun } from "../useAppQueries";
-import { StatusChip } from "./StatusChip";
+import { useJobs } from "../hooks/useJobs";
+import { JobProgress } from "./JobProgress";
 
 export function Header({
-  run,
   current = "dashboard",
   onLogout,
   onNavigate,
 }: {
-  run?: Run;
   current?: "dashboard" | "series" | "settings";
   onLogout: () => void;
   onNavigate?: (url: string) => void;
 }) {
-  const runQuery = useAppRun();
-  const live = runQuery.data ?? run ?? idleRun;
-  const loading = runQuery.isPending && !runQuery.data && !run;
+  const jobs = useJobs();
   const goTo = (url: string) => (event: MouseEvent) => {
     if (
       event.defaultPrevented ||
@@ -64,11 +59,14 @@ export function Header({
         </a>
       </nav>
       <div class="header-actions">
-        <StatusChip run={live} loading={loading} />
+        <span class="status-chip" role="status">
+          {jobs.data?.active?.status ?? jobs.data?.focused?.status ?? "Idle"}
+        </span>
         <button type="button" class="btn-ghost" onClick={onLogout}>
           Log out
         </button>
       </div>
+      {jobs.data?.focused && <JobProgress job={jobs.data.focused} history={jobs.data.history} />}
     </header>
   );
 }

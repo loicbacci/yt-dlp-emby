@@ -45,11 +45,24 @@ export function LibrarySeasons({
           <span class="dot-status skipped" />
           Skipped
         </span>
+        {!destMap.diskReady && (
+          <span>
+            <span class="dot-status unknown" />
+            Library status unknown
+          </span>
+        )}
       </p>
       {destMap.seasons.map((group) => {
         const isOpen = open.has(group.destSeason);
-        const fill = seasonFillStatus(group);
-        const fillDot = fill === "ok" ? "library" : fill === "empty" ? "skipped" : "missing";
+        const fill = seasonFillStatus(group, destMap.diskReady);
+        const fillDot =
+          fill === "ok"
+            ? "library"
+            : fill === "empty"
+              ? "skipped"
+              : fill === "unknown"
+                ? "unknown"
+                : "missing";
         const inLibrary = group.slots.filter((slot) =>
           slot.occupants.some((occ) => occ.status === "downloaded"),
         ).length;
@@ -57,7 +70,14 @@ export function LibrarySeasons({
         const skipped = group.slots.filter(
           (slot) => slot.skipped || slot.occupants.some((occ) => occ.status === "skipped"),
         ).length;
-        const chipClass = fill === "empty" ? "is-empty" : missing ? "is-new" : "is-ok";
+        const chipClass =
+          fill === "unknown"
+            ? "is-unknown"
+            : fill === "empty"
+              ? "is-empty"
+              : missing
+                ? "is-new"
+                : "is-ok";
         return (
           <section key={group.destSeason} class="fold-card">
             <div class="fold-head season-head">
@@ -83,11 +103,13 @@ export function LibrarySeasons({
                   <Skeleton width="8.5rem" height="0.9em" />
                 ) : (
                   <span class={`count-chip ${chipClass}`}>
-                    {missing
-                      ? `${missing} missing · ${inLibrary} in library`
-                      : skipped
-                        ? `${inLibrary} in library · ${skipped} skipped`
-                        : `${group.slots.length} in library`}
+                    {!destMap.diskReady
+                      ? "Library status unknown"
+                      : missing
+                        ? `${missing} missing · ${inLibrary} in library`
+                        : skipped
+                          ? `${inLibrary} in library · ${skipped} skipped`
+                          : `${group.slots.length} in library`}
                   </span>
                 )}
                 <span class={`twist${isOpen ? " is-open" : ""}`} aria-hidden="true" />
@@ -120,6 +142,17 @@ export function LibrarySeasons({
                             code={slot.code}
                             pill="Skipped"
                             skipped
+                          />,
+                        ];
+                      }
+                      if (!destMap.diskReady) {
+                        return [
+                          <LibraryRow
+                            key={slot.code}
+                            status="unknown"
+                            title={slot.title || "Unknown slot"}
+                            code={slot.code}
+                            pill="Unknown"
                           />,
                         ];
                       }
@@ -201,15 +234,17 @@ export function LibrarySeasons({
   );
 }
 
-function libraryDot(occupant: DestOccupant): "library" | "missing" | "skipped" {
+function libraryDot(occupant: DestOccupant): "library" | "missing" | "skipped" | "unknown" {
   if (occupant.status === "skipped") return "skipped";
   if (occupant.status === "downloaded") return "library";
+  if (occupant.status === "unknown") return "unknown";
   return "missing";
 }
 
 function libraryPill(occupant: DestOccupant): string {
   if (occupant.status === "skipped") return "Skipped";
   if (occupant.status === "downloaded") return "In library";
+  if (occupant.status === "unknown") return "Unknown";
   return "Missing";
 }
 
@@ -222,7 +257,7 @@ function LibraryRow({
   action,
   conflict,
 }: {
-  status: "library" | "missing" | "skipped";
+  status: "library" | "missing" | "skipped" | "unknown";
   title: string;
   code: string;
   pill: string;

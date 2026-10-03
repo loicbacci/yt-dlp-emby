@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseSeriesPath } from "./seriesView";
-import { sourceIndexKey, tvdbSkipKey } from "./types";
+import { episodeFileStatusSchema, sourceIndexKey, tvdbSkipKey } from "./types";
 
 describe("source identity", () => {
   it("keys sources by numeric index", () => {
@@ -18,6 +18,14 @@ describe("source identity", () => {
 describe("tvdbSkipKey", () => {
   it("is stable regardless of episode order", () => {
     expect(tvdbSkipKey([{ season: 1, episodes: [3, 1] }])).toBe("1:1,3");
+  });
+});
+
+describe("episode disk status", () => {
+  it("keeps unavailable disk state distinct from missing files", () => {
+    expect(episodeFileStatusSchema.parse("unknown")).toBe("unknown");
+    expect(episodeFileStatusSchema.parse("missing")).toBe("missing");
+    expect(episodeFileStatusSchema.safeParse("unavailable").success).toBe(false);
   });
 });
 

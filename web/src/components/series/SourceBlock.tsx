@@ -15,6 +15,7 @@ export function SourceBlock({
   refreshing,
   sourceBusy,
   onDisk,
+  diskReady,
   destErrors,
   skipErrors,
   seasonOpen,
@@ -37,6 +38,7 @@ export function SourceBlock({
   refreshing?: boolean;
   sourceBusy?: boolean;
   onDisk: ReadonlySet<string>;
+  diskReady?: boolean;
   destErrors?: Record<string, string>;
   skipErrors?: Record<string, string>;
   seasonOpen: (seasonId: number) => boolean;
@@ -134,6 +136,7 @@ export function SourceBlock({
             loading={Boolean(loadingMap[key])}
             refreshing={refreshing}
             onDisk={onDisk}
+            diskReady={diskReady}
             destError={destErrors?.[key]}
             skipErrors={skipErrors}
             open={seasonOpen(seasonId)}

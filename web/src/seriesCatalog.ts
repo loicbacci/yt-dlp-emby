@@ -1,4 +1,4 @@
-import { useIsRestoring, useQueries, useQuery } from "@tanstack/preact-query";
+import { useQueries, useQuery } from "@tanstack/preact-query";
 import { type SeriesEpisode, type SeriesSource, type Source, apiClient } from "./api";
 import { DISK_STALE_MS, EPISODE_STALE_MS } from "./queryClient";
 import { queryKeys } from "./queryKeys";
@@ -31,7 +31,6 @@ export function useSeriesCatalog(
   slug: string,
   sources: SeriesSource[] | undefined,
 ) {
-  const restoring = useIsRestoring();
   const jobs: { sourceId: number; seasonId: number }[] = [];
   for (const [sourceId, source] of (sources ?? []).entries()) {
     source.seasons.forEach((_season, seasonId) => {
@@ -61,14 +60,23 @@ export function useSeriesCatalog(
     if (query.data) {
       episodeMap[key] = query.data.episodes ?? [];
     }
-    loadingMap[key] = Boolean((query.isPending && !query.data) || (restoring && !query.data));
+    loadingMap[key] = Boolean(query.isPending && !query.data);
   }
   return {
     episodeMap,
     loadingMap,
-    onDisk: mergeOnDisk(
-      diskQuery.data?.on_disk,
-      episodeQueries.map((query) => query.data ?? {}),
+    diskState: diskQuery.data?.state ?? (diskQuery.data ? "ready" : "unavailable"),
+    diskReady: Boolean(
+      diskQuery.data && diskQuery.data.state !== "unavailable" && diskQuery.data.state !== "stale",
     ),
+    diskError:
+      diskQuery.data?.error ?? (diskQuery.error instanceof Error ? diskQuery.error.message : null),
+    onDisk:
+      diskQuery.data && diskQuery.data.state !== "unavailable" && diskQuery.data.state !== "stale"
+        ? mergeOnDisk(
+            diskQuery.data.on_disk,
+            episodeQueries.map((query) => query.data ?? {}),
+          )
+        : new Set<string>(),
   };
 }
