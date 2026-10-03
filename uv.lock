@@ -1968,84 +1968,55 @@ wheels = [
 
 [[package]]
 name = "yt-dlp-emby"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "bgutil-ytdlp-pot-provider" },
-    { name = "pillow" },
-    { name = "pyyaml" },
-    { name = "yt-dlp", extra = ["default"] },
-]
-
-[package.optional-dependencies]
-server = [
     { name = "fastapi" },
     { name = "itsdangerous" },
+    { name = "pillow" },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "ruamel-yaml" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "yt-dlp", extra = ["default"] },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "fastapi" },
     { name = "httpx" },
-    { name = "itsdangerous" },
     { name = "jsonschema" },
     { name = "mypy" },
-    { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
-    { name = "ruamel-yaml" },
     { name = "ruff" },
     { name = "types-pyyaml" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-server = [
-    { name = "fastapi" },
-    { name = "itsdangerous" },
-    { name = "pydantic" },
-    { name = "ruamel-yaml" },
-    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bgutil-ytdlp-pot-provider", specifier = ">=2.0.0" },
-    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115,<0.122" },
-    { name = "itsdangerous", marker = "extra == 'server'", specifier = ">=2.2" },
+    { name = "fastapi", specifier = ">=0.115,<0.122" },
+    { name = "itsdangerous", specifier = ">=2.2" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruamel-yaml", marker = "extra == 'server'", specifier = ">=0.18" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.32" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
     { name = "yt-dlp", extras = ["default"], specifier = ">=2026.8.19" },
 ]
-provides-extras = ["server"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fastapi", specifier = ">=0.115,<0.122" },
     { name = "httpx", specifier = ">=0.28" },
-    { name = "itsdangerous", specifier = ">=2.2" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "mypy", specifier = ">=1.14" },
-    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=0.26" },
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },
-    { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "ruff", specifier = ">=0.11" },
     { name = "types-pyyaml", specifier = ">=6.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
-]
-server = [
-    { name = "fastapi", specifier = ">=0.115,<0.122" },
-    { name = "itsdangerous", specifier = ">=2.2" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]

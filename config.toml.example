@@ -1,13 +1,10 @@
-# Netscape cookies for YouTube URL mode only (`yt-dlp-emby youtube URL`).
-# Manifest runs use cookies: in youtube.yaml / dropout.yaml instead.
+# Cookie paths are configured per provider in the web UI or root manifests.
 # cookies = "cookies.txt"
 
 # Directory of imported series fragments (relative to the data dir / cwd).
 # shows_dir = "shows"
 
-# Destination for `yt-dlp-emby bench` (defaults to library).
-# bench_dest = "/path/to/old"
-# Sonarr (used by `yt-dlp-emby dropout check`). Do not put the API key in dropout.yaml.
+# Sonarr (used by the web UI Sonarr Check). Do not put the API key in dropout.yaml.
 # sonarr_url = "http://localhost:8989"
 # sonarr_api_key = "your-sonarr-api-key"
 

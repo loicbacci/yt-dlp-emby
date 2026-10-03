@@ -1,6 +1,6 @@
 [project]
 name = "yt-dlp-emby"
-version = "0.1.0"
+version = "0.2.0"
 description = "Download YouTube and Dropout.tv videos with yt-dlp for Emby."
 readme = "README.md"
 license = "MIT"
@@ -11,12 +11,6 @@ dependencies = [
     "pillow>=12.3.0",
     "pyyaml>=6.0.3",
     "yt-dlp[default]>=2026.8.19",
-]
-
-[project.optional-dependencies]
-# FastAPI/Starlette/Pydantic/Uvicorn/ItsDangerous/Ruamel: server extra only.
-# pyyaml reads manifests; ruamel.yaml preserves comments on web UI saves.
-server = [
     "fastapi>=0.115,<0.122",
     "uvicorn[standard]>=0.32",
     "itsdangerous>=2.2",
@@ -42,14 +36,6 @@ dev = [
     "jsonschema>=4.23",
     "mypy>=1.14",
     "types-pyyaml>=6.0",
-    { include-group = "server" },
-]
-server = [
-    "fastapi>=0.115,<0.122",
-    "uvicorn[standard]>=0.32",
-    "itsdangerous>=2.2",
-    "ruamel.yaml>=0.18",
-    "pydantic>=2.0",
 ]
 
 [tool.pytest.ini_options]
@@ -60,7 +46,7 @@ timeout = 60
 strict_markers = true
 markers = [
     "network: tests that contact YouTube",
-    "web: needs the [server] extra",
+    "web: web application tests",
 ]
 
 [tool.coverage.run]

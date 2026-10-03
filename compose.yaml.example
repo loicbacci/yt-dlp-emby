@@ -1,4 +1,4 @@
-# Optional web UI addon. The CLI still works on the host without Docker.
+# Web application: Python serves the UI and API in one container.
 # Copy to compose.yaml and edit. compose.yaml is gitignored.
 #
 # Dedicated data dir is the primary layout (avoids mounting the git checkout
@@ -20,7 +20,7 @@
 services:
   yt-dlp-emby:
     build: .
-    image: yt-dlp-emby:0.1.0
+    image: yt-dlp-emby:0.2.0
     # No init:true here: the image ENTRYPOINT is already ["tini","--"] and must
     # stay PID 1, otherwise tini warns and zombie reaping breaks.
     restart: unless-stopped

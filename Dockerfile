@@ -32,10 +32,10 @@ COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=web /usr/local/bin/node /usr/local/bin/node
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --extra server --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --extra server --no-dev
+    uv sync --frozen --no-dev
 COPY --from=web /repo/web/dist /opt/web-dist
 RUN mkdir -p /data \
     && chmod -R a+rX /opt/web-dist \
@@ -49,4 +49,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import os,urllib.request; p=os.environ.get('PORT','8080'); urllib.request.urlopen(f'http://127.0.0.1:{p}/api/health')"
 ENTRYPOINT ["tini", "--"]
-CMD ["yt-dlp-emby", "server", "--host", "0.0.0.0", "--data", "/data"]
+CMD ["yt-dlp-emby", "--host", "0.0.0.0", "--data", "/data"]
