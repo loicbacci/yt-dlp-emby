@@ -944,7 +944,7 @@ const SeriesRow = memo(function SeriesRow({
                 {seasonOpen && (
                   <div class="season-eps">
                     {remaining.map((ep) => (
-                      <label
+                      <div
                         key={ep.id}
                         class={
                           selected.has(ep.id) && !downloading
@@ -964,6 +964,7 @@ const SeriesRow = memo(function SeriesRow({
                                 onToggleEpisode(ep.id, (e.target as HTMLInputElement).checked)
                               }
                               disabled={busy}
+                              aria-label={`Select ${ep.code} ${ep.title}`}
                             />
                           )}
                         </span>
@@ -980,7 +981,7 @@ const SeriesRow = memo(function SeriesRow({
                         {formatItemSize(ep.size) && (
                           <span class="ep-size">{formatItemSize(ep.size)}</span>
                         )}
-                      </label>
+                      </div>
                     ))}
                   </div>
                 )}

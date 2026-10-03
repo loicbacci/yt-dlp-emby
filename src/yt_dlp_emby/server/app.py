@@ -143,6 +143,7 @@ class DownloadRunBody(BaseModel):
         default=None, max_length=500
     )
     force: bool = False
+    create: bool = False
 
 
 class ImportManifestBody(BaseModel):
@@ -1683,7 +1684,7 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": "empty download selection"})
         runner = get_runner(request)
         try:
-            await runner.start_download(body.ids, force=body.force)
+            await runner.start_download(body.ids, force=body.force, create=body.create)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
         except FileNotFoundError as exc:

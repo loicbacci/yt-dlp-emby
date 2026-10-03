@@ -122,9 +122,6 @@ export function SeriesList() {
     (row) => row.platform === "dropout" && row.listings_complete === false,
   );
   const lastRefresh = formatRelativeTime(newestRefreshIso(filtered));
-  const allRefreshing =
-    filtered.length > 0 &&
-    filtered.every((row) => refreshingKeys.includes(refreshSeriesKey(row.platform, row.slug)));
 
   type RefreshItemsArg = {
     items: { platform: SeriesPlatform; slug: string; tvdb_id?: number | null }[];
@@ -172,6 +169,7 @@ export function SeriesList() {
     if (!items.length || refreshMut.isPending) return;
     refreshMut.mutate({ items, part });
   };
+  const refreshInProgress = refreshMut.isPending || refreshingKeys.length > 0;
 
   const deleteMut = useMutation({
     mutationFn: (row: SeriesSummary) => apiClient.deleteSeries(row.platform, row.slug),
@@ -221,11 +219,11 @@ export function SeriesList() {
             </div>
             <div class="series-toolbar-end">
               <RefreshSplit
-                disabled={allRefreshing || !filtered.length}
-                busy={allRefreshing}
+                disabled={refreshInProgress || !filtered.length}
+                busy={refreshInProgress}
                 showSonarr={filtered.some((row) => row.tvdb_id != null)}
                 title={
-                  allRefreshing
+                  refreshInProgress
                     ? "Refresh already running"
                     : !filtered.length
                       ? "No shows to refresh"

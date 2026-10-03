@@ -1785,11 +1785,14 @@ def _dumps_yaml(data: Any) -> str:
 
 def get_series_yaml(data_dir: Path, platform: str, slug: str) -> dict[str, Any]:
     loc, series = _find_locator(data_dir, platform, slug)
-    item = (
-        _dropout_series_to_yaml(series)
-        if platform == "dropout"
-        else _youtube_series_to_yaml(series)
-    )
+    if platform == "dropout":
+        if not isinstance(series, DropoutSeries):
+            raise ValueError("series platform mismatch")
+        item = _dropout_series_to_yaml(series)
+    else:
+        if not isinstance(series, YoutubeSeries):
+            raise ValueError("series platform mismatch")
+        item = _youtube_series_to_yaml(series)
     return {"text": _dumps_yaml(item), "file": loc.file}
 
 
