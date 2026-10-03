@@ -36,3 +36,5 @@ cache/
 *.info.json
 src/yt_dlp_emby/server/static/
 .yt-dlp-emby-auth.json
+
+.worktrees/

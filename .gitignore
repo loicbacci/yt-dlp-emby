@@ -33,9 +33,9 @@ compose.override.yml
 data/
 .env
 backup/
-shows/
-!shows/*.example
-!shows/README.md
+/shows/*
+!/shows/*.example
+!/shows/README.md
 
 # Runtime queue / observability
 plan.json
@@ -61,6 +61,7 @@ cache/
 # Web UI
 node_modules/
 web/node_modules/
+web/node_modules
 web/dist/
 web/cosmos-export/
 web/coverage/
