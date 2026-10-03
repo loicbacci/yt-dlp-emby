@@ -1,4 +1,4 @@
-from yt_dlp_emby.dropout_manifest import DropoutSeason
+from yt_dlp_emby.dropout_manifest import DropoutRemap, DropoutSeason
 from yt_dlp_emby.extract import DropoutListing
 from yt_dlp_emby.server.series_discover import (
     ChannelDiscoverError,
@@ -6,6 +6,7 @@ from yt_dlp_emby.server.series_discover import (
     discover_youtube_sources,
     dropout_episode_rows,
     library_episode_status,
+    merge_dropout_seasons,
 )
 
 
@@ -81,3 +82,30 @@ def test_dropout_episode_rows_mark_disk_status() -> None:
     rows = dropout_episode_rows(season, listings, on_disk={(1, 1)})
     assert rows[0]["status"] == "downloaded"
     assert rows[1]["status"] == "missing"
+
+
+def test_merge_dropout_seasons_preserves_custom_mappings_and_vanished_seasons() -> None:
+    custom = DropoutSeason(
+        dropout=28,
+        url="https://watch.dropout.tv/custom-season-28",
+        to_season=27,
+        enabled=True,
+        title="Custom title",
+        only_episodes=(2, 5),
+        remap=(DropoutRemap(5, to_season=27, to_episode=9, title="Special cut"),),
+    )
+    vanished = DropoutSeason(dropout=4, url="https://watch.dropout.tv/old", enabled=False)
+    merged = merge_dropout_seasons(
+        (custom, vanished),
+        [
+            {"dropout": 28, "url": "https://watch.dropout.tv/28", "to_season": 28},
+            {"dropout": 29, "url": "https://watch.dropout.tv/29", "to_season": 29},
+        ],
+    )
+
+    assert merged[0] == custom
+    assert merged[1].dropout == 29
+    assert merged[1].url == "https://watch.dropout.tv/29"
+    assert merged[1].to_season == 29
+    assert merged[1].enabled is False
+    assert merged[2] == vanished

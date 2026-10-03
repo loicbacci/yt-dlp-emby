@@ -228,21 +228,37 @@ def merge_dropout_seasons(
     old: tuple[DropoutSeason, ...],
     discovered: list[dict[str, Any]],
 ) -> tuple[DropoutSeason, ...]:
+    """Merge a catalog result without replacing user-owned season settings.
+
+    Discovery is allowed to suggest new source seasons. Existing rows remain
+    authoritative: their URL, destination, title, enabled flag, episode filter,
+    and remaps are all preserved. A vanished configured season is retained so
+    a transient catalog change cannot erase an intentional mapping.
+    """
     by_dropout = {se.dropout: se for se in old if se.dropout is not None}
     merged: list[DropoutSeason] = []
+    seen: set[int] = set()
     for raw in discovered:
         dropout = int(raw["dropout"])
+        seen.add(dropout)
         prev = by_dropout.get(dropout)
-        merged.append(
-            DropoutSeason(
-                dropout=dropout,
-                url=str(raw["url"]),
-                to_season=int(raw.get("to_season", dropout)),
-                remap=prev.remap if prev else (),
-                only_episodes=prev.only_episodes if prev else None,
-                enabled=prev.enabled if prev else bool(raw.get("enabled", True)),
+        if prev is not None:
+            merged.append(prev)
+        else:
+            merged.append(
+                DropoutSeason(
+                    dropout=dropout,
+                    url=str(raw["url"]),
+                    to_season=int(raw.get("to_season", dropout)),
+                    remap=(),
+                    only_episodes=None,
+                    enabled=False,
+                    title=None,
+                )
             )
-        )
+    # Keep configured seasons which disappeared from discovery. Their order
+    # follows the manifest and they remain editable by the user.
+    merged.extend(season for season in old if season.dropout not in seen)
     return tuple(merged)
 
 
