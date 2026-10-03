@@ -58,17 +58,21 @@ def plan_sync(
     live_ids = {episode.video_id for episode in playlist.episodes}
     actions: list[SyncAction] = []
 
-    for video_id, stored in stored_map.items():
+    for video_id, removed_stored in stored_map.items():
         if video_id not in live_ids:
             actions.append(
                 SyncAction(
                     kind=ActionKind.REMOVE,
                     video_id=video_id,
                     season=season,
-                    episode=stored.episode,
-                    stored=stored,
-                    old_basename=stored.basename,
-                    old_season=stored.season if stored.season is not None else record.season,
+                    episode=removed_stored.episode,
+                    stored=removed_stored,
+                    old_basename=removed_stored.basename,
+                    old_season=removed_stored.season
+                    if removed_stored.season is not None
+                    else record.season
+                    if record is not None
+                    else season,
                 )
             )
 

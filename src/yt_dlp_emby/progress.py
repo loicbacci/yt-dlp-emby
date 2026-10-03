@@ -177,7 +177,8 @@ def plan_download_steps(info: dict[str, Any], *, copy: bool = True) -> list[str]
 
 
 def stream_label(data: dict[str, Any]) -> str:
-    info = data.get("info_dict") if isinstance(data.get("info_dict"), dict) else {}
+    raw_info = data.get("info_dict")
+    info = raw_info if isinstance(raw_info, dict) else {}
     filename = str(data.get("filename") or info.get("filename") or "")
     suffix = Path(filename).suffix.lower()
     ext = str(info.get("ext") or "").lower()

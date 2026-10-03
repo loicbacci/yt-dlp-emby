@@ -461,8 +461,8 @@ def _run_dropout_check(
                 print(line)
         if warnings:
             print(f"  {yellow('warning')}")
-            for season, episode, detail in warnings:
-                print(f"    {_slot_code(season, episode)}  {detail}")
+            for season, episode_number, detail in warnings:
+                print(f"    {_slot_code(season, episode_number)}  {detail}")
         if names:
             print(f"  {yellow('names')}")
             for episode, file_title in names:
