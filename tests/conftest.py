@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import sys
 import textwrap
 from collections.abc import Iterator
 from pathlib import Path
@@ -67,15 +65,10 @@ def dropout_manifest(data_dir: Path) -> Path:
     return write_dropout_manifest(data_dir)
 
 
-def command_factory(script: str):
-    return lambda *a, **k: [sys.executable, "-c", script]
-
-
 def make_test_client(
     data_dir: Path,
     *,
     environ: dict[str, str] | None = None,
-    command_factory=None,
     authed: bool = False,
 ):
     pytest.importorskip("fastapi")
@@ -87,7 +80,6 @@ def make_test_client(
         create_app(
             data_dir=data_dir,
             environ=environ or {},
-            command_factory=command_factory,
         )
     )
     client.__enter__()
@@ -113,17 +105,3 @@ def authed_client(data_dir: Path) -> Iterator:
         yield instance
     finally:
         instance.__exit__(None, None, None)
-
-
-async def wait_exited(runner, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        snapshot = runner.snapshot()
-        if snapshot["status"] == "exited":
-            return
-        await asyncio.sleep(0.05)
-    lines = []
-    dump = getattr(runner, "lines_after", None)
-    if callable(dump):
-        lines = dump(0)
-    raise AssertionError(f"still {runner.snapshot()['status']}; log={lines!r}")

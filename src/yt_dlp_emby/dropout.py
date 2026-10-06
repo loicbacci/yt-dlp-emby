@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,15 +34,12 @@ from yt_dlp_emby.dropout_manifest import (
     season_page_url,
 )
 from yt_dlp_emby.events import (
-    allowed_item_id,
+    allowed_provider_action,
     emit,
     emit_dropout_unit,
     item_id,
-    merge_plan_source,
-    parse_events_file,
-    plan_from_events,
-    read_events_path,
     set_current_item_id,
+    validate_selected_action,
 )
 from yt_dlp_emby.extract import DropoutListing, extract_dropout_season
 from yt_dlp_emby.job import WorkRow, finish, log_step, note, note_series, print_work_rows, warn_if
@@ -76,7 +72,9 @@ class DownloadJob:
     dest_dir: Path
     stem: str
     existing: Path | None
+    provider_identity: str = ""
     slug: str | None = None
+    title: str | None = None
 
 
 def listing_bytes(listing: DropoutListing) -> int | None:
@@ -351,10 +349,11 @@ def run_dropout(
     format_selector: str | None = None,
     extract_fn: Callable[..., list[DropoutListing]] | None = None,
     download_fn: Callable[..., dict[str, Any]] | None = None,
+    series_slug_overrides: Mapping[str, str] | None = None,
+    persist_listing_cache: bool = True,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
-        read_events_path(os.environ)
         if settings.dry_run and not settings.layout:
             emit(
                 {
@@ -372,6 +371,8 @@ def run_dropout(
             format_selector=format_selector,
             extract_fn=extract_fn,
             download_fn=download_fn,
+            series_slug_overrides=series_slug_overrides,
+            persist_listing_cache=persist_listing_cache,
         )
     except KeyboardInterrupt:
         stats.interrupted = True
@@ -416,21 +417,24 @@ def _run_dropout(
     format_selector: str | None,
     extract_fn: Callable[..., list[DropoutListing]] | None,
     download_fn: Callable[..., dict[str, Any]] | None,
+    series_slug_overrides: Mapping[str, str] | None,
+    persist_listing_cache: bool,
 ) -> int:
-    stale = cleanup_stale_staging(settings.staging)
-    if stale:
-        log_step(settings, f"Removed {stale} leftover staging path(s)")
-    ensure_series_dirs(manifest, settings, create=create)
+    # A missing destination is a deterministic precondition, independent of
+    # whether the provider currently has episodes. Read-only validation is
+    # safe before planning; creation remains delayed until selected work exists.
+    if not create:
+        ensure_series_dirs(manifest, settings, create=False)
     if settings.cookiefile:
         log_step(settings, f"Using cookies file {settings.cookiefile}")
     extract = extract_fn or extract_dropout_season
     download = download_fn or download_video
     jobs: list[DownloadJob] = []
     seasons = [
-        (series, source, season)
+        (series, source, season, source_index, season_index)
         for series in manifest.series
-        for source in series.sources
-        for season in source.seasons
+        for source_index, source in enumerate(series.sources)
+        for season_index, season in enumerate(source.seasons)
         if season.enabled
     ]
     series_slugs = dropout_series_slugs(manifest)
@@ -439,11 +443,17 @@ def _run_dropout(
     }
 
     def _series_slug(series: DropoutSeries) -> str:
-        return slug_by_id.get(id(series), slugify(series.name))
+        return (series_slug_overrides or {}).get(
+            series.name, slug_by_id.get(id(series), slugify(series.name))
+        )
 
     cache_path = dropout_cache_path(manifest.path)
     cache_started = time.monotonic()
-    moved_from = migrate_dropout_season_cache(cache_path, settings.library)
+    moved_from = (
+        migrate_dropout_season_cache(cache_path, settings.library)
+        if persist_listing_cache
+        else None
+    )
     cached_seasons = load_dropout_season_cache(cache_path)
     cache_load = time.monotonic() - cache_started
     if moved_from:
@@ -473,7 +483,7 @@ def _run_dropout(
         layout_plans.clear()
 
     try:
-        for series, source, season in seasons:
+        for series, source, season, source_index, season_index in seasons:
             if settings.layout:
                 group_key, group_label = layout_groups[(series.name, series.path)]
                 if last_layout_group is not None and last_layout_group != group_key:
@@ -540,7 +550,6 @@ def _run_dropout(
                     continue
                 to_season, to_episode, title = target
                 dest_dir = emby_season_dir(series_path, to_season)
-                recover_rename_temps(dest_dir)
                 stem = planned_stem(series, listing, to_season, to_episode, title, dest=dest_dir)
                 if series_path not in mkv_indexes:
                     disk_started = time.monotonic()
@@ -572,7 +581,11 @@ def _run_dropout(
                         dest_dir,
                         stem,
                         existing,
+                        provider_identity=(
+                            f"{source_index}:{season_index}:{listing.dropout_episode}"
+                        ),
                         slug=_series_slug(series),
+                        title=title,
                     )
                 )
                 work_rows.append(
@@ -635,12 +648,12 @@ def _run_dropout(
                 print_work_rows(settings, work_rows)
         if settings.layout:
             flush_layout()
-        if cache_dirty:
+        if cache_dirty and persist_listing_cache:
             save_dropout_season_cache(cache_path, cached_seasons)
     except DropoutAuthError as exc:
         if settings.layout:
             flush_layout()
-        if cache_dirty:
+        if cache_dirty and persist_listing_cache:
             save_dropout_season_cache(cache_path, cached_seasons)
         error(str(exc))
         stats.failed += 1
@@ -650,9 +663,43 @@ def _run_dropout(
     def _job_allowed(job: DownloadJob) -> bool:
         code = emby_code(job.to_season, job.to_episode)
         slug = job.slug or slugify(job.series.name)
-        return allowed_item_id(item_id("dropout", slug, code))
+        action = "replace" if force and job.existing is not None else "download"
+        allowed = allowed_provider_action(
+            "dropout",
+            slug,
+            job.provider_identity,
+            action,
+            item_id("dropout", slug, code),
+        )
+        if allowed:
+            validate_selected_action(
+                "dropout",
+                slug,
+                job.provider_identity,
+                action,
+                {
+                    "dest_season": job.to_season,
+                    "dest_episode": job.to_episode,
+                    "title": job.title or job.listing.title,
+                    "url": job.listing.url,
+                },
+            )
+        return allowed
 
     allowed_jobs = [job for job in jobs if _job_allowed(job)]
+    from yt_dlp_emby.events import assert_selected_actions_seen
+
+    seen_actions = {
+        (
+            "dropout",
+            job.slug or slugify(job.series.name),
+            job.provider_identity,
+            "replace" if force and job.existing is not None else "download",
+        )
+        for job in allowed_jobs
+    }
+    for selected_slug in {job.slug or slugify(job.series.name) for job in jobs}:
+        assert_selected_actions_seen(seen_actions, platform="dropout", slug=selected_slug)
     download_jobs = sort_download_jobs(
         [job for job in allowed_jobs if force or job.existing is None]
     )
@@ -663,16 +710,8 @@ def _run_dropout(
 
     if settings.dry_run:
         stats.downloaded = len(download_jobs)
-        if manifest.path is not None:
-            events_path = os.environ.get("YT_DLP_EMBY_EVENTS")
-            if events_path:
-                payload = plan_from_events(parse_events_file(Path(events_path)), platform="dropout")
-                merge_plan_source(
-                    manifest.path.parent / "plan.json",
-                    "dropout",
-                    payload,
-                    force=force,
-                )
+        if cache_dirty and persist_listing_cache:
+            save_dropout_season_cache(cache_path, cached_seasons)
         emit(
             {
                 "event": "run_finished",
@@ -696,6 +735,13 @@ def _run_dropout(
 
     if not download_jobs:
         return finish(settings, stats)
+
+    if cache_dirty and persist_listing_cache:
+        save_dropout_season_cache(cache_path, cached_seasons)
+    stale = cleanup_stale_staging(settings.staging)
+    if stale:
+        log_step(settings, f"Removed {stale} leftover staging path(s)")
+    ensure_series_dirs(manifest, settings, create=create)
 
     staging_parent = str(settings.staging) if settings.staging else None
     if settings.staging:
@@ -729,6 +775,7 @@ def _run_dropout(
             set_current_item_id(event_id)
             log_step(settings, f"[{i}/{len(download_jobs)}] Downloading {stem}{extra}")
             started = time.monotonic()
+            recover_rename_temps(job.dest_dir)
             try:
                 info_dict = download(
                     listing.url,

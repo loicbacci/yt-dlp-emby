@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -327,20 +326,20 @@ def test_discover_missing_cookies_400(authed_client, tmp_path) -> None:
     assert "Cookies" in resp.json()["error"]
 
 
-def test_discover_409_when_run_active(authed_client, tmp_path) -> None:
+def test_discover_409_when_job_active(authed_client, tmp_path) -> None:
     client = authed_client
-    created = client.post(
-        "/api/series",
-        json={"name": "Show", "platform": "dropout", "path": "Show", "tvdb_id": None},
+    assert (
+        client.post(
+            "/api/series", json={"name": "Show", "platform": "dropout", "path": "Show"}
+        ).status_code
+        == 200
     )
-    assert created.status_code == 200
-    client.app.state.runner._state.status = "running"
-    resp = client.post(
-        "/api/series/dropout/show/sources",
-        json={"url": "https://watch.dropout.tv/show"},
+    client.app.state.job_store.create("active-job", "refresh", {"kind": "refresh", "items": []})
+    response = client.post(
+        "/api/series/dropout/show/sources", json={"url": "https://watch.dropout.tv/show"}
     )
-    assert resp.status_code == 409
-    assert resp.json()["error"] == "a run is in progress"
+    assert response.status_code == 409
+    assert response.json()["code"] == "JOB_CONFLICT"
 
 
 def test_add_dropout_source_indexes(authed_client, tmp_path, monkeypatch) -> None:
@@ -423,252 +422,74 @@ def test_channel_extract_error_stays_on_source_card(authed_client, tmp_path, mon
     assert source["error"] == "login required"
 
 
-def test_list_episodes_from_cache_includes_disk_status(authed_client, tmp_path) -> None:
-    lib = tmp_path / "lib"
-    dest = lib / "Clip" / "Season 1"
-    dest.mkdir(parents=True)
-    (dest / "Clip - S01E01 - Pilot.mkv").write_bytes(b"x")
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
-
-    save_dropout_season_cache(
-        dropout_cache_path(tmp_path / "dropout.yaml"),
-        {
-            "https://watch.dropout.tv/c/season:1": [
-                {
-                    "url": "https://watch.dropout.tv/videos/pilot",
-                    "title": "Pilot",
-                    "dropout_episode": 1,
-                },
-                {
-                    "url": "https://watch.dropout.tv/videos/two",
-                    "title": "Two",
-                    "dropout_episode": 2,
-                },
-            ]
-        },
-    )
-    client = authed_client
-    body = client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes").json()
+def test_list_episodes_from_cached_view_includes_disk_status(authed_client, tmp_path) -> None:
+    _configured_shows(tmp_path, ["Clip"])
+    _cache_view(authed_client, tmp_path, "clip", on_disk=[(1, 1)])
+    body = authed_client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes").json()
     by_id = {row["id"]: row for row in body["episodes"]}
     assert by_id["1"]["status"] == "downloaded"
     assert by_id["2"]["status"] == "missing"
-    assert {"season": 1, "episode": 1} in body["on_disk"]
-    disk = client.get("/api/series/dropout/clip/disk").json()
-    assert {"season": 1, "episode": 1} in disk["on_disk"]
-    listed = client.get("/api/series").json()["series"]
-    assert listed[0]["missing_count"] == 1
-    assert listed[0]["listings_complete"] is True
+    assert body["on_disk"] == [{"season": 1, "episode": 1}]
+    listed = authed_client.get("/api/series").json()["series"][0]
+    assert listed["missing_count"] == 1
+    assert listed["listings_complete"] is True
 
 
 def test_list_missing_count_zero_when_complete(authed_client, tmp_path) -> None:
-    lib = tmp_path / "lib"
-    dest = lib / "Clip" / "Season 1"
-    dest.mkdir(parents=True)
-    (dest / "Clip - S01E01 - Pilot.mkv").write_bytes(b"x")
-    (dest / "Clip - S01E02 - Two.mkv").write_bytes(b"x")
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
-
-    save_dropout_season_cache(
-        dropout_cache_path(tmp_path / "dropout.yaml"),
-        {
-            "https://watch.dropout.tv/c/season:1": [
-                {
-                    "url": "https://watch.dropout.tv/videos/pilot",
-                    "title": "Pilot",
-                    "dropout_episode": 1,
-                },
-                {
-                    "url": "https://watch.dropout.tv/videos/two",
-                    "title": "Two",
-                    "dropout_episode": 2,
-                },
-            ]
-        },
-    )
-    client = authed_client
-    listed = client.get("/api/series").json()["series"]
-    assert listed[0]["missing_count"] == 0
+    _configured_shows(tmp_path, ["Clip"])
+    _cache_view(authed_client, tmp_path, "clip", on_disk=[(1, 1), (1, 2)])
+    listed = authed_client.get("/api/series").json()["series"][0]
+    assert listed["missing_count"] == 0
+    assert listed["listings_complete"] is True
 
 
-def test_list_episodes_live_extract_writes_cache(authed_client, tmp_path, monkeypatch) -> None:
-    from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache
-    from yt_dlp_emby.extract import DropoutListing
+def test_get_episodes_does_not_extract_or_write_cache(authed_client, tmp_path, monkeypatch) -> None:
+    _configured_shows(tmp_path, ["Clip"])
 
-    lib = tmp_path / "lib"
-    lib.mkdir()
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    _write_cookies(tmp_path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("GET must never fetch provider listings")
 
-    def fake_extract(url, **_kwargs):
-        assert url == "https://watch.dropout.tv/c/season:1"
-        return [
-            DropoutListing(
-                url="https://watch.dropout.tv/videos/pilot",
-                title="Pilot",
-                dropout_episode=1,
-            )
-        ]
-
-    monkeypatch.setattr("yt_dlp_emby.server.series.extract_dropout_season", fake_extract)
-    client = authed_client
-    body = client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes")
-    assert body.status_code == 200
-    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
-    assert cached["https://watch.dropout.tv/c/season:1"][0]["title"] == "Pilot"
-    listed = client.get("/api/series").json()["series"]
-    assert listed[0]["missing_count"] == 1
+    monkeypatch.setattr("yt_dlp_emby.server.services.extract_dropout_season", forbidden)
+    response = authed_client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes")
+    assert response.status_code == 200
+    assert response.json()["episodes"] == []
+    assert response.json()["refresh_required"] is True
+    assert not (tmp_path / "dropout-cache.json").exists()
+    assert authed_client.get("/api/series").json()["series"][0]["missing_count"] is None
 
 
-def test_missing_endpoint_hydrates_uncached_seasons(authed_client, tmp_path, monkeypatch) -> None:
-    from yt_dlp_emby.cache import dropout_cache_path, load_dropout_season_cache
-    from yt_dlp_emby.extract import DropoutListing
+def test_uncached_missing_endpoint_reports_unknown_without_provider_io(
+    authed_client, tmp_path, monkeypatch
+) -> None:
+    _configured_shows(tmp_path, ["Clip"])
 
-    lib = tmp_path / "lib"
-    lib.mkdir()
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n      - dropout: 2\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    _write_cookies(tmp_path)
-    fetched: list[str] = []
+    def forbidden(*args, **kwargs):
+        raise AssertionError("GET must never fetch provider listings")
 
-    def fake_extract(url, **_kwargs):
-        fetched.append(url)
-        season = 1 if "season:1" in url else 2
-        return [
-            DropoutListing(
-                url=f"https://watch.dropout.tv/videos/s{season}",
-                title=f"Ep {season}",
-                dropout_episode=1,
-            )
-        ]
-
-    monkeypatch.setattr("yt_dlp_emby.server.series.extract_dropout_season", fake_extract)
-    client = authed_client
-    listed = client.get("/api/series").json()["series"]
-    assert listed[0]["missing_count"] is None
-    assert listed[0]["listings_complete"] is False
-    body = client.get("/api/series/dropout/clip/missing")
-    assert body.status_code == 200, body.text
-    payload = body.json()
-    assert payload["complete"] is True
-    assert payload["missing_count"] == 2
-    assert fetched == [
-        "https://watch.dropout.tv/c/season:1",
-        "https://watch.dropout.tv/c/season:2",
-    ]
-    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
-    assert "https://watch.dropout.tv/c/season:1" in cached
-    again = client.get("/api/series/dropout/clip/missing").json()
-    assert again["missing_count"] == 2
-    assert fetched == [
-        "https://watch.dropout.tv/c/season:1",
-        "https://watch.dropout.tv/c/season:2",
-    ]
+    monkeypatch.setattr("yt_dlp_emby.server.services.extract_dropout_season", forbidden)
+    body = authed_client.get("/api/series/dropout/clip/missing").json()
+    assert body["missing_count"] is None
+    assert body["complete"] is False
+    assert body["stale"] is True
+    assert body["error"]
 
 
-def test_check_uses_file_stem_when_name_has_apostrophe(tmp_path) -> None:
-    lib = tmp_path / "lib"
-    lib.mkdir()
-    ffmpeg = tmp_path / "ffmpeg"
-    ffmpeg.write_text("#!/bin/sh\n", encoding="utf-8")
-    ffmpeg.chmod(0o755)
+def test_job_target_uses_file_stem_when_name_has_apostrophe(authed_client, tmp_path) -> None:
     shows = tmp_path / "shows"
     shows.mkdir()
     (shows / "dimension-20-adventuring-party.yaml").write_text(
-        "series:\n"
-        "  - name: Dimension 20's Adventuring Party\n"
-        "    path: AP\n"
-        "    tvdb_id: 391568\n"
-        "    url: https://watch.dropout.tv/ap\n"
-        "    seasons:\n"
-        "      - dropout: 1\n",
-        encoding="utf-8",
+        "series:\n  - name: Dimension 20's Adventuring Party\n    path: AP\n    tvdb_id: 391568\n    seasons: []\n"
     )
     (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\n"
-        "imports:\n  - shows/dimension-20-adventuring-party.yaml\nseries: []\n",
-        encoding="utf-8",
+        "imports: [shows/dimension-20-adventuring-party.yaml]\nseries: []\n"
     )
-    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
-    from yt_dlp_emby.sonarr import save_sonarr_cache, sonarr_cache_path
-
-    save_dropout_season_cache(
-        dropout_cache_path(tmp_path / "dropout.yaml"),
-        {
-            "https://watch.dropout.tv/ap/season:1": [
-                {
-                    "url": "https://watch.dropout.tv/videos/pilot",
-                    "title": "Pilot",
-                    "dropout_episode": 1,
-                }
-            ]
-        },
+    listed = authed_client.get("/api/series").json()["series"]
+    assert listed[0]["slug"] == "dimension-20-adventuring-party"
+    response = authed_client.post(
+        "/api/jobs",
+        json={"kind": "check", "items": [{"platform": "dropout", "slug": listed[0]["slug"]}]},
     )
-    save_sonarr_cache(
-        sonarr_cache_path(tmp_path / "dropout.yaml"),
-        {
-            "391568": {
-                "title": "Dimension 20's Adventuring Party",
-                "episodes": [{"season": 1, "episode": 1, "title": "Pilot"}],
-            }
-        },
-    )
-    client = _authed_ctx(
-        tmp_path,
-        environ={
-            "YT_DLP_EMBY_SONARR_URL": "http://sonarr.example",
-            "YT_DLP_EMBY_SONARR_API_KEY": "k",
-            "YT_DLP_EMBY_FFMPEG": str(ffmpeg),
-        },
-    )
-    with client:
-        listed = client.get("/api/series").json()["series"]
-        assert listed[0]["slug"] == "dimension-20-adventuring-party"
-        check = client.get("/api/series/dropout/dimension-20-adventuring-party/check")
-        assert check.status_code == 200, check.text
-        assert check.json()["ok"] is True
-        layout = client.get("/api/series/dropout/dimension-20-adventuring-party/layout")
-        assert layout.status_code == 200, layout.text
+    assert response.status_code == 202, response.text
 
 
 def test_series_list_includes_poster_url(authed_client, tmp_path) -> None:
@@ -702,16 +523,15 @@ def test_poster_404_without_art(authed_client, tmp_path) -> None:
 def test_refresh_requires_auth(client) -> None:
     assert (
         client.post(
-            "/api/series/refresh?sync=1",
-            json={"items": [{"platform": "dropout", "slug": "solo"}]},
+            "/api/jobs",
+            json={"kind": "refresh", "items": [{"platform": "dropout", "slug": "solo"}]},
         ).status_code
         == 401
     )
 
 
 def test_refresh_empty_items_400(authed_client, tmp_path) -> None:
-    client = authed_client
-    assert client.post("/api/series/refresh?sync=1", json={"items": []}).status_code == 400
+    assert authed_client.post("/api/jobs", json={"kind": "refresh", "items": []}).status_code == 400
 
 
 def test_poster_returns_library_file(tmp_path) -> None:
@@ -737,203 +557,170 @@ def test_poster_returns_library_file(tmp_path) -> None:
         assert response.content.startswith(b"\xff\xd8")
 
 
-def test_refresh_dropout_force_listing(authed_client, tmp_path, monkeypatch) -> None:
-    from yt_dlp_emby.cache import (
-        dropout_cache_path,
-        dropout_listings_to_cache,
-        load_dropout_season_cache,
-        save_dropout_season_cache,
-    )
+def test_explicit_refresh_fetches_provider_despite_legacy_cache(
+    authed_client, tmp_path, monkeypatch
+) -> None:
+    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
     from yt_dlp_emby.extract import DropoutListing
+    from yt_dlp_emby.server.services import refresh_target
 
-    lib = tmp_path / "lib"
-    lib.mkdir()
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    _write_cookies(tmp_path)
-    page = "https://watch.dropout.tv/c/season:1"
+    _configured_shows(tmp_path, ["Clip"])
+    page = "https://watch.dropout.tv/clip/season:1"
     save_dropout_season_cache(
         dropout_cache_path(tmp_path / "dropout.yaml"),
         {
-            page: dropout_listings_to_cache(
-                [
-                    DropoutListing(
-                        url="https://watch.dropout.tv/videos/old",
-                        title="Old Pilot",
-                        dropout_episode=1,
-                    )
-                ]
-            )
+            page: [
+                {"url": "https://watch.dropout.tv/videos/old", "title": "Old", "dropout_episode": 1}
+            ]
         },
     )
-    fetched: list[str] = []
+    fetched = []
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.services.discover_dropout_source",
+        lambda *args, **kwargs: [{"dropout": 1, "url": page, "to_season": 1, "enabled": True}],
+    )
 
-    def fake_extract(url, **_kwargs):
+    def extract(url, **kwargs):
         fetched.append(url)
         return [
             DropoutListing(
-                url="https://watch.dropout.tv/videos/pilot",
-                title="New Pilot",
-                dropout_episode=1,
+                url="https://watch.dropout.tv/videos/new", title="New", dropout_episode=1
             )
         ]
 
-    monkeypatch.setattr("yt_dlp_emby.server.series.extract_dropout_season", fake_extract)
-    client = authed_client
-    response = client.post(
-        "/api/series/refresh?sync=1",
-        json={"items": [{"platform": "dropout", "slug": "clip"}]},
-    )
-    assert response.status_code == 200, response.text
+    monkeypatch.setattr("yt_dlp_emby.server.services.extract_dropout_season", extract)
+    result = refresh_target(tmp_path, {}, {"platform": "dropout", "slug": "clip"})
+    assert result["ok"] is True
     assert fetched == [page]
-    cached = load_dropout_season_cache(dropout_cache_path(tmp_path / "dropout.yaml"))
-    assert cached[page][0]["title"] == "New Pilot"
+    assert result["view"]["provider_listings"][0]["title"] == "New"
+    assert not (tmp_path / "library" / "Clip").exists()
 
 
-def _seed_two_show_plan(tmp_path: Path) -> None:
-    (tmp_path / "plan.json").write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-01-01T00:00:00",
-                "force": False,
-                "sources": {
-                    "dropout": {
-                        "ok": True,
-                        "error": None,
-                        "seasons": [
-                            {"slug": "show", "dest_season": 1, "download": 1},
-                            {"slug": "other", "dest_season": 2, "download": 1},
-                        ],
-                        "items": [
-                            {
-                                "slug": "show",
-                                "id": "dropout|show|S01E01",
-                                "action": "download",
-                            },
-                            {
-                                "slug": "other",
-                                "id": "dropout|other|S02E01",
-                                "action": "download",
-                            },
-                        ],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def _patch_only_requested_slug(monkeypatch) -> list[tuple[str, str]]:
-    from yt_dlp_emby.events import merge_plan_slug
-    from yt_dlp_emby.server.plan_series import plan_path
-
-    patched: list[tuple[str, str]] = []
-
-    def fake_patch(data_dir, platform, slug, *, environ, force_refetch=False):
-        patched.append((platform, slug))
-        merge_plan_slug(
-            plan_path(data_dir),
-            platform,
-            slug,
-            {"ok": True, "error": None, "seasons": [], "items": []},
-        )
-
-    monkeypatch.setattr("yt_dlp_emby.server.plan_series.patch_series_plan", fake_patch)
-    return patched
-
-
-def test_disk_refresh_patches_only_that_slug(authed_client, tmp_path, monkeypatch) -> None:
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "show.yaml").write_text(
-        "series:\n  - name: Show\n    path: Show\n    url: https://watch.dropout.tv/x\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        "imports:\n  - shows/show.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    _seed_two_show_plan(tmp_path)
-    patched = _patch_only_requested_slug(monkeypatch)
-    client = authed_client
-    response = client.post(
-        "/api/series/refresh?sync=1",
-        json={
-            "items": [{"platform": "dropout", "slug": "show"}],
-            "parts": ["disk"],
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert patched == [("dropout", "show")]
-    plan = json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))
-    items = plan["sources"]["dropout"]["items"]
-    assert [row["id"] for row in items] == ["dropout|other|S02E01"]
-
-
-def test_sonarr_refresh_does_not_patch_plan(authed_client, tmp_path, monkeypatch) -> None:
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "show.yaml").write_text(
-        "series:\n  - name: Show\n    path: Show\n    tvdb_id: 9\n"
-        "    url: https://watch.dropout.tv/x\n    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        "imports:\n  - shows/show.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    _seed_two_show_plan(tmp_path)
-    patched = _patch_only_requested_slug(monkeypatch)
-    client = authed_client
-    response = client.post(
-        "/api/series/refresh?sync=1",
-        json={
-            "items": [{"platform": "dropout", "slug": "show"}],
-            "parts": ["sonarr"],
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert patched == []
-    plan = json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))
-    assert [row["id"] for row in plan["sources"]["dropout"]["items"]] == [
-        "dropout|show|S01E01",
-        "dropout|other|S02E01",
+def _configured_shows(data: Path, names: list[str]) -> None:
+    library = data / "library"
+    library.mkdir(exist_ok=True)
+    entries = [
+        {
+            "name": name,
+            "path": name,
+            "url": f"https://watch.dropout.tv/{name.lower()}",
+            "seasons": [{"dropout": 1, "url": f"https://watch.dropout.tv/{name.lower()}/season:1"}],
+        }
+        for name in names
     ]
+    (data / "dropout.yaml").write_text(
+        yaml.safe_dump({"library": str(library), "old_dir": str(data / "old"), "series": entries})
+    )
 
 
-def test_put_skip_patches_that_slug_plan_items(authed_client, tmp_path, monkeypatch) -> None:
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "show.yaml").write_text(
-        "series:\n  - name: Show\n    path: Show\n    url: https://watch.dropout.tv/x\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
+def _cache_view(
+    client: TestClient, data: Path, slug: str, *, on_disk: list[tuple[int, int]] | None = None
+) -> dict:
+    from dataclasses import asdict
+
+    from yt_dlp_emby.server.series import locate_series
+    from yt_dlp_emby.server.services import (
+        ProviderListing,
+        current_configuration_revision,
+        plan_variant,
     )
-    (tmp_path / "dropout.yaml").write_text(
-        "imports:\n  - shows/show.yaml\nseries: []\n",
-        encoding="utf-8",
+    from yt_dlp_emby.server.views import configuration_context_signature, source_signature
+
+    rows = [
+        ProviderListing(
+            platform="dropout",
+            source_index=0,
+            season_index=0,
+            source_season=1,
+            destination_season=1,
+            episode=number,
+            identity=f"{slug}:episode:{number}",
+            title=title,
+            url=f"https://watch.dropout.tv/videos/{slug}-{number}",
+            mapped_episode=number,
+        )
+        for number, title in ((1, "Pilot"), (2, "Two"))
+    ]
+    view = {
+        "target": {"platform": "dropout", "slug": slug},
+        "config_revision": current_configuration_revision(data, {}, "dropout", slug),
+        "provider_listings": [asdict(row) for row in rows],
+        "disk": {
+            "status": "ready",
+            "series_exists": True,
+            "episodes": [list(pair) for pair in on_disk or []],
+            "episode_fingerprints": [],
+            "revision": f"disk-{slug}",
+            "scanned_at": "2026-01-01T00:00:00Z",
+            "mount_identity": "test-mount",
+        },
+        "stale": False,
+    }
+    _, series = locate_series(data, "dropout", slug)
+    view["source_signature"] = source_signature(series)
+    view["context_signature"] = configuration_context_signature(data, {}, "dropout")
+    plan = plan_variant(view)
+    client.app.state.job_store.put_view(
+        "dropout",
+        slug,
+        {"view": view},
+        plan,
+        plan["revision"],
+        "ready",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:00Z",
     )
-    _seed_two_show_plan(tmp_path)
-    patched = _patch_only_requested_slug(monkeypatch)
-    client = authed_client
-    detail = client.get("/api/series/dropout/show").json()
-    detail["sources"][0]["seasons"][0]["remaps"] = [{"dropout_episode": 1, "skip": True}]
-    saved = client.put("/api/series/dropout/show", json=detail)
-    assert saved.status_code == 200, saved.text
-    assert patched == [("dropout", "show")]
-    plan = json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))
-    assert [row["id"] for row in plan["sources"]["dropout"]["items"]] == ["dropout|other|S02E01"]
+    return view
+
+
+def test_cached_plan_preserves_both_shows_on_same_platform(authed_client, tmp_path) -> None:
+    _configured_shows(tmp_path, ["Show", "Other"])
+    _cache_view(authed_client, tmp_path, "show")
+    _cache_view(authed_client, tmp_path, "other")
+    plan = authed_client.get("/api/plans/latest").json()
+    assert {row["slug"] for row in plan["sources"]["dropout"]["items"]} == {"show", "other"}
+    assert len(plan["sources"]["dropout"]["items"]) == 4
+
+
+def test_failed_refresh_preserves_last_good_view_as_stale(authed_client, tmp_path) -> None:
+    _configured_shows(tmp_path, ["Show", "Other"])
+    _cache_view(authed_client, tmp_path, "show")
+    _cache_view(authed_client, tmp_path, "other")
+    authed_client.app.state.job_store.record_view_attempt("dropout", "show", "NAS unavailable")
+    plan = authed_client.get("/api/plans/latest").json()
+    rows = plan["sources"]["dropout"]["items"]
+    assert all(row["action"] == "blocked" for row in rows if row["slug"] == "show")
+    assert all(row["action"] == "download" for row in rows if row["slug"] == "other")
+    detail = authed_client.get("/api/series/dropout/show").json()
+    assert detail["stale"] is True
+    assert detail["missing_count"] is None
+    assert detail["last_success_at"] == "2026-01-01T00:00:00Z"
+    assert detail["error"] == "NAS unavailable"
+
+
+def test_external_config_change_blocks_cached_execution(authed_client, tmp_path) -> None:
+    _configured_shows(tmp_path, ["Show"])
+    _cache_view(authed_client, tmp_path, "show")
+    before = authed_client.get("/api/plans/latest").json()
+    path = tmp_path / "dropout.yaml"
+    raw = yaml.safe_load(path.read_text())
+    raw["series"][0]["seasons"][0]["to_season"] = 27
+    path.write_text(yaml.safe_dump(raw))
+    after = authed_client.get("/api/plans/latest").json()
+    assert before["plan_id"] != after["plan_id"]
+    assert after["readiness"] == "stale"
+    assert all(row["action"] == "blocked" for row in after["sources"]["dropout"]["items"])
+    started = authed_client.post(
+        "/api/jobs",
+        json={
+            "kind": "download",
+            "plan_id": before["plan_id"],
+            "ids": [before["sources"]["dropout"]["items"][0]["id"]],
+        },
+    )
+    assert started.status_code == 409
+    assert started.json()["code"] == "PLAN_STALE"
+    assert authed_client.get("/api/jobs").json()["active"] is None
 
 
 def test_series_yaml_roundtrip(authed_client, tmp_path) -> None:
@@ -990,95 +777,76 @@ def test_poster_sonarr_config_error_is_404(authed_client, tmp_path, monkeypatch)
     assert response.status_code == 404
 
 
-def test_plans_latest_drops_episodes_already_on_disk(authed_client, tmp_path) -> None:
-    lib = tmp_path / "lib"
-    dest = lib / "Clip" / "Season 1"
-    dest.mkdir(parents=True)
-    (dest / "Clip - S01E01 - Pilot.mkv").write_bytes(b"x")
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    (shows / "clip.yaml").write_text(
-        "series:\n  - name: Clip\n    path: Clip\n    url: https://watch.dropout.tv/c\n"
-        "    seasons:\n      - dropout: 1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dropout.yaml").write_text(
-        f"library: {lib}\nold_dir: {tmp_path / 'old'}\nimports:\n  - shows/clip.yaml\nseries: []\n",
-        encoding="utf-8",
-    )
-    from yt_dlp_emby.cache import dropout_cache_path, save_dropout_season_cache
+def test_plans_latest_uses_cached_disk_snapshot(authed_client, tmp_path, monkeypatch) -> None:
+    _configured_shows(tmp_path, ["Clip"])
+    _cache_view(authed_client, tmp_path, "clip", on_disk=[(1, 1)])
 
-    save_dropout_season_cache(
-        dropout_cache_path(tmp_path / "dropout.yaml"),
-        {
-            "https://watch.dropout.tv/c/season:1": [
-                {
-                    "url": "https://watch.dropout.tv/videos/pilot",
-                    "title": "Pilot",
-                    "dropout_episode": 1,
-                },
-                {
-                    "url": "https://watch.dropout.tv/videos/two",
-                    "title": "Two",
-                    "dropout_episode": 2,
-                },
-            ]
-        },
+    def forbidden(*args, **kwargs):
+        raise AssertionError("cached plan GET must never scan media")
+
+    monkeypatch.setattr("yt_dlp_emby.server.services.library_snapshot", forbidden)
+    plan = authed_client.get("/api/plans/latest").json()
+    rows = plan["sources"]["dropout"]["items"]
+    assert [row["code"] for row in rows if row["action"] == "download"] == ["S01E02"]
+    assert authed_client.get("/api/series").json()["series"][0]["missing_count"] == 1
+
+
+def test_mapping_save_replans_only_target_without_provider_or_disk_io(
+    authed_client, tmp_path, monkeypatch
+) -> None:
+    _configured_shows(tmp_path, ["Show", "Other"])
+    _cache_view(authed_client, tmp_path, "show")
+    _cache_view(authed_client, tmp_path, "other")
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("mapping save must use cached inputs")
+
+    monkeypatch.setattr("yt_dlp_emby.server.services.extract_dropout_season", forbidden)
+    monkeypatch.setattr("yt_dlp_emby.server.services.library_snapshot", forbidden)
+    monkeypatch.setattr("yt_dlp_emby.dropout.run_dropout", forbidden)
+    detail = authed_client.get("/api/series/dropout/show").json()
+    detail["sources"][0]["seasons"][0]["remaps"] = [{"dropout_episode": 1, "skip": True}]
+    saved = authed_client.put("/api/series/dropout/show", json=detail)
+    assert saved.status_code == 200, saved.text
+    assert not calls
+    plan = authed_client.get("/api/plans/latest").json()
+    rows = plan["sources"]["dropout"]["items"]
+    assert (
+        next(
+            row
+            for row in rows
+            if row["slug"] == "show" and row["provider_identity"] == "show:episode:1"
+        )["action"]
+        == "skip"
     )
-    (tmp_path / "plan.json").write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-01-01T00:00:00",
-                "force": False,
-                "sources": {
-                    "dropout": {
-                        "ok": True,
-                        "error": None,
-                        "seasons": [
-                            {
-                                "slug": "clip",
-                                "dest_season": 1,
-                                "download": 2,
-                                "skip": 0,
-                                "replace": 0,
-                                "unmapped": 0,
-                                "folder": "Season 1",
-                                "season_title": None,
-                                "series": "Clip",
-                            }
-                        ],
-                        "items": [
-                            {
-                                "slug": "clip",
-                                "id": "dropout|clip|S01E01",
-                                "action": "download",
-                                "code": "S01E01",
-                                "title": "Pilot",
-                                "dest_season": 1,
-                                "series": "Clip",
-                                "platform": "dropout",
-                            },
-                            {
-                                "slug": "clip",
-                                "id": "dropout|clip|S01E02",
-                                "action": "download",
-                                "code": "S01E02",
-                                "title": "Two",
-                                "dest_season": 1,
-                                "series": "Clip",
-                                "platform": "dropout",
-                            },
-                        ],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    client = authed_client
-    plan = client.get("/api/plans/latest").json()
-    assert [row["id"] for row in plan["sources"]["dropout"]["items"]] == ["dropout|clip|S01E02"]
-    listed = client.get("/api/series").json()["series"]
-    assert listed[0]["missing_count"] == 1
-    snapshot = client.get("/api/runs").json()
-    assert snapshot["plan"]["pending"] == 1
+    assert all(row["action"] == "download" for row in rows if row["slug"] == "other")
+
+
+def test_source_url_save_requires_refresh_instead_of_trusting_old_listings(
+    authed_client, tmp_path
+) -> None:
+    _configured_shows(tmp_path, ["Show"])
+    _cache_view(authed_client, tmp_path, "show")
+    detail = authed_client.get("/api/series/dropout/show").json()
+    detail["sources"][0]["url"] = "https://watch.dropout.tv/different"
+    saved = authed_client.put("/api/series/dropout/show", json=detail)
+    assert saved.status_code == 200, saved.text
+    plan = authed_client.get("/api/plans/latest").json()
+    assert plan["readiness"] == "stale"
+    assert all(row["action"] == "blocked" for row in plan["sources"]["dropout"]["items"])
+    assert authed_client.get("/api/series/dropout/show/missing").json()["missing_count"] is None
+
+
+def test_external_library_setting_edit_cannot_be_blessed_by_mapping_save(
+    authed_client, tmp_path
+) -> None:
+    _configured_shows(tmp_path, ["Show"])
+    _cache_view(authed_client, tmp_path, "show")
+    (tmp_path / "config.toml").write_text('[fallback]\nlibrary="/different-library"\n')
+    detail = authed_client.get("/api/series/dropout/show").json()
+    detail["sources"][0]["seasons"][0]["to_season"] = 27
+    saved = authed_client.put("/api/series/dropout/show", json=detail)
+    assert saved.status_code == 200, saved.text
+    assert authed_client.get("/api/plans/latest").json()["readiness"] == "stale"

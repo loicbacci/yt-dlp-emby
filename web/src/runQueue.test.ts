@@ -613,6 +613,21 @@ describe("heroFrom", () => {
     expect(hero.sub).toContain("S21E01");
     expect(hero.sub).not.toContain("%");
   });
+
+  it("uses the plan item's code when execution identity has extra segments", () => {
+    const tree = buildTree(d20Plan);
+    const episode = tree[0]?.seasons[0]?.pending[0];
+    expect(episode).toBeDefined();
+    if (!episode) return;
+    episode.execution_id = "dropout|dimension-20|provider|S21E01|revision";
+    const hero = heroFrom(
+      { phase: "downloading", source: "dropout" },
+      tree,
+      { ...emptyProgress(), currentId: episode.execution_id },
+      null,
+    );
+    expect(hero.sub).toBe(`${episode.code} ${episode.title}`);
+  });
 });
 
 describe("formatProgressStats", () => {

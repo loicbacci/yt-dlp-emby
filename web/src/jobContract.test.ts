@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import requests from "../../tests/fixtures/job-contract/requests.json";
 import snapshots from "../../tests/fixtures/job-contract/snapshots.json";
-import { apiClient } from "./api";
+import { apiClient, refreshJobRequest } from "./api";
 import {
   jobSnapshotSchema,
   jobStartSchema,
@@ -36,6 +36,19 @@ describe("shared job contract fixtures", () => {
     expect(jobsListSchema.safeParse(requests.jobs).success).toBe(true);
     expect(jobStartSchema.safeParse(requests.refresh_start).success).toBe(true);
   });
+
+  it("normalizes object-form worker targets to the display contract", () => {
+    const job = jobSnapshotSchema.parse({
+      ...snapshots.running,
+      progress: {
+        stage: "refresh",
+        target: { platform: "dropout", slug: "sample" },
+        completed: 0,
+        total: 1,
+      },
+    });
+    expect(job.progress?.target).toBe("dropout|sample");
+  });
 });
 
 describe("job start transport", () => {
@@ -57,6 +70,16 @@ describe("job start transport", () => {
       apiClient.startJob({ kind: "refresh", items: [{ platform: "youtube", slug: "sample" }] }),
     ).resolves.toEqual(requests.refresh_start);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a target config revision for scoped refresh and omits aggregate revisions", () => {
+    const items = [{ platform: "dropout" as const, slug: "sample" }];
+    expect(refreshJobRequest(items, "target-config-revision")).toEqual({
+      kind: "refresh",
+      items,
+      expected_revision: "target-config-revision",
+    });
+    expect(refreshJobRequest(items)).toEqual({ kind: "refresh", items });
   });
 
   it("rejects a synchronous 200 response instead of treating it as completed work", async () => {

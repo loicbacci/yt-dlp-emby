@@ -532,10 +532,7 @@ def test_pipeline_reorder_renames_without_redownload(
 def test_youtube_dry_run_emits_rename_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import json
-    import os
-
-    from yt_dlp_emby.events import reset_runtime
+    from yt_dlp_emby.events import capture_events
     from yt_dlp_emby.library import EpisodeRecord, LibraryIndex, PlaylistRecord, save_index
     from yt_dlp_emby.pipeline import run_youtube_manifest
     from yt_dlp_emby.youtube_manifest import YoutubeManifest, YoutubePlaylist, YoutubeSeries
@@ -589,9 +586,6 @@ def test_youtube_dry_run_emits_rename_items(
     monkeypatch.setattr("yt_dlp_emby.pipeline.extract_playlist", fake_extract_playlist)
     monkeypatch.setattr("yt_dlp_emby.pipeline.extract_channel_art", lambda *_a, **_k: None)
     monkeypatch.setattr("yt_dlp_emby.pipeline.video_height", lambda *_a, **_k: 1080)
-    events = tmp_path / "events.jsonl"
-    reset_runtime()
-    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(events))
     manifest = YoutubeManifest(
         library=tmp_path / "lib",
         old_dir=tmp_path / "old",
@@ -603,11 +597,7 @@ def test_youtube_dry_run_emits_rename_items(
             ),
         ),
     )
-    assert run_youtube_manifest(manifest, _settings(tmp_path, dry_run=True)) == 0
-    items = [
-        json.loads(line) for line in events.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
+    with capture_events() as items:
+        assert run_youtube_manifest(manifest, _settings(tmp_path, dry_run=True)) == 0
     kinds = [row.get("action") for row in items if row.get("event") == "item"]
     assert "rename" in kinds
-    os.environ.pop("YT_DLP_EMBY_EVENTS", None)
-    reset_runtime()

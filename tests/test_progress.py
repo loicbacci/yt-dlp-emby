@@ -141,64 +141,46 @@ def test_progress_percent_from_bytes_and_ansi() -> None:
 
 
 def test_progress_hook_emits_numeric_percent(tmp_path, monkeypatch) -> None:
-    import json
-    import os
+    from yt_dlp_emby.events import capture_events, set_current_item_id
 
-    from yt_dlp_emby.events import read_events_path, reset_runtime, set_current_item_id
-
-    reset_runtime()
-    target = tmp_path / "ev.jsonl"
-    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
-    read_events_path(os.environ)
-    set_current_item_id("dropout|x|S01E01")
-    stream = StringIO()
-    bar = DownloadProgress(enabled=True, stream=stream, live=False)
-    bar.hook(
-        {
-            "status": "downloading",
-            "downloaded_bytes": 40,
-            "total_bytes": 80,
-            "speed": 1024,
-            "eta": 1,
-            "_percent_str": "\033[0;94m 50.0%\033[0m",
-            "info_dict": {"vcodec": "avc1", "acodec": "none"},
-        }
-    )
-    bar.close()
-    rows = [
-        json.loads(line) for line in target.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
+    with capture_events() as rows:
+        set_current_item_id("dropout|x|S01E01")
+        stream = StringIO()
+        bar = DownloadProgress(enabled=True, stream=stream, live=False)
+        bar.hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 40,
+                "total_bytes": 80,
+                "speed": 1024,
+                "eta": 1,
+                "_percent_str": "\033[0;94m 50.0%\033[0m",
+                "info_dict": {"vcodec": "avc1", "acodec": "none"},
+            }
+        )
+        bar.close()
     assert rows
     assert rows[0]["percent"] == 50.0
     assert rows[0]["id"] == "dropout|x|S01E01"
 
 
 def test_progress_hook_emits_step_fields(tmp_path, monkeypatch) -> None:
-    import json
-    import os
+    from yt_dlp_emby.events import capture_events, set_current_item_id
 
-    from yt_dlp_emby.events import read_events_path, reset_runtime, set_current_item_id
-
-    reset_runtime()
-    target = tmp_path / "ev.jsonl"
-    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
-    read_events_path(os.environ)
-    set_current_item_id("dropout|x|S01E01")
-    bar = DownloadProgress(enabled=True, stream=StringIO(), live=False)
-    bar.set_steps(["English subs", "Video", "Remux", "Copy to library"])
-    bar.hook(
-        {
-            "status": "downloading",
-            "downloaded_bytes": 10,
-            "total_bytes": 100,
-            "info_dict": {"vcodec": "none", "acodec": "none", "language": "en"},
-            "filename": "ep.en.srt",
-        }
-    )
-    bar.close()
-    rows = [
-        json.loads(line) for line in target.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
+    with capture_events() as rows:
+        set_current_item_id("dropout|x|S01E01")
+        bar = DownloadProgress(enabled=True, stream=StringIO(), live=False)
+        bar.set_steps(["English subs", "Video", "Remux", "Copy to library"])
+        bar.hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 10,
+                "total_bytes": 100,
+                "info_dict": {"vcodec": "none", "acodec": "none", "language": "en"},
+                "filename": "ep.en.srt",
+            }
+        )
+        bar.close()
     progress_rows = [row for row in rows if row.get("event") == "progress"]
     assert progress_rows
     assert progress_rows[0]["step"] == 0

@@ -1,10 +1,10 @@
-// Accepted deviation: Dashboard stays single-file. Run-event, selection, and
-// fold state live in useRunEvents/useQueueSelection hooks (extracted, no
+// Accepted deviation: Dashboard stays single-file. Selection and fold state
+// live in useQueueSelection hooks (extracted, no
 // behavior change); splitting the page component itself was skipped as churn.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
 import { memo } from "preact/compat";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { ApiError, apiClient } from "../api";
+import { ApiError, apiClient, refreshJobRequest } from "../api";
 import { logoutAndClear } from "../auth";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { Header } from "../components/Header";
@@ -16,7 +16,6 @@ import { useDismiss } from "../hooks/useDismiss";
 import { useJobs } from "../hooks/useJobs";
 import { useOnline } from "../hooks/useOnline";
 import { useExpandedSeasons, useQueueSelection } from "../hooks/useQueueSelection";
-import { useRunEvents } from "../hooks/useRunEvents";
 import { queryKeys } from "../queryKeys";
 import { formatRelativeTime } from "../relativeTime";
 import {
@@ -26,6 +25,7 @@ import {
   actionsForIds,
   buildTree,
   countChipText,
+  emptyProgress,
   episodeForId,
   formatBinaryBytes,
   formatEta,
@@ -58,7 +58,6 @@ export function Dashboard() {
   const jobsQuery = useJobs();
   const activeJob = jobsQuery.data?.active ?? null;
   const run = runQuery.data ?? idleRun;
-  const runKey = activeJob?.id ?? "idle";
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const [query, setQuery] = useState(params.get("q") ?? "");
   const [force, setForce] = useState(params.get("force") === "1");
@@ -82,10 +81,12 @@ export function Dashboard() {
   const planReady = plan?.readiness === "ready";
   const planUnknown = Boolean(plan && !planReady);
   const tree = useMemo(() => (plan && planReady ? buildTree(plan) : []), [plan, planReady]);
-  const treeRef = useRef(tree);
-  treeRef.current = tree;
-  const events = useRunEvents(runKey, treeRef, online);
-  const { progress, listingSeries, eventsReconnecting } = events;
+  const progress = useMemo(() => emptyProgress(), []);
+  const target = activeJob?.progress?.target ?? null;
+  const listingSeries =
+    activeJob?.kind === "refresh" && target?.includes("|")
+      ? target.slice(target.indexOf("|") + 1)
+      : null;
   useDismiss(
     showForce,
     () => setShowForce(false),
@@ -172,7 +173,7 @@ export function Dashboard() {
 
   const startPlanMut = useMutation({
     mutationFn: (items: { platform: "youtube" | "dropout"; slug: string }[]) =>
-      apiClient.startJob({ kind: "refresh", items, expected_revision: plan?.revision }),
+      apiClient.startJob(refreshJobRequest(items)),
     onError: (err) => {
       const message = err instanceof ApiError ? err.message : "Refresh failed to start";
       setError(message);
@@ -269,7 +270,6 @@ export function Dashboard() {
   const statsLine = runStatsLine(run, progress, downloading ? remaining : allPending.length);
   const idleMeta = [
     plan?.generated_at ? `Queue refreshed ${formatRelativeTime(plan.generated_at)}` : null,
-    eventsReconnecting ? "Reconnecting live events…" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -527,7 +527,6 @@ export function Dashboard() {
                       title={setupPathsMissing ? "Set library paths in Settings first" : undefined}
                       onClick={() => {
                         setError(null);
-                        events.setListingSeries(null);
                         startPlanMut.mutate(
                           (posterQuery.data?.series ?? []).map((row) => ({
                             platform: row.platform,
@@ -602,7 +601,7 @@ export function Dashboard() {
                     selected={selection.selected}
                     busy={busy}
                     downloading={downloading}
-                    listing={planning && listingSeries === series.name}
+                    listing={planning && target === `${series.platform}|${series.slug}`}
                     currentId={progress.currentId}
                     onToggleOpen={() => expanded.toggleSeries(series.key)}
                     onToggleSeries={(checked) =>

@@ -29,6 +29,7 @@ import {
   seasonFoldMap,
   seasonHeading,
   seasonMissingLabel,
+  seriesFreshness,
   seriesPosterUrl,
   skippedTvdbRows,
   slugify,
@@ -47,6 +48,14 @@ describe("slugify", () => {
     expect(slugify("  A/B  C!! ")).toBe("a-b-c");
     expect(slugify("Dimension 20's Adventuring Party")).toBe("dimension-20-s-adventuring-party");
     expect(slugify("---")).toBe("");
+  });
+});
+
+describe("seriesFreshness", () => {
+  it("accepts cached view status/stale fields used by the server list projection", () => {
+    expect(seriesFreshness({ status: "unavailable", stale: true })).toBe("unavailable");
+    expect(seriesFreshness({ stale: true })).toBe("stale");
+    expect(seriesFreshness({ freshness: "ready", status: "stale", stale: true })).toBe("ready");
   });
 });
 

@@ -1,218 +1,90 @@
-import json
-import os
-from pathlib import Path
+"""Operation-local callbacks and explicit selections replace JSONL sidecars."""
+
+import asyncio
 
 import pytest
 
 from yt_dlp_emby.config import ConfigError
 from yt_dlp_emby.events import (
+    OperationContext,
     allowed_item_id,
+    allowed_provider_action,
+    capture_events,
+    current_item_id,
     emit,
-    item_id,
-    merge_plan_slug,
-    merge_plan_source,
-    plan_from_events,
-    read_events_path,
-    reset_runtime,
+    emit_progress,
+    set_current_item_id,
+    use_operation_context,
+    validate_selected_action,
 )
 
 
-def test_emit_noop_without_env(monkeypatch) -> None:
-    reset_runtime()
-    monkeypatch.delenv("YT_DLP_EMBY_EVENTS", raising=False)
-    path = Path("/tmp/should-not-exist-events.jsonl")
-    emit({"event": "test"})
-    assert not path.exists()
+def test_nested_context_restores_selection_and_item_identity() -> None:
+    with use_operation_context(OperationContext(selected_ids={"outer"})):
+        set_current_item_id("outer")
+        assert allowed_item_id("outer")
+        assert not allowed_item_id("inner")
+        with use_operation_context(OperationContext(selected_ids=set())):
+            set_current_item_id("inner")
+            assert not allowed_item_id("outer")
+            assert not allowed_item_id("inner")
+        assert current_item_id() == "outer"
+    assert current_item_id() is None
 
 
-def test_emit_writes_jsonl(tmp_path: Path, monkeypatch) -> None:
-    reset_runtime()
-    target = tmp_path / "ev.jsonl"
+def test_callbacks_ignore_retired_environment_sidecars(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "events.jsonl"
     monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
-    read_events_path(os.environ)
-    emit({"event": "run_started", "source": "dropout"})
-    lines = target.read_text(encoding="utf-8").strip().splitlines()
-    assert json.loads(lines[0])["event"] == "run_started"
+    with capture_events() as rows:
+        emit({"event": "progress", "completed": 1})
+    assert rows == [{"event": "progress", "completed": 1}]
+    emit({"event": "ignored"})
+    assert not target.exists()
 
 
-def test_only_empty_ids_raises(tmp_path: Path, monkeypatch) -> None:
-    reset_runtime()
-    only = tmp_path / "only.json"
-    only.write_text(json.dumps({"ids": []}), encoding="utf-8")
-    monkeypatch.setenv("YT_DLP_EMBY_ONLY", str(only))
-    with pytest.raises(ConfigError, match="empty"):
-        read_events_path(os.environ)
+def test_provider_selection_distinguishes_same_slot_action_and_source() -> None:
+    key = ("youtube", "show", "video-a", "remove")
+    with use_operation_context(OperationContext(selected_actions={key})):
+        assert allowed_provider_action(*key, "same-slot")
+        assert not allowed_provider_action("youtube", "show", "video-a", "download", "same-slot")
+        assert not allowed_provider_action("youtube", "show", "video-b", "remove", "same-slot")
 
 
-def test_allowed_item_id_subset(tmp_path: Path, monkeypatch) -> None:
-    reset_runtime()
-    only = tmp_path / "only.json"
-    only.write_text(
-        json.dumps({"ids": ["dropout|dimension-20|S21E01"]}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("YT_DLP_EMBY_ONLY", str(only))
-    read_events_path(os.environ)
-    assert allowed_item_id("dropout|dimension-20|S21E01")
-    assert not allowed_item_id("dropout|dimension-20|S21E02")
+def test_changed_destination_is_rejected_before_media_execution() -> None:
+    key = ("dropout", "show", "source:28:4", "download")
+    expected = {
+        "dest_season": 27,
+        "dest_episode": 9,
+        "title": "Custom",
+        "url": "https://watch.dropout.tv/videos/four",
+    }
+    with use_operation_context(
+        OperationContext(selected_actions={key}, selected_action_specs={key: expected})
+    ):
+        assert validate_selected_action(*key, expected)
+        with pytest.raises(ConfigError, match="PLAN_STALE"):
+            validate_selected_action(*key, {**expected, "dest_episode": 10})
+        assert not validate_selected_action("dropout", "show", "other", "download", expected)
 
 
-def test_item_id_format() -> None:
-    assert item_id("dropout", "dimension-20", "S21E04") == "dropout|dimension-20|S21E04"
+def test_progress_throttling_does_not_leak_across_operations(monkeypatch) -> None:
+    monkeypatch.setattr("yt_dlp_emby.events.time.monotonic", lambda: 100.0)
+    for _ in range(2):
+        with capture_events() as rows:
+            emit_progress({"event": "progress", "completed": 1})
+            emit_progress({"event": "progress", "completed": 2})
+            emit_progress({"event": "progress", "completed": 3}, force=True)
+        assert [row["completed"] for row in rows] == [1, 3]
 
 
-def test_progress_throttle(tmp_path: Path, monkeypatch) -> None:
-    reset_runtime()
-    target = tmp_path / "ev.jsonl"
-    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
-    read_events_path(os.environ)
-    from yt_dlp_emby.events import emit_progress, set_current_item_id
+async def test_concurrent_contexts_do_not_mix_callbacks_or_item_ids() -> None:
+    async def collect(ident: str):
+        with capture_events() as rows:
+            set_current_item_id(ident)
+            await asyncio.sleep(0)
+            emit({"event": "progress", "id": current_item_id()})
+            return rows
 
-    set_current_item_id("dropout|x|S01E01")
-    for _ in range(10):
-        emit_progress({"event": "progress", "id": "dropout|x|S01E01", "phase": "Video"})
-    lines = [line for line in target.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) <= 4
-
-
-def test_emit_progress_force_bypasses_throttle(tmp_path: Path, monkeypatch) -> None:
-    reset_runtime()
-    target = tmp_path / "ev.jsonl"
-    monkeypatch.setenv("YT_DLP_EMBY_EVENTS", str(target))
-    read_events_path(os.environ)
-    from yt_dlp_emby.events import emit_progress, set_current_item_id
-
-    set_current_item_id("dropout|x|S01E01")
-    for index in range(5):
-        emit_progress(
-            {
-                "event": "progress",
-                "id": "dropout|x|S01E01",
-                "phase": "Video",
-                "step": index,
-            },
-            force=True,
-        )
-    lines = [line for line in target.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 5
-
-
-def test_merge_plan_force_sticky(tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    merge_plan_source(
-        plan_path,
-        "dropout",
-        {"ok": True, "error": None, "seasons": [], "items": []},
-        force=True,
-    )
-    merge_plan_source(
-        plan_path,
-        "youtube",
-        {"ok": True, "error": None, "seasons": [], "items": []},
-        force=False,
-    )
-    data = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert data["force"] is True
-
-
-def test_merge_plan_slug_keeps_other_shows(tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    merge_plan_source(
-        plan_path,
-        "dropout",
-        {
-            "ok": True,
-            "error": None,
-            "seasons": [
-                {"slug": "game-changer", "dest_season": 1, "download": 2},
-                {"slug": "dimension-20", "dest_season": 21, "download": 3},
-            ],
-            "items": [
-                {"slug": "game-changer", "id": "dropout|game-changer|S01E01", "action": "download"},
-                {"slug": "dimension-20", "id": "dropout|dimension-20|S21E01", "action": "download"},
-            ],
-        },
-        force=False,
-    )
-    merge_plan_slug(
-        plan_path,
-        "dropout",
-        "game-changer",
-        {
-            "ok": True,
-            "error": None,
-            "seasons": [{"slug": "game-changer", "dest_season": 1, "download": 0}],
-            "items": [],
-        },
-    )
-    data = json.loads(plan_path.read_text(encoding="utf-8"))
-    block = data["sources"]["dropout"]
-    assert [row["slug"] for row in block["seasons"]] == ["dimension-20", "game-changer"]
-    assert [row["id"] for row in block["items"]] == ["dropout|dimension-20|S21E01"]
-    assert block["seasons"][-1]["download"] == 0
-
-
-def test_capture_events_collects_without_file() -> None:
-    reset_runtime()
-    from yt_dlp_emby.events import capture_events
-
-    with capture_events() as events:
-        emit({"event": "item", "slug": "x"})
-    assert events == [{"event": "item", "slug": "x"}]
-
-
-def test_merge_plan_source(tmp_path: Path) -> None:
-    plan_path = tmp_path / "plan.json"
-    merge_plan_source(
-        plan_path,
-        "dropout",
-        {"ok": True, "error": None, "seasons": [], "items": []},
-        force=False,
-    )
-    merge_plan_source(
-        plan_path,
-        "youtube",
-        {"ok": True, "error": None, "seasons": [{"dest_season": 2}], "items": []},
-        force=False,
-    )
-    data = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert "dropout" in data["sources"]
-    assert data["sources"]["youtube"]["seasons"][0]["dest_season"] == 2
-
-
-def test_plan_from_events_filters_platform() -> None:
-    events = [
-        {"event": "series", "platform": "dropout", "name": "Dimension 20"},
-        {
-            "event": "season",
-            "platform": "dropout",
-            "slug": "dimension-20",
-            "dest_season": 0,
-            "folder": "Specials",
-        },
-        {
-            "event": "item",
-            "platform": "dropout",
-            "id": "dropout|dimension-20|S00E01",
-            "dest_season": 0,
-        },
-        {
-            "event": "season",
-            "platform": "youtube",
-            "slug": "professor-messer",
-            "dest_season": 2,
-            "folder": "Season 2",
-        },
-        {
-            "event": "item",
-            "platform": "youtube",
-            "id": "youtube|professor-messer|S02E01",
-            "dest_season": 2,
-        },
-    ]
-    youtube = plan_from_events(events, platform="youtube")
-    assert [row["slug"] for row in youtube["seasons"]] == ["professor-messer"]
-    assert [row["id"] for row in youtube["items"]] == ["youtube|professor-messer|S02E01"]
-    dropout = plan_from_events(events, platform="dropout")
-    assert [row["slug"] for row in dropout["seasons"]] == ["dimension-20"]
-    assert [row["id"] for row in dropout["items"]] == ["dropout|dimension-20|S00E01"]
+    first, second = await asyncio.gather(collect("first"), collect("second"))
+    assert first == [{"event": "progress", "id": "first"}]
+    assert second == [{"event": "progress", "id": "second"}]

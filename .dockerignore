@@ -38,3 +38,12 @@ src/yt_dlp_emby/server/static/
 .yt-dlp-emby-auth.json
 
 .worktrees/
+
+# Local job persistence and coordinator locks
+jobs.sqlite3
+jobs.sqlite3-*
+.yt-emby-coordinator.lock
+.yt-dlp-emby-coordinator.lock
+jobs.lock
+legacy-state/
+coordinator.lock

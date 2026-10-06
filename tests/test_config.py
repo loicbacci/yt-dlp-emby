@@ -445,7 +445,6 @@ def test_write_config_uses_fallback_table_and_preserves_cookies(tmp_path: Path) 
             "library": "/new/lib",
             "old_dir": "/new/old",
             "staging": None,
-            "bench_dest": None,
             "sonarr_url": "http://sonarr:8989",
             "sonarr_api_key": "secret",
         },

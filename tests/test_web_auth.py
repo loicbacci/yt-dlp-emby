@@ -56,7 +56,7 @@ def test_login_and_logout(client) -> None:
 
 
 def test_protected_route_returns_401(client) -> None:
-    response = client.get("/api/runs")
+    response = client.get("/api/jobs")
     assert response.status_code == 401
     body = response.json()
     assert body["error"] == "unauthorized"

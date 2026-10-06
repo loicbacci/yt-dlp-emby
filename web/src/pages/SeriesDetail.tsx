@@ -12,6 +12,7 @@ import {
   type SeriesEpisode,
   type SeriesSeason,
   apiClient,
+  refreshJobRequest,
 } from "../api";
 import { logoutAndClear } from "../auth";
 import { ConfirmModal } from "../components/ConfirmModal";
@@ -62,7 +63,6 @@ import {
 } from "../seriesView";
 import { dropoutCheckSchema } from "../types";
 import { writeSearch } from "../urlState";
-import { usePlan } from "../useAppQueries";
 
 const EMPTY_FOLDS: Record<string, boolean> = {};
 
@@ -83,7 +83,6 @@ export function SeriesDetail() {
   const online = useOnline();
   const jobsQuery = useJobs();
   const activeJob = jobsQuery.data?.active;
-  const planQuery = usePlan();
   const seriesKey = queryKeys.series(platform, slug);
 
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
@@ -372,10 +371,8 @@ export function SeriesDetail() {
   const refreshSourceMut = useMutation({
     mutationFn: (sourceId: number) =>
       apiClient.startJob({
-        kind: "refresh",
-        items: [{ platform, slug }],
+        ...refreshJobRequest([{ platform, slug }], detail?.config_revision),
         source_index: sourceId,
-        expected_revision: planQuery.data?.revision,
       }),
     onMutate: (sourceId) => {
       setRefreshingSourceId(sourceId);
@@ -706,11 +703,7 @@ export function SeriesDetail() {
   const refreshMetadata = async () => {
     if (runActive) return;
     try {
-      await apiClient.startJob({
-        kind: "refresh",
-        items: [{ platform, slug }],
-        expected_revision: planQuery.data?.revision,
-      });
+      await apiClient.startJob(refreshJobRequest([{ platform, slug }], detail?.config_revision));
       pushToast("Refresh started");
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() });
     } catch (err) {

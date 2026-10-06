@@ -146,7 +146,7 @@ def test_password_rotate_requires_current(tmp_path) -> None:
         # `stale` shares the entered app above, so no second lifespan is needed.
         stale = TestClient(app)
         stale.cookies.set(COOKIE_NAME, old_cookie)
-        assert stale.get("/api/runs").status_code == 401
+        assert stale.get("/api/jobs").status_code == 401
         client.post("/api/logout")
         assert client.post("/api/login", json={"password": "newsecret1"}).status_code == 200
 
@@ -160,19 +160,10 @@ def test_csrf_rejects_cross_origin(authed_client, tmp_path) -> None:
     assert response.status_code == 403
 
 
-def test_refresh_async_returns_202(authed_client, tmp_path) -> None:
-    _seed_dropout_series(tmp_path)
-    client = authed_client
-    client.post("/api/series", json={"name": "Show", "platform": "dropout", "path": "Show"})
-    response = client.post(
-        "/api/series/refresh",
-        json={"items": [{"platform": "dropout", "slug": "show"}]},
-    )
-    assert response.status_code == 202
-    job_id = response.json()["job_id"]
-    polled = client.get(f"/api/series/refresh/{job_id}")
-    assert polled.status_code == 200
-    assert polled.json()["status"] in {"running", "done", "error"}
+def test_legacy_refresh_route_is_removed(authed_client) -> None:
+    response = authed_client.post("/api/series/refresh", json={"items": []})
+    assert response.status_code in {404, 405}
+    assert authed_client.get("/api/jobs").json()["active"] is None
 
 
 def test_concurrent_series_edit_409(authed_client, tmp_path) -> None:
@@ -183,13 +174,16 @@ def test_concurrent_series_edit_409(authed_client, tmp_path) -> None:
         encoding="utf-8",
     )
     client = authed_client
-    client.app.state.runner._state.status = "running"
+    client.app.state.job_store.create(
+        "busy", "diagnostics", {"kind": "diagnostics", "checks": ["database"]}
+    )
     detail = client.get("/api/series/youtube/example-channel")
     assert detail.status_code == 200, detail.text
     body = detail.json()
     response = client.put("/api/series/youtube/example-channel", json=body)
     assert response.status_code == 409
-    assert "progress" in response.json()["error"]
+    assert response.status_code == 409
+    assert response.json()["code"] == "JOB_CONFLICT"
 
 
 def test_put_import_path_in_url(authed_client, tmp_path) -> None:

@@ -1,242 +1,245 @@
-import asyncio
-import json
+"""Unified durable job API contract tests."""
+
+from __future__ import annotations
+
 import sys
 import textwrap
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
-import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 
+from fastapi.testclient import TestClient
+
 from yt_dlp_emby.server.app import create_app, resolve_data_dir
-from yt_dlp_emby.server.runner import CommandFactory
 
 pytestmark = pytest.mark.web
 
 
-def _factory(script: str) -> CommandFactory:
-    return lambda *a, **k: [sys.executable, "-c", script]
+def _worker(script: str):
+    return lambda _request: [sys.executable, "-c", script]
 
 
-@asynccontextmanager
-async def _authed_async(tmp_path, command_factory=None) -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(
-        data_dir=tmp_path,
-        environ={},
-        command_factory=command_factory,
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://test",
-    ) as client:
-        setup = await client.post("/api/setup", json={"password": "secretpass"})
-        assert setup.status_code == 200
-        yield client
+def _client(path, worker=None):
+    client = TestClient(create_app(data_dir=path, environ={}, worker_command_factory=worker))
+    client.__enter__()
+    assert client.post("/api/setup", json={"password": "secretpass"}).status_code == 200
+    return client
 
 
-def _youtube_manifest(tmp_path) -> None:
-    text = textwrap.dedent(
-        f"""
-        library: {tmp_path / "lib"}
-        old_dir: {tmp_path / "old"}
-        series:
-          - name: Example Channel
-            playlists:
-              - url: https://www.youtube.com/playlist?list=PLaaaa
-        """
-    ).strip()
-    (tmp_path / "youtube.yaml").write_text(text, encoding="utf-8")
-
-
-def _dropout_manifest(tmp_path) -> None:
-    text = textwrap.dedent(
-        f"""
-        library: {tmp_path / "lib"}
-        old_dir: {tmp_path / "old"}
-        series:
-          - name: Dimension 20
-            path: Dimension 20
-            url: https://watch.dropout.tv/example
-            seasons:
-              - dropout: 1
-        """
-    ).strip()
-    (tmp_path / "dropout.yaml").write_text(text, encoding="utf-8")
-
-
-def _write_plan(tmp_path) -> None:
-    plan = {
-        "generated_at": "2026-01-01T00:00:00+00:00",
-        "force": False,
-        "sources": {
-            "youtube": {
-                "ok": True,
-                "error": None,
-                "seasons": [],
-                "items": [
-                    {
-                        "id": "youtube|example-channel|S01E01",
-                        "action": "download",
-                        "code": "S01E01",
-                        "title": "One",
-                        "dest_season": 1,
-                        "season_title": None,
-                        "folder": "Season 1",
-                        "size": None,
-                        "series": "Example Channel",
-                        "slug": "example-channel",
-                        "platform": "youtube",
-                    }
-                ],
-            }
-        },
-    }
-    (tmp_path / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
-
-
-def test_health_unauthenticated(client) -> None:
+def test_health_and_auth_protection(client) -> None:
     assert client.get("/api/health").json() == {"ok": True}
+    response = client.get("/api/jobs")
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthorized"
 
 
-def test_download_without_plan_400(authed_client, tmp_path) -> None:
-    client = authed_client
-    _youtube_manifest(tmp_path)
-    response = client.post("/api/runs", json={"ids": None})
-    assert response.status_code == 400
-
-
-def test_download_empty_ids_400(authed_client, tmp_path) -> None:
-    client = authed_client
-    _youtube_manifest(tmp_path)
-    _write_plan(tmp_path)
-    response = client.post("/api/runs", json={"ids": []})
-    assert response.status_code == 400
-
-
-async def test_http_plan_and_download(tmp_path) -> None:
-    _youtube_manifest(tmp_path)
-
-    async def run() -> None:
-        async with _authed_async(tmp_path, _factory("print('ok', flush=True)")) as client:
-            started = await client.post("/api/runs/plan", json={"force": False})
-            assert started.status_code == 200
-            body = started.json()
-            assert body["phase"] == "planning" or body["status"] == "running"
-            busy = await client.post("/api/runs/plan")
-            assert busy.status_code == 409
-            for _ in range(80):
-                snap = (await client.get("/api/runs")).json()
-                if snap["status"] == "exited":
-                    break
-                await asyncio.sleep(0.05)
-            _write_plan(tmp_path)
-            dl = await client.post("/api/runs", json={"ids": None})
-            assert dl.status_code == 200
-            assert dl.json()["phase"] in {"downloading", "running"}
-
-    await run()
-
-
-def test_get_plan_404(authed_client) -> None:
-    client = authed_client
-    assert client.get("/api/runs/plan").status_code == 404
-
-
-def test_get_plan_ok(authed_client, tmp_path) -> None:
-    client = authed_client
-    _write_plan(tmp_path)
-    body = client.get("/api/runs/plan").json()
-    assert "sources" in body
-
-
-async def test_http_start_stop_fake_child(tmp_path) -> None:
-    _youtube_manifest(tmp_path)
-    _write_plan(tmp_path)
-    # Bounded wait (not sleep(30)): fail fast instead of pytest-timeout.
+def test_job_contract_completes_and_lists(tmp_path) -> None:
     script = textwrap.dedent(
         """
-        import signal, sys, threading
-        signal.signal(signal.SIGINT, lambda s, f: sys.exit(130))
-        print("started", flush=True)
-        threading.Event().wait(15)
+        import json,sys
+        sys.stdin.readline()
+        print(json.dumps({'v':1,'seq':1,'type':'progress','stage':'diagnostics','completed':0,'total':1}), flush=True)
+        print(json.dumps({'v':1,'seq':2,'type':'result','result':{'ok':True}}), flush=True)
         """
     )
+    client = _client(tmp_path, _worker(script))
+    try:
+        response = client.post("/api/jobs", json={"kind": "diagnostics", "checks": ["database"]})
+        assert response.status_code == 202
+        start = response.json()
+        assert start["status"] == "queued" and start["job_id"]
+        for _ in range(100):
+            snapshot = client.get(f"/api/jobs/{start['job_id']}").json()
+            if snapshot["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+        assert snapshot["status"] == "succeeded", snapshot
+        assert snapshot["progress"] == {"stage": "diagnostics", "completed": 0, "total": 1}
+        assert snapshot["result"] == {"ok": True}
+        assert snapshot["can_retry"] is False and snapshot["can_cancel"] is False
+        listed = client.get("/api/jobs").json()
+        assert listed["active"] is None
+        assert listed["total"] == 1
+        assert listed["history"][0]["id"] == start["job_id"]
+    finally:
+        client.__exit__(None, None, None)
 
-    async def run() -> None:
-        async with _authed_async(tmp_path, _factory(script)) as client:
-            started = await client.post("/api/runs", json={"ids": None})
-            assert started.status_code == 200
-            busy = await client.post("/api/runs", json={"ids": None})
-            assert busy.status_code == 409
-            stopped = await client.post("/api/runs/stop")
-            assert stopped.status_code == 200
-            assert stopped.json()["status"] == "exited"
 
-    await run()
+def test_job_validation_and_error_envelope(authed_client) -> None:
+    bad = authed_client.post("/api/jobs", json={"kind": "diagnostics", "checks": ["made-up"]})
+    assert bad.status_code == 400
+    assert bad.json()["code"] == "INVALID_REQUEST"
+    assert bad.json()["request_id"]
+    missing = authed_client.get("/api/jobs/missing")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "NOT_FOUND"
+    assert missing.json()["request_id"]
 
 
-async def test_sse_emits_lines_quickly(tmp_path) -> None:
-    import uvicorn
+def test_retry_skips_only_disk_verified_download_completions(authed_client, monkeypatch) -> None:
+    from yt_dlp_emby.server import app as app_module
+    from yt_dlp_emby.server import services
 
-    _youtube_manifest(tmp_path)
-    _write_plan(tmp_path)
-    script = 'import time\nprint("hello", flush=True)\ntime.sleep(2)\n'
-    app = create_app(
-        data_dir=tmp_path,
-        environ={},
-        command_factory=_factory(script),
+    store = authed_client.app.state.job_store
+    job_id = "retry-parent"
+    completed = {
+        "id": "act-done",
+        "execution_id": "youtube|show|S01E01",
+        "platform": "youtube",
+        "slug": "show",
+        "provider_identity": "video-done",
+        "action": "download",
+    }
+    unverified = {
+        "id": "act-pending",
+        "execution_id": "youtube|show|S01E02",
+        "platform": "youtube",
+        "slug": "show",
+        "provider_identity": "video-pending",
+        "action": "download",
+    }
+    cached_view = {
+        "platform": "youtube",
+        "slug": "show",
+        "view": {"target": {"platform": "youtube", "slug": "show"}},
+    }
+    store.create(
+        job_id,
+        "download",
+        {
+            "kind": "download",
+            "plan_id": "old-plan",
+            "ids": ["act-done", "act-pending"],
+            "selected_actions": [completed, unverified],
+            "cached_views": [cached_view],
+            "force": False,
+            "create": False,
+        },
     )
+    store.update(job_id, status="failed")
+    store.item(job_id, "done", {"id": "act-done"}, "succeeded", {"ok": True})
+    store.item(job_id, "pending", {"id": "act-pending"}, "succeeded", {"ok": True})
 
-    async def run() -> None:
-        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
-        server = uvicorn.Server(config)
-        serve_task = asyncio.create_task(server.serve())
-        try:
-            for _ in range(100):
-                if server.started:
-                    break
-                await asyncio.sleep(0.05)
-            assert server.started
-            port = server.servers[0].sockets[0].getsockname()[1]
-            t0 = time.monotonic()
-            found = False
-            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
-                setup = await client.post("/api/setup", json={"password": "secretpass"})
-                assert setup.status_code == 200
-                started = await client.post(
-                    "/api/runs",
-                    json={"ids": None},
-                )
-                assert started.status_code == 200
-                async with client.stream("GET", "/api/runs/log?after=0") as response:
-                    assert response.status_code == 200
+    monkeypatch.setattr(services, "verify_completed_actions", lambda *args: {"act-done"})
+    refreshed = {
+        "platform": "youtube",
+        "slug": "show",
+        "view": {"target": {"platform": "youtube", "slug": "show"}},
+        "plan": {"plan_id": "target-plan", "revision": "rev"},
+    }
+    monkeypatch.setattr(services, "refresh_cached_disk_views", lambda *args, **kwargs: [refreshed])
+    monkeypatch.setattr(
+        app_module.cached_views,
+        "latest_plan",
+        lambda *args, **kwargs: {
+            "plan_id": "new-plan",
+            "sources": {
+                "youtube": {
+                    "items": [
+                        {**completed, "id": "act-done-present", "action": "present"},
+                        {**unverified, "id": "act-pending-replanned", "action": "download"},
+                    ]
+                }
+            },
+        },
+    )
+    selected = {
+        "selected_actions": [{**unverified, "id": "act-pending-replanned"}],
+        "cached_views": [cached_view],
+    }
+    monkeypatch.setattr(
+        app_module.cached_views, "executable_selection", lambda *args, **kwargs: selected
+    )
+    coordinator = authed_client.app.state.job_coordinator
+    captured = {}
 
-                    async def read_until_hello() -> None:
-                        nonlocal found
-                        async for line in response.aiter_lines():
-                            if "hello" in line:
-                                found = True
-                                return
+    async def fake_start(request, retry_parent=None):
+        captured["request"] = request
+        captured["retry_parent"] = retry_parent
+        return "retry-child"
 
-                    await asyncio.wait_for(read_until_hello(), timeout=3)
-                assert found
-                assert time.monotonic() - t0 < 5
-                await client.post("/api/runs/stop")
-        finally:
-            server.should_exit = True
-            await asyncio.wait_for(serve_task, timeout=5)
-
-    await run()
+    coordinator.start = fake_start
+    response = authed_client.post(f"/api/jobs/{job_id}/retry")
+    assert response.status_code == 202, response.text
+    assert captured["retry_parent"] == job_id
+    assert captured["request"]["plan_id"] == "new-plan"
+    assert captured["request"]["ids"] == ["act-pending-replanned"]
 
 
-def test_api_404_not_spa(authed_client) -> None:
-    client = authed_client
-    response = client.get("/api/does-not-exist")
+def test_download_ids_are_explicit_and_unique(authed_client) -> None:
+    empty = authed_client.post("/api/jobs", json={"kind": "download", "plan_id": "p", "ids": []})
+    assert empty.status_code == 400
+    dup = authed_client.post(
+        "/api/jobs", json={"kind": "download", "plan_id": "p", "ids": ["a", "a"]}
+    )
+    assert dup.status_code == 400
+
+
+def test_cached_plan_missing_is_404_without_filesystem_scan(authed_client, tmp_path) -> None:
+    response = authed_client.get("/api/plans/latest")
     assert response.status_code == 404
+    assert not (tmp_path / "lib").exists()
+
+
+def test_malformed_worker_is_killed_and_failed(tmp_path) -> None:
+    script = "import sys,time; sys.stdin.readline(); print('not-json',flush=True); time.sleep(30)"
+    client = _client(tmp_path, _worker(script))
+    try:
+        started = client.post("/api/jobs", json={"kind": "diagnostics", "checks": ["database"]})
+        job_id = started.json()["job_id"]
+        for _ in range(100):
+            snapshot = client.get(f"/api/jobs/{job_id}").json()
+            if snapshot["status"] == "failed":
+                break
+            time.sleep(0.02)
+        assert snapshot["status"] == "failed"
+        assert snapshot["error"]["code"] == "WORKER_FAILED"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_worker_stderr_flood_is_drained_and_bounded(tmp_path) -> None:
+    script = textwrap.dedent(
+        """
+        import json,sys
+        sys.stdin.readline()
+        sys.stderr.write('api_key=topsecret ' + 'x'*300000)
+        sys.stderr.flush()
+        print(json.dumps({'v':1,'seq':1,'type':'result','result':{'ok':True}}), flush=True)
+        """
+    )
+    client = _client(tmp_path, _worker(script))
+    try:
+        started = client.post("/api/jobs", json={"kind": "diagnostics", "checks": ["database"]})
+        job_id = started.json()["job_id"]
+        for _ in range(100):
+            snapshot = client.get(f"/api/jobs/{job_id}").json()
+            if snapshot["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.02)
+        assert snapshot["status"] == "succeeded"
+        assert snapshot["logs"]
+        assert all(len(row["line"]) <= 4096 for row in snapshot["logs"])
+        assert "topsecret" not in "".join(row["line"] for row in snapshot["logs"])
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_startup_marks_abandoned_jobs_interrupted(tmp_path) -> None:
+    from yt_dlp_emby.server.app import create_app
+    from yt_dlp_emby.server.job_store import JobStore
+
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create("abandoned", "check", {"kind": "check", "items": []})
+    store.update("abandoned", status="running", started_at="2026-10-04T00:00:00+00:00")
+    store.close()
+    with TestClient(create_app(data_dir=tmp_path, environ={})) as client:
+        client.post("/api/setup", json={"password": "secretpass"})
+        snapshot = client.get("/api/jobs/abandoned").json()
+        assert snapshot["status"] == "interrupted"
+        assert snapshot["can_retry"] is True
 
 
 def test_resolve_data_dir(tmp_path) -> None:
@@ -246,10 +249,3 @@ def test_resolve_data_dir(tmp_path) -> None:
     env_dir.mkdir()
     assert resolve_data_dir(None, {"YT_DLP_EMBY_DATA": str(env_dir)}) == env_dir
     assert resolve_data_dir(explicit, {"YT_DLP_EMBY_DATA": str(env_dir)}) == explicit
-
-
-def test_openapi_core_paths_exist(client) -> None:
-    spec = client.get("/openapi.json").json()
-    paths = spec["paths"]
-    for route in ("/api/session", "/api/runs", "/api/series"):
-        assert route in paths, f"missing OpenAPI path {route}"

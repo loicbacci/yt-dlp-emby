@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,15 +30,14 @@ from yt_dlp_emby.download import (
     video_height,
 )
 from yt_dlp_emby.events import (
-    allowed_item_id,
+    allowed_provider_action,
+    assert_selected_actions_seen,
     emit,
+    explicitly_selected_provider_action,
     folder_label,
     item_id,
-    merge_plan_source,
-    parse_events_file,
-    plan_from_events,
-    read_events_path,
     set_current_item_id,
+    validate_selected_action,
 )
 from yt_dlp_emby.extract import (
     ChannelArt,
@@ -528,7 +527,6 @@ def run_download(
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
-        read_events_path(os.environ)
         _cleanup_start(settings)
         job = _prepare_playlist(
             url,
@@ -568,13 +566,13 @@ def run_youtube_manifest(
     manifest: YoutubeManifest,
     settings: Settings,
     format_selector: str | None = None,
+    *,
+    series_slug_overrides: Mapping[str, str] | None = None,
 ) -> int:
     stats = RunStats(dry_run=settings.dry_run)
     try:
-        read_events_path(os.environ)
         if settings.dry_run:
             emit({"event": "run_started", "source": "youtube", "dry_run": True})
-        _cleanup_start(settings)
         jobs: list[YoutubePlaylistJob] = []
         reserved_seasons: dict[Path, set[int]] = {}
         last_series: str | None = None
@@ -584,6 +582,7 @@ def run_youtube_manifest(
             slug = (
                 series_slugs[series_idx] if series_idx < len(series_slugs) else slugify(series.name)
             )
+            slug = (series_slug_overrides or {}).get(series.name, slug)
             for item in series.playlists:
                 if not item.enabled:
                     continue
@@ -661,21 +660,19 @@ def run_youtube_manifest(
                         )
                 _print_youtube_unit(job, settings)
                 jobs.append(job)
+        seen_actions: set[tuple[str, str, str, str]] = set()
+        for job in jobs:
+            _actions, seen = _selected_youtube_actions(job)
+            seen_actions.update(seen)
+        for series_idx, series in enumerate(manifest.series):
+            selected_slug = (
+                series_slugs[series_idx] if series_idx < len(series_slugs) else slugify(series.name)
+            )
+            selected_slug = (series_slug_overrides or {}).get(series.name, selected_slug)
+            assert_selected_actions_seen(seen_actions, platform="youtube", slug=selected_slug)
         if settings.dry_run:
             for job in jobs:
                 _tally_youtube_plan(job, stats)
-            if manifest.path is not None:
-                events_path = os.environ.get("YT_DLP_EMBY_EVENTS")
-                if events_path:
-                    payload = plan_from_events(
-                        parse_events_file(Path(events_path)), platform="youtube"
-                    )
-                    merge_plan_source(
-                        manifest.path.parent / "plan.json",
-                        "youtube",
-                        payload,
-                        force=False,
-                    )
             emit(
                 {
                     "event": "run_finished",
@@ -685,6 +682,7 @@ def run_youtube_manifest(
                 }
             )
             return finish(settings, stats)
+        _cleanup_start(settings)
         for job in jobs:
             if not _apply_youtube_job(job, settings, stats, format_selector):
                 emit(
@@ -732,17 +730,71 @@ def _apply_youtube_job(
     stats: RunStats,
     format_selector: str | None = None,
 ) -> bool:
+    actions, _seen = _selected_youtube_actions(job)
+    if not actions:
+        return True
+    _apply_youtube_job_remainder(job, settings, stats, actions, format_selector)
+    return True
+
+
+def _selected_youtube_actions(
+    job: YoutubePlaylistJob,
+) -> tuple[list[SyncAction], set[tuple[str, str, str, str]]]:
+    yt_slug = job.slug or slugify(job.series_name)
+    actions: list[SyncAction] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for action in job.actions:
+        fallback = item_id("youtube", yt_slug, emby_code(action.season, action.episode or 0))
+        action_name = {
+            "add": "download",
+            "replace": "replace",
+            "rename": "rename",
+            "remove": "remove",
+            "refresh": "present",
+        }.get(action.kind.value, action.kind.value)
+        if action_name == "present" and explicitly_selected_provider_action(
+            "youtube", yt_slug, action.video_id, "replace"
+        ):
+            action = replace(action, kind=ActionKind.REPLACE)
+            action_name = "replace"
+        allowed = allowed_provider_action(
+            "youtube", yt_slug, action.video_id, action_name, fallback
+        )
+        if allowed:
+            validate_selected_action(
+                "youtube",
+                yt_slug,
+                action.video_id,
+                action_name,
+                {
+                    "dest_season": action.season,
+                    "dest_episode": action.episode,
+                    "title": action.live.title
+                    if action.live
+                    else action.stored.title
+                    if action.stored
+                    else action.video_id,
+                    "url": action.live.webpage_url if action.live else None,
+                    "old_basename": action.old_basename,
+                    "new_basename": action.new_basename,
+                },
+            )
+            actions.append(action)
+            seen.add(("youtube", yt_slug, action.video_id, action_name))
+    return actions, seen
+
+
+def _apply_youtube_job_remainder(
+    job: YoutubePlaylistJob,
+    settings: Settings,
+    stats: RunStats,
+    actions: list[SyncAction],
+    format_selector: str | None,
+) -> bool:
     series = job.series
     season_path = job.season_path
     season_number = job.season_number
     yt_slug = job.slug or slugify(job.series_name)
-    actions = [
-        action
-        for action in job.actions
-        if allowed_item_id(
-            item_id("youtube", yt_slug, emby_code(action.season, action.episode or 0))
-        )
-    ]
     playlist = job.playlist
     index = load_index(series)
     cache = load_cache(series)

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
+import sqlite3
 import stat
 from pathlib import Path
 
 import pytest
 
 from yt_dlp_emby.config import ConfigError, resolve_settings, write_config
-from yt_dlp_emby.events import merge_plan_source, parse_events_file
 from yt_dlp_emby.library import episode_stem, season_folder_name
 from yt_dlp_emby.server.series_discover import assert_public_catalog_url
 from yt_dlp_emby.youtube_manifest import load_youtube_manifest
@@ -181,27 +180,13 @@ series:
         load_dropout_manifest(path)
 
 
-def test_torn_plan_recovers_on_merge(tmp_path: Path) -> None:
-    plan = tmp_path / "plan.json"
-    plan.write_text("{not json", encoding="utf-8")
-    merge_plan_source(
-        plan,
-        "youtube",
-        {"ok": True, "error": None, "seasons": [], "items": []},
-        force=False,
-    )
-    data = json.loads(plan.read_text(encoding="utf-8"))
-    assert data["sources"]["youtube"]["ok"] is True
+def test_corrupt_job_cache_fails_closed(tmp_path: Path) -> None:
+    from yt_dlp_emby.server.job_store import JobStore
 
-
-def test_parse_events_skips_bad_lines(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    path.write_text(
-        '{"event":"ok"}\nnot-json\n{"event":"also"}\n',
-        encoding="utf-8",
-    )
-    events = parse_events_file(path)
-    assert [item["event"] for item in events] == ["ok", "also"]
+    path = tmp_path / "jobs.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+    with pytest.raises(sqlite3.DatabaseError):
+        JobStore(path)
 
 
 def test_assert_public_catalog_url_ssrf() -> None:
@@ -213,14 +198,19 @@ def test_assert_public_catalog_url_ssrf() -> None:
         assert_public_catalog_url("file:///etc/passwd")
 
 
-def test_runner_events_bounded(tmp_path: Path) -> None:
-    from yt_dlp_emby.server.runner import MAX_EVENTS, RunManager
+def test_job_logs_are_bounded(tmp_path: Path) -> None:
+    from yt_dlp_emby.server.job_store import JobStore
 
-    runner = RunManager(tmp_path)
-    for index in range(20_000):
-        runner._append_event({"event": "progress", "n": index})
-    assert len(runner._events) <= MAX_EVENTS
-    assert len(runner._events) <= 5000
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    store.create("job", "diagnostics", {"kind": "diagnostics", "checks": ["database"]})
+    for index in range(5100):
+        store.append_log("job", index + 1, f"line {index}")
+    logs, cursor, truncated = store.logs_after("job", 0)
+    assert len(logs) == 200
+    assert cursor == 300
+    assert truncated is True
+    assert logs[0]["n"] == 101
+    store.close()
 
 
 def test_jpeg_rejects_svg() -> None:

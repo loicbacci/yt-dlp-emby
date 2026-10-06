@@ -14,17 +14,18 @@ from base64 import b64decode, b64encode
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import itsdangerous
 import yaml
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from itsdangerous.exc import BadSignature
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import MutableHeaders
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import HTTPConnection
@@ -46,6 +47,7 @@ from yt_dlp_emby.cookies import (
 )
 from yt_dlp_emby.dropout_check import titles_related
 from yt_dlp_emby.library import titles_match
+from yt_dlp_emby.server import views as cached_views
 from yt_dlp_emby.server.auth import (
     AuthState,
     change_password,
@@ -53,6 +55,9 @@ from yt_dlp_emby.server.auth import (
     setup_password,
     verify_password,
 )
+from yt_dlp_emby.server.job_models import JobList, JobSnapshot, job_request_adapter
+from yt_dlp_emby.server.job_store import JobStore, utc_now
+from yt_dlp_emby.server.jobs import JobConflict, JobCoordinator
 from yt_dlp_emby.server.manifests import (
     ALLOWED,
     paths_from_text,
@@ -61,8 +66,6 @@ from yt_dlp_emby.server.manifests import (
     write_import,
     write_manifest,
 )
-from yt_dlp_emby.server.plan_series import load_live_plan
-from yt_dlp_emby.server.runner import ITEM_ID_PATTERN, CommandFactory, RunManager
 from yt_dlp_emby.server.series import (
     AmbiguousSlugError,
     SeriesExistsError,
@@ -70,21 +73,12 @@ from yt_dlp_emby.server.series import (
     create_series,
     delete_series,
     delete_series_source,
-    dropout_series_check,
-    dropout_series_layout,
-    get_series,
     get_series_yaml,
-    list_series,
-    list_series_episodes,
     patch_platform_cookies_field,
     platform_payload,
     put_platform,
     put_series,
     put_series_yaml,
-    refresh_series_batch,
-    refresh_series_source,
-    series_disk_status,
-    series_missing_status,
     series_poster_bytes,
     validate_fs_dir_path,
 )
@@ -110,10 +104,6 @@ COOKIE_NAME = "yt_dlp_emby_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_REFRESH_ITEMS = 20
-MAX_SSE_PER_IP = 5
-SSE_MAX_SECONDS = 30 * 60
-REFRESH_JOB_TTL_SECONDS = 3600.0
-REFRESH_JOB_MAX_ENTRIES = 50
 LOGIN_RATE = 5
 LOGIN_WINDOW = 60.0
 LOGIN_HOUR_RATE = 20
@@ -134,18 +124,6 @@ class ManifestBody(BaseModel):
     text: str = Field(max_length=2_000_000)
 
 
-class PlanRunBody(BaseModel):
-    force: bool = False
-
-
-class DownloadRunBody(BaseModel):
-    ids: list[Annotated[str, Field(pattern=ITEM_ID_PATTERN)]] | None = Field(
-        default=None, max_length=500
-    )
-    force: bool = False
-    create: bool = False
-
-
 class ImportManifestBody(BaseModel):
     path: str = Field(min_length=1, max_length=512)
     text: str = Field(max_length=2_000_000)
@@ -159,7 +137,6 @@ class ConfigBody(BaseModel):
     library: str | None = Field(default=None, max_length=4096)
     old_dir: str | None = Field(default=None, max_length=4096)
     staging: str | None = Field(default=None, max_length=4096)
-    bench_dest: str | None = Field(default=None, max_length=4096)
     shows_dir: str | None = Field(default=None, max_length=4096)
     sonarr_url: str | None = Field(default=None, max_length=2048)
     sonarr_api_key: str | None = Field(default=None, max_length=512)
@@ -223,17 +200,6 @@ class SeriesPutBody(BaseModel):
     tvdb_id: int | None = Field(default=None, ge=1)
     tvdb_skip: list[TvdbSkipPut] | None = None
     sources: list[SeriesPutSource]
-
-
-class SeriesRefreshItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    platform: str = Field(min_length=1, max_length=32)
-    slug: str = Field(min_length=1, max_length=200)
-
-
-class SeriesRefreshBody(BaseModel):
-    items: list[SeriesRefreshItem] = Field(max_length=MAX_REFRESH_ITEMS)
-    parts: list[str] | None = None
 
 
 class AddSourceBody(BaseModel):
@@ -516,7 +482,7 @@ def create_app(
     data_dir: Path | None = None,
     *,
     environ: Mapping[str, str] | None = None,
-    command_factory: CommandFactory | None = None,
+    worker_command_factory: Callable[[dict[str, Any]], Sequence[str]] | None = None,
 ) -> FastAPI:
     if environ is None:
         environ = os.environ
@@ -525,36 +491,63 @@ def create_app(
     static_root = _static_dir(environ)
     initial_auth = load_auth(resolved_data, environ)
 
-    runner = RunManager(
-        resolved_data,
-        environ=environ,
-        command_factory=command_factory,
-    )
+    store = JobStore(resolved_data / "jobs.sqlite3")
+    coordinator = JobCoordinator(resolved_data, environ, store, worker_command_factory)
+    coordinator_lock: Any = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
-        await runner.stop()
+        nonlocal coordinator_lock
+        import fcntl
+
+        coordinator_lock = (resolved_data / "coordinator.lock").open("a+")
+        try:
+            fcntl.flock(coordinator_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            coordinator_lock.close()
+            raise RuntimeError("another server owns this data directory") from exc
+        try:
+            from yt_dlp_emby.server.migration import archive_legacy_state
+
+            await asyncio.to_thread(archive_legacy_state, resolved_data)
+            await coordinator.recover()
+        except Exception:
+            fcntl.flock(coordinator_lock.fileno(), fcntl.LOCK_UN)
+            coordinator_lock.close()
+            raise
+        try:
+            yield
+        finally:
+            await coordinator.shutdown()
+            store.close()
+            fcntl.flock(coordinator_lock.fileno(), fcntl.LOCK_UN)
+            coordinator_lock.close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.data_dir = resolved_data
     app.state.environ = environ
     app.state.auth = initial_auth
-    app.state.runner = runner
-    app.state.refresh_jobs = {}
+    app.state.job_store = store
+    app.state.job_coordinator = coordinator
     app.state.manifest_lock = asyncio.Lock()
     app.state.login_hits = defaultdict(deque)
-    app.state.sse_clients = defaultdict(int)
 
     def _error_body(detail: Any) -> dict[str, Any]:
         if isinstance(detail, dict):
             if "error" in detail:
-                return detail
-            return {"error": detail}
-        return {"error": str(detail)}
+                body = dict(detail)
+            else:
+                body = {"error": detail}
+        else:
+            body = {"error": str(detail)}
+        body.setdefault("code", "HTTP_ERROR")
+        body.setdefault("request_id", secrets.token_hex(8))
+        return body
 
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        if not isinstance(exc, StarletteHTTPException):
+            return JSONResponse(status_code=500, content=_error_body("internal error"))
         return JSONResponse(status_code=exc.status_code, content=_error_body(exc.detail))
 
     @app.exception_handler(RequestValidationError)
@@ -568,7 +561,13 @@ def create_app(
             )
             fields[loc or "body"] = str(error.get("msg", "invalid"))
         return JSONResponse(
-            status_code=400, content={"error": "validation error", "fields": fields}
+            status_code=400,
+            content={
+                "error": "validation error",
+                "code": "INVALID_REQUEST",
+                "request_id": secrets.token_hex(8),
+                "fields": fields,
+            },
         )
 
     @app.exception_handler(Exception)
@@ -580,40 +579,24 @@ def create_app(
     def get_auth(request: Request) -> AuthState:
         return request.app.state.auth
 
-    def get_runner(request: Request) -> RunManager:
-        return request.app.state.runner
-
     @asynccontextmanager
     async def manifest_maintenance(request: Request) -> AsyncIterator[None]:
-        """Serialize manifest/plan mutations; refuse them atomically during runs.
-
-        The manifest lock serializes concurrent edits against each other while
-        the runner maintenance hold (acquired atomically under the runner lock)
-        409s when a run is active and blocks new run starts until released.
-        """
+        """Serialize canonical edits against active jobs."""
         async with request.app.state.manifest_lock:
-            runner = get_runner(request)
-            acquired = await runner.try_acquire_maintenance()
-            if not acquired:
-                raise HTTPException(status_code=409, detail={"error": "a run is in progress"})
+            active, _, _ = request.app.state.job_store.list_jobs(limit=1)
+            if active:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "a job is in progress",
+                        "code": "JOB_CONFLICT",
+                        "job_id": active["id"],
+                    },
+                )
             try:
                 yield
             finally:
-                await runner.release_maintenance()
-
-    def prune_refresh_jobs(request: Request) -> None:
-        jobs = request.app.state.refresh_jobs
-        now = time.monotonic()
-        stale = [
-            job_id
-            for job_id, job in jobs.items()
-            if now - float(job.get("created_at", now)) > REFRESH_JOB_TTL_SECONDS
-        ]
-        for job_id in stale:
-            jobs.pop(job_id, None)
-        while len(jobs) > REFRESH_JOB_MAX_ENTRIES:
-            oldest = min(jobs, key=lambda jid: float(jobs[jid].get("created_at", 0.0)))
-            jobs.pop(oldest, None)
+                pass
 
     def session_payload(request: Request) -> dict[str, bool]:
         auth = get_auth(request)
@@ -821,9 +804,10 @@ def create_app(
                 expected = if_match.strip().strip('"')
                 actual = _text_etag(current.text)
                 if expected != actual:
-                    from yt_dlp_emby.log import warn
-
-                    warn(f"If-Match mismatch for {kind} manifest (continuing)")
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"error": "manifest changed", "code": "CONFIG_CHANGED"},
+                    )
             try:
                 payload = await asyncio.to_thread(
                     write_manifest, request.app.state.data_dir, kind, body.text
@@ -832,6 +816,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+            store.invalidate_platform(kind)
             return JSONResponse(await asyncio.to_thread(manifest_json, payload, request))
 
     @app.put("/api/manifests/{kind}/imports", tags=["manifests"], status_code=200)
@@ -850,6 +835,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+            store.invalidate_platform(kind)
             return JSONResponse(
                 {"path": payload.path, "text": payload.text, "exists": payload.exists}
             )
@@ -872,6 +858,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+            store.invalidate_platform(kind)
             return JSONResponse(
                 {"path": payload.path, "text": payload.text, "exists": payload.exists}
             )
@@ -923,7 +910,6 @@ def create_app(
             "library": (body.library or "").strip() or None,
             "old_dir": (body.old_dir or "").strip() or None,
             "staging": (body.staging or "").strip() or None,
-            "bench_dest": (body.bench_dest or "").strip() or None,
             "shows_dir": (body.shows_dir or "").strip() or None,
             "sonarr_url": (body.sonarr_url or "").strip() or None,
             "sonarr_api_key": (body.sonarr_api_key or "").strip() or None,
@@ -933,7 +919,6 @@ def create_app(
         _assert_safe_fs_path(values["library"], "library", data_dir=data_dir, environ=environ)
         _assert_safe_fs_path(values["old_dir"], "old_dir", data_dir=data_dir, environ=environ)
         _assert_safe_fs_path(values["staging"], "staging", data_dir=data_dir, environ=environ)
-        _assert_safe_fs_path(values["bench_dest"], "bench_dest", data_dir=data_dir, environ=environ)
         _assert_safe_fs_path(values["shows_dir"], "shows_dir", data_dir=data_dir, environ=environ)
         url = values["sonarr_url"]
         if url:
@@ -948,7 +933,9 @@ def create_app(
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         path = config_target_path(None, request.app.state.environ, request.app.state.data_dir)
         try:
-            await asyncio.to_thread(write_config, path, values)
+            async with manifest_maintenance(request):
+                await asyncio.to_thread(write_config, path, values)
+                store.invalidate_all()
         except (OSError, ConfigError) as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         # Audit: field names only, never values (sonarr_api_key is secret).
@@ -982,24 +969,27 @@ def create_app(
                 loaded = yaml.safe_load(await asyncio.to_thread(root.read_text, encoding="utf-8"))
                 if isinstance(loaded, dict):
                     field = loaded.get("cookies")
-            written = await asyncio.to_thread(
-                write_cookie_jar,
-                request.app.state.data_dir,
-                kind,
-                body.text,
-                filename=str(field) if field else None,
-            )
+            async with manifest_maintenance(request):
+                written = await asyncio.to_thread(
+                    write_cookie_jar,
+                    request.app.state.data_dir,
+                    kind,
+                    body.text,
+                    filename=str(field) if field else None,
+                )
+                store.invalidate_platform(kind)
             if (
                 confined_cookie_path(request.app.state.data_dir, str(field) if field else None)
                 is None
             ):
                 if root.is_file():
-                    await asyncio.to_thread(
-                        patch_platform_cookies_field,
-                        request.app.state.data_dir,
-                        kind,
-                        written.name,
-                    )
+                    async with manifest_maintenance(request):
+                        await asyncio.to_thread(
+                            patch_platform_cookies_field,
+                            request.app.state.data_dir,
+                            kind,
+                            written.name,
+                        )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         except OSError as exc:
@@ -1026,11 +1016,7 @@ def create_app(
         require_auth(request)
         if kind not in ALLOWED:
             raise HTTPException(status_code=404, detail={"error": "not found"})
-        # No run guard by design: the CLI child resolves library/old_dir/cookies
-        # once at spawn, and YAML saves are atomic renames, so a mid-run edit
-        # can neither corrupt the running job nor be torn for the next one.
-        # The manifest lock still serializes this against other YAML writers.
-        async with request.app.state.manifest_lock:
+        async with manifest_maintenance(request):
             try:
                 result = await asyncio.to_thread(
                     put_platform,
@@ -1043,6 +1029,7 @@ def create_app(
                     },
                     environ=request.app.state.environ,
                 )
+                store.invalidate_platform(kind)
             except (ConfigError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         touched = sorted(
@@ -1066,25 +1053,11 @@ def create_app(
     async def get_series_list(request: Request) -> dict[str, Any]:
         require_auth(request)
         return await asyncio.to_thread(
-            list_series,
+            cached_views.series_list,
             request.app.state.data_dir,
             request.app.state.environ,
+            store,
         )
-
-    @app.get(
-        "/api/series/refresh/{job_id}",
-        tags=["series"],
-        status_code=200,
-        response_model=dict[str, Any],
-    )
-    async def get_series_refresh_job(
-        job_id: str, request: Request, _: None = Depends(require_auth)
-    ) -> dict[str, Any]:
-        prune_refresh_jobs(request)
-        job = request.app.state.refresh_jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail={"error": "not found"})
-        return job
 
     @app.post("/api/series", tags=["series"], status_code=200, response_model=dict[str, Any])
     async def post_series(
@@ -1109,46 +1082,6 @@ def create_app(
                 ) from exc
 
     @app.get(
-        "/api/series/dropout/{slug}/layout",
-        tags=["series"],
-        status_code=200,
-        response_model=dict[str, Any],
-    )
-    async def get_dropout_layout(slug: str, request: Request) -> dict[str, Any]:
-        require_auth(request)
-        try:
-            return await asyncio.to_thread(
-                dropout_series_layout,
-                request.app.state.data_dir,
-                request.app.state.environ,
-                slug,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail={"error": "not found"})
-        except ConfigError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @app.get(
-        "/api/series/dropout/{slug}/check",
-        tags=["series"],
-        status_code=200,
-        response_model=dict[str, Any],
-    )
-    async def get_dropout_check(slug: str, request: Request) -> dict[str, Any]:
-        require_auth(request)
-        try:
-            return await asyncio.to_thread(
-                dropout_series_check,
-                request.app.state.data_dir,
-                request.app.state.environ,
-                slug,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail={"error": "not found"})
-        except ConfigError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @app.get(
         "/api/series/{platform}/{slug}",
         tags=["series"],
         status_code=200,
@@ -1157,7 +1090,14 @@ def create_app(
     async def get_series_detail(platform: str, slug: str, request: Request) -> dict[str, Any]:
         require_auth(request)
         try:
-            return await asyncio.to_thread(get_series, request.app.state.data_dir, platform, slug)
+            return await asyncio.to_thread(
+                cached_views.series_detail,
+                request.app.state.data_dir,
+                request.app.state.environ,
+                store,
+                platform,
+                slug,
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail={"error": "not found"})
         except ValueError as exc:
@@ -1215,7 +1155,7 @@ def create_app(
     ) -> dict[str, Any]:
         async with manifest_maintenance(request):
             try:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     put_series_yaml,
                     request.app.state.data_dir,
                     platform,
@@ -1223,6 +1163,15 @@ def create_app(
                     body.text,
                     environ=request.app.state.environ,
                 )
+                await asyncio.to_thread(
+                    cached_views.replan_cached,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    store,
+                    platform,
+                    slug,
+                )
+                return result
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except SeriesExistsError as exc:
@@ -1231,76 +1180,6 @@ def create_app(
                 raise HTTPException(
                     status_code=_series_value_status(exc), detail={"error": str(exc)}
                 ) from exc
-
-    @app.post("/api/series/refresh", tags=["series"], status_code=200)
-    async def post_series_refresh(
-        body: SeriesRefreshBody,
-        request: Request,
-        background_tasks: BackgroundTasks,
-        sync: bool = False,
-        _: None = Depends(require_auth),
-    ) -> Any:
-        if not body.items:
-            raise HTTPException(status_code=400, detail={"error": "empty items"})
-        if len(body.items) > MAX_REFRESH_ITEMS:
-            raise HTTPException(status_code=400, detail={"error": "too many items"})
-        items = [item.model_dump() for item in body.items]
-
-        def _run() -> dict[str, Any]:
-            return refresh_series_batch(
-                request.app.state.data_dir,
-                items,
-                environ=request.app.state.environ,
-                parts=body.parts,
-            )
-
-        if sync:
-            async with manifest_maintenance(request):
-                return await asyncio.to_thread(_run)
-        # Async path: acquire both locks up front (409 now when a run is
-        # active) and hold them until the background job finishes, so the
-        # refresh is atomic against concurrent edits and run starts.
-        prune_refresh_jobs(request)
-        await request.app.state.manifest_lock.acquire()
-        try:
-            acquired = await get_runner(request).try_acquire_maintenance()
-        except Exception:
-            request.app.state.manifest_lock.release()
-            raise
-        if not acquired:
-            request.app.state.manifest_lock.release()
-            raise HTTPException(status_code=409, detail={"error": "a run is in progress"})
-        job_id = secrets.token_hex(8)
-        request.app.state.refresh_jobs[job_id] = {
-            "status": "running",
-            "result": None,
-            "error": None,
-            "created_at": time.monotonic(),
-        }
-
-        async def _job() -> None:
-            try:
-                result = await asyncio.to_thread(_run)
-                request.app.state.refresh_jobs[job_id] = {
-                    "status": "done",
-                    "result": result,
-                    "error": None,
-                    "created_at": time.monotonic(),
-                }
-            except Exception as exc:
-                logger.exception("series refresh job %s failed", job_id)
-                request.app.state.refresh_jobs[job_id] = {
-                    "status": "error",
-                    "result": None,
-                    "error": str(exc),
-                    "created_at": time.monotonic(),
-                }
-            finally:
-                await get_runner(request).release_maintenance()
-                request.app.state.manifest_lock.release()
-
-        background_tasks.add_task(_job)
-        return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
 
     @app.put(
         "/api/series/{platform}/{slug}",
@@ -1318,7 +1197,7 @@ def create_app(
         async with manifest_maintenance(request):
             try:
                 payload = body.model_dump()
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     put_series,
                     request.app.state.data_dir,
                     platform,
@@ -1326,6 +1205,15 @@ def create_app(
                     payload,
                     environ=request.app.state.environ,
                 )
+                await asyncio.to_thread(
+                    cached_views.replan_cached,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    store,
+                    platform,
+                    slug,
+                )
+                return result
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except SeriesExistsError as exc:
@@ -1341,6 +1229,7 @@ def create_app(
         async with manifest_maintenance(request):
             try:
                 await asyncio.to_thread(delete_series, request.app.state.data_dir, platform, slug)
+                store.delete_view(platform, slug)
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except ValueError as exc:
@@ -1369,7 +1258,7 @@ def create_app(
                 # during yt-dlp-driven discovery are not guarded either; only the
                 # server's own image fetches enforce redirect guards.
                 assert_public_catalog_url(body.url)
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     add_series_source,
                     request.app.state.data_dir,
                     platform,
@@ -1377,6 +1266,15 @@ def create_app(
                     body.url,
                     environ=request.app.state.environ,
                 )
+                await asyncio.to_thread(
+                    cached_views.replan_cached,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    store,
+                    platform,
+                    slug,
+                )
+                return result
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except ConfigError as exc:
@@ -1402,7 +1300,7 @@ def create_app(
         require_auth(request)
         async with manifest_maintenance(request):
             try:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     delete_series_source,
                     request.app.state.data_dir,
                     platform,
@@ -1410,41 +1308,20 @@ def create_app(
                     source_id,
                     environ=request.app.state.environ,
                 )
+                await asyncio.to_thread(
+                    cached_views.replan_cached,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    store,
+                    platform,
+                    slug,
+                )
+                return result
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except ValueError as exc:
                 raise HTTPException(
                     status_code=_series_value_status(exc), detail={"error": str(exc)}
-                ) from exc
-
-    @app.post(
-        "/api/series/{platform}/{slug}/sources/{source_id}/refresh",
-        tags=["series"],
-        status_code=200,
-        response_model=dict[str, Any],
-    )
-    async def refresh_series_source_route(
-        platform: str, slug: str, source_id: int, request: Request
-    ) -> dict[str, Any]:
-        require_auth(request)
-        async with manifest_maintenance(request):
-            try:
-                return await asyncio.to_thread(
-                    refresh_series_source,
-                    request.app.state.data_dir,
-                    platform,
-                    slug,
-                    source_id,
-                    environ=request.app.state.environ,
-                )
-            except KeyError:
-                raise HTTPException(status_code=404, detail={"error": "not found"})
-            except ConfigError as exc:
-                raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=_series_value_status(exc),
-                    detail={"error": sanitize_discovery_message(str(exc), limit=500)},
                 ) from exc
 
     @app.get(
@@ -1457,11 +1334,12 @@ def create_app(
         require_auth(request)
         try:
             return await asyncio.to_thread(
-                series_disk_status,
+                cached_views.disk_view,
                 request.app.state.data_dir,
+                request.app.state.environ,
+                store,
                 platform,
                 slug,
-                environ=request.app.state.environ,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail={"error": "not found"})
@@ -1482,11 +1360,12 @@ def create_app(
         require_auth(request)
         try:
             return await asyncio.to_thread(
-                series_missing_status,
+                cached_views.missing_view,
                 request.app.state.data_dir,
+                request.app.state.environ,
+                store,
                 platform,
                 slug,
-                environ=request.app.state.environ,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail={"error": "not found"})
@@ -1513,13 +1392,14 @@ def create_app(
         require_auth(request)
         try:
             return await asyncio.to_thread(
-                list_series_episodes,
+                cached_views.episodes_view,
                 request.app.state.data_dir,
+                request.app.state.environ,
+                store,
                 platform,
                 slug,
                 source_id,
                 season_id,
-                environ=request.app.state.environ,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail={"error": "not found"})
@@ -1633,176 +1513,357 @@ def create_app(
         ]
         return {"suggestions": suggestions[:20]}
 
-    @app.get("/api/runs", tags=["runs"], status_code=200, response_model=dict[str, Any])
-    async def get_runs(request: Request) -> dict[str, Any]:
-        require_auth(request)
-        runner = get_runner(request)
-        return await asyncio.to_thread(runner.snapshot)
+    def job_snapshot(
+        job_id: str, log_after: int = 0, *, include_logs: bool = True
+    ) -> dict[str, Any]:
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail={"error": "not found", "code": "NOT_FOUND"})
+        logs, cursor, truncated = (
+            store.logs_after(job_id, log_after) if include_logs else ([], 0, False)
+        )
+        return {
+            "id": job["id"],
+            "kind": job["kind"],
+            "status": job["status"],
+            "created_at": job["created_at"],
+            "started_at": job["started_at"],
+            "finished_at": job["finished_at"],
+            "progress": job["progress"],
+            "result": job["result"],
+            "error": job["error"],
+            "logs": logs,
+            "log_cursor": cursor,
+            "logs_truncated": truncated,
+            "can_cancel": job["status"] in {"queued", "running", "stopping"},
+            "can_retry": job["status"] in {"failed", "cancelled", "interrupted"},
+        }
 
-    @app.get("/api/plans/latest", tags=["plans"], status_code=200, response_model=dict[str, Any])
-    async def get_plans_latest(request: Request) -> dict[str, Any]:
+    @app.post("/api/jobs", tags=["jobs"], status_code=202)
+    async def post_job(request: Request) -> JSONResponse:
+        require_auth(request)
+        from pydantic import ValidationError
+
+        try:
+            payload = job_request_adapter.validate_python(await request.json())
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail={"error": "validation error", "code": "INVALID_REQUEST"}
+            ) from exc
+        async with request.app.state.manifest_lock:
+            if payload.kind == "refresh" and payload.expected_revision:
+                from yt_dlp_emby.server.services import current_configuration_revision
+
+                for target in payload.items:
+                    try:
+                        actual_revision = await asyncio.to_thread(
+                            current_configuration_revision,
+                            request.app.state.data_dir,
+                            request.app.state.environ,
+                            target.platform,
+                            target.slug,
+                        )
+                    except (KeyError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"error": "configuration changed", "code": "CONFIG_CHANGED"},
+                        ) from exc
+                    if actual_revision != payload.expected_revision:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"error": "configuration changed", "code": "CONFIG_CHANGED"},
+                        )
+            payload_data = payload.model_dump(exclude_none=True)
+            if payload.kind == "download":
+                current = await asyncio.to_thread(
+                    cached_views.latest_plan,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    store,
+                    force=payload.force,
+                    create=payload.create,
+                )
+                if current is None:
+                    raise HTTPException(
+                        status_code=409, detail={"error": "no current plan", "code": "PLAN_STALE"}
+                    )
+                if current.get("readiness") != "ready":
+                    code = (
+                        "LIBRARY_UNAVAILABLE"
+                        if current.get("readiness") == "unavailable"
+                        else "PLAN_STALE"
+                    )
+                    raise HTTPException(
+                        status_code=409, detail={"error": "plan is not ready", "code": code}
+                    )
+                if payload.plan_id != current.get("plan_id"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "plan changed; refresh before downloading",
+                            "code": "PLAN_STALE",
+                        },
+                    )
+                try:
+                    selection = await asyncio.to_thread(
+                        cached_views.executable_selection,
+                        request.app.state.data_dir,
+                        request.app.state.environ,
+                        store,
+                        payload.plan_id,
+                        payload.ids,
+                        force=payload.force,
+                        create=payload.create,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "selection no longer belongs to this plan",
+                            "code": "PLAN_STALE",
+                        },
+                    ) from exc
+                payload_data["selected_actions"] = selection["selected_actions"]
+                payload_data["cached_views"] = selection["cached_views"]
+            try:
+                job_id = await coordinator.start(payload_data)
+            except JobConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": str(exc), "code": "JOB_CONFLICT", "job_id": exc.job_id},
+                ) from exc
+        return JSONResponse({"job_id": job_id, "status": "queued"}, status_code=202)
+
+    @app.get("/api/jobs", tags=["jobs"], response_model=JobList)
+    async def get_jobs(
+        request: Request, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)
+    ) -> dict[str, Any]:
+        require_auth(request)
+        active, history, total = store.list_jobs(offset, limit)
+        return {
+            "active": job_snapshot(active["id"], 0, include_logs=False) if active else None,
+            "history": [job_snapshot(x["id"], 0, include_logs=False) for x in history],
+            "total": total,
+        }
+
+    @app.get("/api/jobs/{job_id}", tags=["jobs"], response_model=JobSnapshot)
+    async def get_job(
+        job_id: str, request: Request, log_after: int = Query(0, ge=0)
+    ) -> dict[str, Any]:
+        require_auth(request)
+        return job_snapshot(job_id, log_after)
+
+    @app.post("/api/jobs/{job_id}/cancel", tags=["jobs"], response_model=JobSnapshot)
+    async def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
+        require_auth(request)
+        try:
+            await coordinator.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail={"error": "not found", "code": "NOT_FOUND"}
+            ) from exc
+        return job_snapshot(job_id)
+
+    @app.post("/api/jobs/{job_id}/retry", tags=["jobs"], status_code=202)
+    async def retry_job(job_id: str, request: Request) -> JSONResponse:
+        require_auth(request)
+        old = store.get(job_id)
+        if old is None:
+            raise HTTPException(status_code=404, detail={"error": "not found", "code": "NOT_FOUND"})
+        if old["status"] not in {"failed", "cancelled", "interrupted"}:
+            raise HTTPException(
+                status_code=409, detail={"error": "job cannot be retried", "code": "JOB_CONFLICT"}
+            )
+        retry_request = dict(old["request"])
+        completed = store.completed_items(job_id)
+        if retry_request.get("kind") == "refresh":
+            completed_targets = {
+                (row["identity"].get("platform"), row["identity"].get("slug"))
+                for row in completed
+                if isinstance(row.get("identity"), dict)
+            }
+            retry_request["items"] = [
+                target
+                for target in retry_request.get("items", [])
+                if (target.get("platform"), target.get("slug")) not in completed_targets
+            ]
+        elif retry_request.get("kind") == "download":
+            completed_ids = {
+                identity["id"]
+                for row in completed
+                if isinstance((identity := row.get("identity")), dict)
+                and isinstance(identity.get("id"), str)
+            }
+            old_rows = {
+                str(row.get("id")): row
+                for row in retry_request.get("selected_actions", [])
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+            old_cached_views = retry_request.get("cached_views", [])
+            if not old_rows or not old_cached_views:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "original selection snapshots are unavailable",
+                        "code": "PLAN_STALE",
+                    },
+                )
+            try:
+                from yt_dlp_emby.server.services import (
+                    refresh_cached_disk_views,
+                    verify_completed_actions,
+                )
+
+                verified_ids = await asyncio.to_thread(
+                    verify_completed_actions,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    list(old_rows.values()),
+                    old_cached_views,
+                )
+                refreshed_views = await asyncio.to_thread(
+                    refresh_cached_disk_views,
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    old_cached_views,
+                    force=bool(retry_request.get("force")),
+                    create=bool(retry_request.get("create")),
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "selected targets changed; refresh and replan",
+                        "code": "PLAN_STALE",
+                    },
+                ) from exc
+            stamp = utc_now()
+            for target_view in refreshed_views:
+                view = target_view["view"]
+                plan = target_view["plan"]
+                view["plan_id"] = plan["plan_id"]
+                store.put_view(
+                    target_view["platform"],
+                    target_view["slug"],
+                    {"view": view},
+                    plan,
+                    str(plan.get("revision", "")),
+                    "ready",
+                    stamp,
+                    stamp,
+                )
+            current = await asyncio.to_thread(
+                cached_views.latest_plan,
+                request.app.state.data_dir,
+                request.app.state.environ,
+                store,
+                force=bool(retry_request.get("force")),
+                create=bool(retry_request.get("create")),
+            )
+            if current is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "no current cached plan is available for retry",
+                        "code": "PLAN_STALE",
+                    },
+                )
+            current_rows = [
+                row
+                for source in (current.get("sources") or {}).values()
+                for row in source.get("items", [])
+                if isinstance(row, dict)
+            ]
+            current_by_semantic = {
+                (
+                    str(row.get("execution_id") or ""),
+                    str(row.get("provider_identity") or row.get("source_id") or ""),
+                ): row
+                for row in current_rows
+            }
+            remaining_current_ids: list[str] = []
+            for old_id in retry_request.get("ids", []):
+                old_row = old_rows.get(old_id)
+                if old_row is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"error": "original selection is unavailable", "code": "PLAN_STALE"},
+                    )
+                semantic_key = (
+                    str(old_row.get("execution_id") or ""),
+                    str(old_row.get("provider_identity") or old_row.get("source_id") or ""),
+                )
+                current_row = current_by_semantic.get(semantic_key)
+                if old_id in completed_ids and old_id in verified_ids:
+                    continue
+                if current_row is None or current_row.get("action") not in {
+                    "download",
+                    "replace",
+                    "rename",
+                    "remove",
+                }:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"error": "remaining selection changed", "code": "PLAN_STALE"},
+                    )
+                remaining_current_ids.append(str(current_row["id"]))
+            retry_request["plan_id"] = current["plan_id"]
+            retry_request["ids"] = remaining_current_ids
+            if retry_request["ids"]:
+                try:
+                    selection = await asyncio.to_thread(
+                        cached_views.executable_selection,
+                        request.app.state.data_dir,
+                        request.app.state.environ,
+                        store,
+                        retry_request["plan_id"],
+                        retry_request["ids"],
+                        force=bool(retry_request.get("force")),
+                        create=bool(retry_request.get("create")),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "plan changed; build a fresh plan before retry",
+                            "code": "PLAN_STALE",
+                        },
+                    ) from exc
+                retry_request["selected_actions"] = selection["selected_actions"]
+                retry_request["cached_views"] = selection["cached_views"]
+        if not retry_request.get("items", retry_request.get("ids", [True])):
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "all selected items already completed", "code": "JOB_CONFLICT"},
+            )
+        async with request.app.state.manifest_lock:
+            try:
+                new_id = await coordinator.start(retry_request, retry_parent=job_id)
+            except JobConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": str(exc), "code": "JOB_CONFLICT", "job_id": exc.job_id},
+                ) from exc
+        return JSONResponse({"job_id": new_id, "status": "queued"}, status_code=202)
+
+    @app.get("/api/plans/latest", tags=["plans"])
+    async def get_plans_latest(
+        request: Request, force: bool = False, create: bool = False
+    ) -> dict[str, Any]:
         require_auth(request)
         plan = await asyncio.to_thread(
-            load_live_plan, request.app.state.data_dir, request.app.state.environ
+            cached_views.latest_plan,
+            request.app.state.data_dir,
+            request.app.state.environ,
+            store,
+            force=force,
+            create=create,
         )
         if plan is None:
-            raise HTTPException(status_code=404, detail={"error": "no plan"})
+            raise HTTPException(
+                status_code=404, detail={"error": "no cached plan", "code": "NOT_FOUND"}
+            )
         return plan
-
-    @app.get("/api/runs/plan", tags=["runs"], status_code=200, deprecated=True)
-    async def get_runs_plan(request: Request) -> dict[str, Any]:
-        # Deprecated alias of GET /api/plans/latest; the SPA still calls this.
-        return await get_plans_latest(request)
-
-    @app.get("/api/plan", tags=["runs"], status_code=200, deprecated=True)
-    async def get_plan_alias(request: Request) -> dict[str, Any]:
-        # Deprecated alias of GET /api/plans/latest; the SPA still calls this.
-        return await get_plans_latest(request)
-
-    @app.post("/api/plans", tags=["plans"], status_code=200, response_model=dict[str, Any])
-    async def post_plans(request: Request, body: PlanRunBody | None = None) -> dict[str, Any]:
-        require_auth(request)
-        runner = get_runner(request)
-        force = body.force if body is not None else False
-        try:
-            await runner.start_plan(force=force)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return await asyncio.to_thread(runner.snapshot)
-
-    @app.post("/api/runs/plan", tags=["runs"], status_code=200, deprecated=True)
-    async def post_runs_plan(request: Request, body: PlanRunBody | None = None) -> dict[str, Any]:
-        # Deprecated alias of POST /api/plans; the SPA still calls this.
-        return await post_plans(request, body)
-
-    @app.post("/api/runs", tags=["runs"], status_code=200, response_model=dict[str, Any])
-    async def post_runs(body: DownloadRunBody, request: Request) -> dict[str, Any]:
-        require_auth(request)
-        if body.ids is not None and len(body.ids) == 0:
-            raise HTTPException(status_code=400, detail={"error": "empty download selection"})
-        runner = get_runner(request)
-        try:
-            await runner.start_download(body.ids, force=body.force, create=body.create)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return await asyncio.to_thread(runner.snapshot)
-
-    @app.post("/api/runs/stop", tags=["runs"], status_code=200, response_model=dict[str, Any])
-    async def post_runs_stop(request: Request) -> dict[str, Any]:
-        require_auth(request)
-        runner = get_runner(request)
-        await runner.stop()
-        return await asyncio.to_thread(runner.snapshot)
-
-    @app.get("/api/runs/log", tags=["runs"], status_code=200)
-    async def runs_log(
-        request: Request, after: int = Query(default=0, ge=0, le=10000)
-    ) -> StreamingResponse:
-        require_auth(request)
-        runner = get_runner(request)
-        ip = _client_ip(request)
-        if request.app.state.sse_clients[ip] >= MAX_SSE_PER_IP:
-            raise HTTPException(status_code=429, detail={"error": "too many streams"})
-        request.app.state.sse_clients[ip] += 1
-
-        async def event_stream() -> AsyncIterator[str]:
-            last = after
-            loop = asyncio.get_running_loop()
-            started = loop.time()
-            last_ping = started
-            yield ": connected\n\n"
-            try:
-                while True:
-                    if loop.time() - started > SSE_MAX_SECONDS:
-                        break
-                    try:
-                        disconnected = await asyncio.wait_for(
-                            request.is_disconnected(), timeout=0.05
-                        )
-                    except TimeoutError:
-                        disconnected = False
-                    if disconnected:
-                        break
-                    for item in runner.lines_after(last):
-                        payload = json.dumps({"n": item.n, "line": item.line})
-                        yield f"data: {payload}\n\n"
-                        last = item.n
-                    now = asyncio.get_running_loop().time()
-                    if now - last_ping >= LOG_PING_SECONDS:
-                        yield ": ping\n\n"
-                        last_ping = now
-                    await asyncio.sleep(LOG_POLL_SECONDS)
-            except asyncio.CancelledError:
-                return
-            finally:
-                request.app.state.sse_clients[ip] = max(0, request.app.state.sse_clients[ip] - 1)
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/runs/events", tags=["runs"], status_code=200)
-    async def runs_events(
-        request: Request, after: int = Query(default=0, ge=0, le=10000)
-    ) -> StreamingResponse:
-        require_auth(request)
-        runner = get_runner(request)
-        ip = _client_ip(request)
-        if request.app.state.sse_clients[ip] >= MAX_SSE_PER_IP:
-            raise HTTPException(status_code=429, detail={"error": "too many streams"})
-        request.app.state.sse_clients[ip] += 1
-
-        async def event_stream() -> AsyncIterator[str]:
-            last = after
-            loop = asyncio.get_running_loop()
-            started = loop.time()
-            last_ping = started
-            yield ": connected\n\n"
-            try:
-                while True:
-                    if loop.time() - started > SSE_MAX_SECONDS:
-                        break
-                    try:
-                        disconnected = await asyncio.wait_for(
-                            request.is_disconnected(), timeout=0.05
-                        )
-                    except TimeoutError:
-                        disconnected = False
-                    if disconnected:
-                        break
-                    for item in runner.events_after(last):
-                        payload = json.dumps({"n": item.n, "event": item.event})
-                        yield f"data: {payload}\n\n"
-                        last = item.n
-                    now = asyncio.get_running_loop().time()
-                    if now - last_ping >= LOG_PING_SECONDS:
-                        yield ": ping\n\n"
-                        last_ping = now
-                    await asyncio.sleep(LOG_POLL_SECONDS)
-            except asyncio.CancelledError:
-                return
-            finally:
-                request.app.state.sse_clients[ip] = max(0, request.app.state.sse_clients[ip] - 1)
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
 
     if static_root is not None:
 

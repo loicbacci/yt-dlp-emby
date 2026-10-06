@@ -57,6 +57,7 @@ export type PlanSeason = {
 
 export type PlanItem = {
   id: string;
+  execution_id?: string;
   action: string;
   code: string;
   title: string;
@@ -301,6 +302,7 @@ export type SeriesDetail = {
   name: string;
   path: string;
   tvdb_id: number | null;
+  config_revision?: string | null;
   source_count: number;
   season_count: number;
   tvdb_skip: { season: number; episodes: number[] }[];
@@ -401,7 +403,13 @@ export const planFileSchema = z
 
 export const jobProgressSchema = z.object({
   stage: z.string(),
-  target: z.string().nullable().optional(),
+  target: z
+    .union([z.string(), z.object({ platform: z.string(), slug: z.string() }).passthrough()])
+    .nullable()
+    .optional()
+    .transform((target) =>
+      typeof target === "string" ? target : target ? `${target.platform}|${target.slug}` : null,
+    ),
   completed: z.number().int().nonnegative(),
   total: z.number().int().nonnegative().nullable(),
   item: z.record(z.string(), z.unknown()).nullable().optional(),

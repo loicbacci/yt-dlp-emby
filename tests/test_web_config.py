@@ -42,7 +42,6 @@ def test_put_config_writes_fallback_table(authed_client, tmp_path) -> None:
             "library": str(library),
             "old_dir": str(old_dir),
             "staging": "",
-            "bench_dest": "",
             "sonarr_url": "http://sonarr:8989",
             "sonarr_api_key": "secret",
         },

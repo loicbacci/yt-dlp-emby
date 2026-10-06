@@ -43,10 +43,7 @@ EXPECTED_SERIES_TEMPLATES = [
     "/api/series/{platform}/{slug}/missing",
     "/api/series/{platform}/{slug}/sources",
     "/api/series/{platform}/{slug}/sources/{source_id}",
-    "/api/series/{platform}/{slug}/sources/{source_id}/refresh",
     "/api/series/{platform}/{slug}/sources/{source_id}/seasons/{season_id}/episodes",
-    "/api/series/dropout/{slug}/check",
-    "/api/series/dropout/{slug}/layout",
 ]
 
 
@@ -132,6 +129,6 @@ def test_error_envelope_shape(tmp_path: Path) -> None:
         assert "error" in invalid.json(), invalid.text
 
     with TestClient(create_app(data_dir=tmp_path, environ={})) as fresh:
-        unauthorized = fresh.get("/api/runs")
+        unauthorized = fresh.get("/api/jobs")
         assert unauthorized.status_code == 401
         assert "error" in unauthorized.json(), unauthorized.text

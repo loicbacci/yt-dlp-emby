@@ -33,7 +33,7 @@ __all__ = [
 ]
 
 FALLBACK_KEYS = ("library", "old_dir", "staging")
-ROOT_KEYS = ("cookies", "bench_dest", "sonarr_url", "sonarr_api_key", "shows_dir")
+ROOT_KEYS = ("cookies", "sonarr_url", "sonarr_api_key", "shows_dir")
 PATH_ENV_SUFFIX = {
     "library": "LIBRARY",
     "old_dir": "OLD_DIR",
@@ -43,7 +43,6 @@ CONFIG_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("library", "LIBRARY", "fallback"),
     ("old_dir", "OLD_DIR", "fallback"),
     ("staging", "STAGING", "fallback"),
-    ("bench_dest", "BENCH_DEST", "root"),
     ("sonarr_url", "SONARR_URL", "root"),
     ("sonarr_api_key", "SONARR_API_KEY", "root"),
     ("shows_dir", "SHOWS_DIR", "root"),
@@ -88,7 +87,6 @@ class Settings:
     debug: bool = False
     staging: Path | None = None
     force_refetch: bool = False
-    bench_dest: Path | None = None
     sonarr_url: str | None = None
     sonarr_api_key: str | None = None
 
@@ -302,7 +300,7 @@ def _clean_config_value(value: str | None) -> str | None:
 
 def render_config_toml(values: Mapping[str, str | None], *, cookies: str | None) -> str:
     lines: list[str] = []
-    root_order = ("bench_dest", "shows_dir", "sonarr_url", "sonarr_api_key")
+    root_order = ("shows_dir", "sonarr_url", "sonarr_api_key")
     for key in root_order:
         value = _clean_config_value(values.get(key))
         if value:
@@ -313,7 +311,7 @@ def render_config_toml(values: Mapping[str, str | None], *, cookies: str | None)
     if lines:
         lines.append("")
     fallback_items = [(key, _clean_config_value(values.get(key))) for key in FALLBACK_KEYS]
-    fallback_items = [(key, value) for key, value in fallback_items if value]
+    fallback_items = [(key, value) for key, value in fallback_items if value is not None]
     if fallback_items:
         lines.append("# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key.")
         lines.append(
@@ -321,7 +319,8 @@ def render_config_toml(values: Mapping[str, str | None], *, cookies: str | None)
         )
         lines.append("[fallback]")
         for key, value in fallback_items:
-            lines.append(f"{key} = {_toml_literal(value)}")
+            if value is not None:
+                lines.append(f"{key} = {_toml_literal(value)}")
     if not lines:
         lines.append("# Path fallbacks: used when youtube.yaml / dropout.yaml omit the key.")
         lines.append("[fallback]")
@@ -405,7 +404,6 @@ def resolve_settings(
     debug: bool = False,
     staging: str | None = None,
     force_refetch: bool = False,
-    bench_dest: str | None = None,
     sonarr_url: str | None = None,
     sonarr_api_key: str | None = None,
     manifest_library: str | None = None,
@@ -471,9 +469,6 @@ def resolve_settings(
         manifest_staging,
         file_values.get("staging"),
     )
-    resolved_bench = _pick(
-        bench_dest, env_value(environ, "BENCH_DEST"), file_values.get("bench_dest")
-    )
     resolved_sonarr_url = _pick(
         sonarr_url, env_value(environ, "SONARR_URL"), file_values.get("sonarr_url")
     )
@@ -534,7 +529,6 @@ def resolve_settings(
         debug=debug,
         staging=_expand_path(resolved_staging) if resolved_staging else None,
         force_refetch=force_refetch,
-        bench_dest=_expand_path(resolved_bench) if resolved_bench else None,
         sonarr_url=(resolved_sonarr_url.rstrip("/") or None) if resolved_sonarr_url else None,
         sonarr_api_key=resolved_sonarr_key,
     )

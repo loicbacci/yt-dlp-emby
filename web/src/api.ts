@@ -39,6 +39,17 @@ import {
 export { isMaskedSecret, slotDisplay, slotIsSet, slotText };
 export type { ConfigSlot, MaskedSecret };
 
+export function refreshJobRequest(
+  items: { platform: Source; slug: string }[],
+  expectedRevision?: string | null,
+): Extract<JobRequest, { kind: "refresh" }> {
+  return {
+    kind: "refresh",
+    items,
+    ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
+  };
+}
+
 export type {
   AppConfig,
   ConfigField,

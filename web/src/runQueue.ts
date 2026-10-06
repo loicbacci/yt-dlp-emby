@@ -660,7 +660,7 @@ export function episodeForId(
   for (const series of tree) {
     for (const season of series.seasons) {
       for (const ep of season.pending) {
-        if (ep.id === id) return { series, season, ep };
+        if (ep.id === id || ep.execution_id === id) return { series, season, ep };
       }
     }
   }
@@ -721,8 +721,7 @@ export function heroFrom(
         sub: `${hit.ep.code} ${hit.ep.title}`,
       };
     }
-    const code = progress.currentId.split("|")[2] ?? progress.currentId;
-    return { heading: "Downloading", sub: code };
+    return { heading: "Downloading", sub: "Episode in progress" };
   }
   if (run.phase === "downloading") {
     return { heading: "Downloading", sub: listingSeries ?? "Starting…" };

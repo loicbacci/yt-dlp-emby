@@ -6,6 +6,7 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from yt_dlp_emby.cache import (
     dropout_cache_path,
@@ -262,10 +263,36 @@ def _cached_listings(
     manifest: DropoutManifest,
     series: DropoutSeries,
     cache: dict[str, list[dict]] | None = None,
+    provider_listings: list[Mapping[str, Any]] | None = None,
 ) -> list[CachedListing]:
+    found: list[CachedListing] = []
+    if provider_listings is not None:
+        for row in provider_listings:
+            source_index = row.get("source_index")
+            season_index = row.get("season_index")
+            if not isinstance(source_index, int) or not isinstance(season_index, int):
+                continue
+            if not 0 <= source_index < len(series.sources):
+                continue
+            source = series.sources[source_index]
+            if not 0 <= season_index < len(source.seasons):
+                continue
+            raw_episode = row.get("episode")
+            if isinstance(raw_episode, bool) or not isinstance(raw_episode, int):
+                continue
+            episode = raw_episode
+            url = str(row.get("url") or "")
+            title = str(row.get("title") or "")
+            found.append(
+                (
+                    series.name,
+                    source.seasons[season_index],
+                    DropoutListing(url=url, title=title, dropout_episode=episode),
+                )
+            )
+        return found
     if cache is None:
         cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
-    found: list[CachedListing] = []
     for source in series.sources:
         for season in source.seasons:
             listings = dropout_listings_from_cache(cache.get(season_page_url(source, season)))
@@ -494,6 +521,7 @@ def check_series_report(
     *,
     series: DropoutSeries | None = None,
     fetch_fn: FetchFn | None = None,
+    cached_provider_listings: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, object]:
     if series is None:
         series = next(
@@ -504,13 +532,20 @@ def check_series_report(
         raise ConfigError("series not found")
     if series.tvdb_id is None:
         raise ConfigError("tvdb_id not set")
-    cache = load_dropout_season_cache(dropout_cache_path(manifest.path))
-    if not _cached_listings(manifest, series, cache):
+    cache = (
+        {}
+        if cached_provider_listings is not None
+        else load_dropout_season_cache(dropout_cache_path(manifest.path))
+    )
+    cached_listings = _cached_listings(
+        manifest, series, cache, provider_listings=cached_provider_listings
+    )
+    if not cached_listings:
         raise ConfigError("List seasons first")
     fetch = fetch_fn or _default_fetch(manifest, settings)
     sonarr_title, episodes = fetch(series.tvdb_id)
     catalog: list[SonarrRef] = [(series.name, episode) for episode in episodes]
-    listings = _cached_listings(manifest, series, cache)
+    listings = cached_listings
     on_disk = index_series_mkvs(series_folder(settings, series))
     disk_files = {series.name: set(on_disk)}
     planned_slots, planned_seasons, planned_titles = _collect_planned(series)

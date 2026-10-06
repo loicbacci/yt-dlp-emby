@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/preact-query";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { ApiError, apiClient } from "../api";
+import { ApiError, apiClient, refreshJobRequest } from "../api";
 import { logoutAndClear } from "../auth";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { Header } from "../components/Header";
@@ -23,6 +23,7 @@ import {
   filterSeries,
   missingStatusClass,
   missingStatusText,
+  seriesFreshness,
 } from "../seriesView";
 import { writeSearch } from "../urlState";
 
@@ -117,7 +118,7 @@ export function SeriesList() {
 
   const refreshMut = useMutation({
     mutationFn: (items: { platform: SeriesPlatform; slug: string }[]) =>
-      apiClient.startJob({ kind: "refresh", items, expected_revision: planQuery.data?.revision }),
+      apiClient.startJob(refreshJobRequest(items)),
     onMutate: () => {
       setActionError(null);
     },
@@ -395,8 +396,10 @@ function SeriesRow({
               {countLabel(row.season_count, "season", "seasons")}
             </span>
             {row.path ? <span class="show-row-path">{row.path}</span> : null}
-            {row.freshness === "stale" && <span class="run-meta">Refresh required</span>}
-            {row.freshness === "unavailable" && <span class="run-meta">Library unavailable</span>}
+            {seriesFreshness(row) === "stale" && <span class="run-meta">Refresh required</span>}
+            {seriesFreshness(row) === "unavailable" && (
+              <span class="run-meta">Library unavailable{row.error ? `: ${row.error}` : ""}</span>
+            )}
             {row.last_success_at && (
               <span class="run-meta">Last success {formatRelativeTime(row.last_success_at)}</span>
             )}

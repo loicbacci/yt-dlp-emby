@@ -664,7 +664,7 @@ def test_dropout_dry_run_does_not_download(tmp_path: Path) -> None:
     assert (tmp_path / "cache" / "dropout.json").is_file()
 
 
-def test_dropout_cleans_stale_tmp_on_launch(
+def test_dropout_does_not_clean_stale_tmp_without_selected_downloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     leftover = tmp_path / "yt-dlp-emby-dropout-killed"
@@ -684,7 +684,8 @@ def test_dropout_cleans_stale_tmp_on_launch(
         )
         == 0
     )
-    assert not leftover.exists()
+    assert leftover.exists()
+    assert (leftover / "partial.temp.mkv").is_file()
 
 
 def test_extract_dropout_season_omits_youtube_clients() -> None:

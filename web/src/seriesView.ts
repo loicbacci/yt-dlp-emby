@@ -17,6 +17,9 @@ export type SeriesSummary = {
   missing_count?: number | null;
   listings_complete?: boolean;
   freshness?: "ready" | "stale" | "unavailable";
+  status?: "ready" | "stale" | "unavailable";
+  stale?: boolean;
+  error?: string | null;
   last_attempt_at?: string | null;
   last_success_at?: string | null;
   poster_url?: string;
@@ -26,6 +29,14 @@ export type SeriesSummary = {
     sonarr: string | null;
   };
 };
+
+export function seriesFreshness(
+  row: Pick<SeriesSummary, "freshness" | "status" | "stale">,
+): "ready" | "stale" | "unavailable" | undefined {
+  if (row.freshness) return row.freshness;
+  if (row.status) return row.status;
+  return row.stale ? "stale" : undefined;
+}
 
 const slugPattern = /[^a-z0-9]+/g;
 

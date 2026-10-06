@@ -6,18 +6,13 @@ RUN corepack enable && corepack prepare pnpm@10.6.5 --activate
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
+COPY tests/fixtures/job-contract /repo/tests/fixtures/job-contract
 RUN pnpm build
 
 FROM ghcr.io/astral-sh/uv:0.8.15 AS uv
 
 FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
-# ffmpeg pin note: the remediation plan asks for ffmpeg=7:* (ffmpeg 7.x), but
-# Debian bookworm only ships ffmpeg 5.1.x (epoch 7:5.1.*). Exact patch (e.g.
-# 7:5.1.6-0+deb12u1) drifts with point releases, so an exact `=` pin would rot;
-# keep the distro package unpinned for reproducibility-via-digest (base image
-# digest above is pinned). For ffmpeg 7, switch both stages to trixie-slim.
-# tini/libatomic1/ca-certificates intentionally unpinned (small, stable, no ABI
-# risk worth an exact pin).
+# Bookworm supplies ffmpeg 5.1; the pinned base fixes the distribution version.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \

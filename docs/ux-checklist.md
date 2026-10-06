@@ -1,99 +1,52 @@
-# UX checklist
+# Web application acceptance checklist
 
-Phase 5–7 sign-off. Pages: Dashboard, Shows list, Show detail, Settings, Login, Setup.
+Use this checklist for browser verification after automated checks pass. Empty
+boxes indicate checks still to perform; implementation or a passing unit test is
+not a claim of visual/browser sign-off.
 
-Legend: `[x]` = verified in code (logic present; `pnpm --dir web typecheck/test/lint` green).
-Manual browser checks live in their own section at the bottom and are NOT signed off.
+## Refresh and availability
 
-## Loading
-- [x] Dashboard pending plan shows queue skeleton, not "No queue yet"
-- [x] Settings shows a skeleton until first load settles (partial render after)
-- [x] SessionGate spinner while the session check runs
-- [x] Poster loading background while the image loads (plain bg, no shimmer animation)
-- [x] RemapModal Sonarr loading indicator, not instant empty
-- [x] RefreshSplit spinner while refreshing
-- [x] pendingUrl Discovering spinner
+- [ ] Shows, show detail, and individual source offer a plain Refresh action.
+- [ ] Starting Refresh shows progress rather than immediately reading a final result.
+- [ ] Show filtering/selection captures the intended batch when the job starts.
+- [ ] A batch failure shows successful and unsuccessful targets individually.
+- [ ] Sonarr Check is a separate action.
+- [ ] Last-success time remains unchanged after a failed attempt.
+- [ ] Unavailable NAS and failed scans show unknown counts and actionable errors.
+- [ ] Missing show folder is distinct from missing library root.
+- [ ] Newly discovered seasons are disabled and custom mappings survive refresh.
 
-## Empty
-- [x] Dashboard search miss copy
-- [x] Shows list "No series yet" + Add show CTA
-- [x] Show detail "No playlists yet"
-- [x] Library no seasons
-- [x] EpisodeTable empty copy (never silent null)
-- [x] LogViewer "No output yet"
+## Jobs and Downloads
 
-## Error
-- [x] Retry cards for plan/run/list/detail/config-sections
-- [x] refreshItems / refreshMetadata try/catch + per-item errors surfaced
-- [x] ManifestEditor clears error on change (stale errors never block Save)
-- [x] `role=alert` on async errors; live-while-typing hints stay silent by design
-- [x] checkError rendered as error, not hint
-- [x] only_episodes guard renders adjacent to its episode row
-- [x] dest parse errors render inline under the Emby season input
-- [x] TvdbSkip manual Add strictly digits, disabled unless both parse, inline error
-- [x] Settings deep link on cookie/path failures
+- [ ] Navigation and reload rediscover the active job and its progress.
+- [ ] Offline/hidden polling pauses and resumes on return.
+- [ ] A browser polling failure does not claim the server job failed.
+- [ ] Cancel shows Stopping until descendants have exited.
+- [ ] Interrupted/failed work offers explicit Retry and preserves history/logs.
+- [ ] Completed items are not inadvertently downloaded again by Retry.
+- [ ] Empty selection cannot start execution.
+- [ ] Stale selection/plan asks for review rather than executing changed actions.
+- [ ] Replacement option accurately describes Dropout semantics.
+- [ ] Progress/result/log views remain readable during batch work.
 
-## Success / stop
-- [x] Toasts stack, auto-dismiss 4s, status/alert roles
-- [x] document.title Downloading n/m / Done
-- [x] Optional Notification opt-in wired (delivery needs a manual run, see below)
-- [x] Stop always confirms, Stopping… label, errors toast + inline
+## Forms and configuration
 
-## Destructive
-- [x] Confirm delete / risky remove / large download (25+) / stop
-- [x] Immediate + toast for skip/remap/enable/title/dest/tvdb_skip/source-add/non-risky-remove
-- [x] ConfirmModal pending + focus Cancel when danger
-- [x] Destructive-action decision comments in code (SeriesDetail/SeriesList/Dashboard)
+- [ ] Mapping saves show pending state and use confirmed server results.
+- [ ] Failed saves preserve drafts and show inline errors.
+- [ ] Advanced YAML remains available and comments/import boundaries survive saves.
+- [ ] Relevant edits are blocked while their inputs are in use by a job.
+- [ ] Cookie/path/dependency failures provide useful settings or diagnostics links.
+- [ ] Password fields retain autocomplete and show/hide controls.
+- [ ] Setup/login/logout and password changes continue to work.
 
-## Forms
-- [x] URL validation (http(s) + platform match + duplicate), Enter-to-save form
-- [x] dest/remap/tvdb strict digits with inline errors
-- [x] YAML root validateManifest before save + live inline syntax hint
-- [x] Import saves rely on server-side write_import parsing (validate endpoint is root-schema-only; documented in code)
-- [x] Cookies Netscape format + 1MB cap, labeled file input, accept=".txt"
-- [x] Path hints on config + platform tabs; Setup 8+ chars / must-match hints
-- [x] Env-locked keys omitted from putConfig/putPlatform with lock display
-- [x] sonarr_api_key write-only (masked last-4, set/unset states); `?reveal=1` used only to preserve on save and to ping
+## Layout and accessibility
 
-## Dirty / selection / extra
-- [x] beforeunload + unsaved modal (Settings tabs/cookies/logout, Detail, YAML, RemapModal)
-- [x] dirtyConfig/dirtyPlatform tracked separately
-- [x] SeriesDetail logout/nav guarded
-- [x] seriesUiStore LRU 50 + folderView persist, shape-validated, debounced
-- [x] Selection tri-state footer + Clear; empty-untouched=all vs explicit-cleared=none
-- [x] LibrarySeasons Set open + conflict badge
-- [x] CreateSeriesModal real radios, inline slug/tvdb errors
-- [x] LogViewer parsed spans stored once, cap 2000
-- [x] Poster resets failedSrc/loaded on src change
-- [x] Create missing folders toggle next to Force
-- [x] Deep-link tab/folderView/query/selection/open folds (sel/open/seasons capped for URL length)
-- [x] Dashboard rows clickable to detail (name link; poster/twist still toggles)
-- [x] Offline banner on all pages + friendly mutation errors; SSE/polling pause offline
-- [x] Password show/hide, autocomplete, busy disable
-- [x] Change-password form POST /api/password
-- [x] Onboarding checklist banner with deep links; refresh blocked with hint when paths unset
-- [x] Listing copy single-sourced (`listingLabel`: "Listing YouTube", bare "Listing…" when unknown)
-
-## Visual / a11y (code present; visual proof is manual, see below)
-- [x] Breakpoints 720/480, episode-table scroll wrapper, toolbar wrap
-- [x] Compact 2-row phone header (brand+actions row, scrollable nav row)
-- [x] run-bar `position: fixed` + safe-area + centered max-width inner
-- [x] Modals trap focus + Escape + return focus; menus are button groups with focus return
-- [x] Roving tabindex on editor tabs / map-switch; real radios for platform
-- [x] Light/dark token values (darker ok/warn/danger, white-on-accent fills)
-- [x] color-mix fallbacks for banner/validation/chips/pills/badges/sections/poster/danger-hover
-- [x] Skip-to-content, `<main>` landmarks, progressbar semantics, `role=status` skeletons
-- [x] prefers-reduced-motion global; `Intl.RelativeTimeFormat`
-- [x] PWA chrome only (theme-color, manifest, favicon, apple-touch-icon, noscript); no service worker
-- [x] Mockups directional-only; chip order All / YouTube / Dropout; light/360px/empty/error variants
-- [x] `.node-version` (root + web) and `tsconfig.node.json` covered by `pnpm typecheck`
-
-## Manual browser sign-off (NOT performed — do not treat the above as visual QA)
-- [ ] 360px: no horizontal overflow on Downloads / Shows / Detail / Settings
-- [ ] Keyboard-only: full flows for modals, tabs, radios, menus, queue checkboxes
-- [ ] Light and dark: badges, buttons, chips, toasts readable (AA spot-check)
-- [ ] Notification opt-in actually delivers a "Download done" notification
-- [ ] color-mix fallbacks render sanely in a browser without color-mix
-- [ ] 44px targets spot-checked by touch; phone header 2-row layout confirmed
-- [ ] SSE reconnect + expiry toast observed against a live server
-- [ ] Offline banner + paused polling observed with network disabled
+- [ ] 360px: no horizontal page overflow on Downloads, Shows, Detail, or Settings.
+- [ ] Episode tables scroll inside their container on small screens.
+- [ ] Keyboard-only: selection, cancel/retry, modals, tabs, and source controls work.
+- [ ] Inputs and episode controls have associated accessible labels.
+- [ ] Modals trap focus, close with Escape, and return focus appropriately.
+- [ ] Light/dark badges, buttons, errors, and toasts are readable.
+- [ ] Loading, empty, error, stale, unavailable, and complete states are distinguishable.
+- [ ] Reduced motion and live progress/error announcements remain appropriate.
+- [ ] Touch targets are usable and navigation wraps/scrolls predictably.
