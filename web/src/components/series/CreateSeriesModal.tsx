@@ -106,6 +106,7 @@ export function CreateSeriesModal({
           <span class="settings-label">Title *</span>
           <input
             type="text"
+            aria-required="true"
             value={title}
             autoFocus
             onInput={(e) => setTitle((e.currentTarget as HTMLInputElement).value)}
@@ -114,13 +115,19 @@ export function CreateSeriesModal({
         {nameError && <div class="validation-error">{nameError}</div>}
         <div class="settings-field">
           <span class="settings-label">Platform *</span>
-          <div role="radiogroup" class="series-toolbar" aria-label="Platform">
+          <div
+            role="radiogroup"
+            class="series-toolbar"
+            aria-label="Platform"
+            aria-required={mode === "edit" ? undefined : "true"}
+          >
             {(["youtube", "dropout"] as Source[]).map((item) => (
               <label key={item} class={platform === item ? "filter-chip active" : "filter-chip"}>
                 <input
                   type="radio"
                   name="series-platform"
                   value={item}
+                  aria-required={mode === "edit" ? undefined : "true"}
                   checked={platform === item}
                   disabled={mode === "edit"}
                   onChange={() => setPlatform(item)}
@@ -151,6 +158,7 @@ export function CreateSeriesModal({
           <span class="settings-label">Folder *</span>
           <input
             type="text"
+            aria-required="true"
             value={path}
             onInput={(e) => {
               setPathTouched(true);

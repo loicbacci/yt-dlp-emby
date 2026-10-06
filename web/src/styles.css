@@ -529,6 +529,20 @@ a.btn-danger {
   color: var(--text-muted);
 }
 
+.onboarding-steps a {
+  color: var(--text);
+  text-decoration-color: color-mix(in srgb, var(--warn) 70%, transparent);
+  text-underline-offset: 2px;
+}
+
+.onboarding-steps a:hover {
+  color: var(--accent);
+}
+
+.onboarding-steps a .settings-hint {
+  color: var(--text-muted);
+}
+
 .validation-error {
   margin-top: 8px;
   padding: 8px 10px;
