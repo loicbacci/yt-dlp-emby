@@ -364,6 +364,17 @@ export function Dashboard() {
       : runQuery.error instanceof Error
         ? runQuery.error.message
         : null;
+  const seriesLoadError = posterQuery.error instanceof Error ? posterQuery.error.message : null;
+  const refreshTargets = posterQuery.data?.series ?? [];
+  const noRefreshTargets =
+    !posterQuery.isPending && !seriesLoadError && refreshTargets.length === 0;
+  const refreshDisabledReason = setupPathsMissing
+    ? "Set library paths in Settings first"
+    : seriesLoadError
+      ? "Retry loading shows before refreshing"
+      : noRefreshTargets
+        ? "Add a show first"
+        : undefined;
 
   const searchMiss =
     Boolean(query.trim()) && visible.length === 0 && upToDate.length === 0 && hasManifest;
@@ -403,6 +414,18 @@ export function Dashboard() {
                   void runQuery.refetch();
                   void planQuery.refetch();
                 }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {seriesLoadError && (
+            <div class="error-card" role="alert">
+              <p>Couldn't load shows: {seriesLoadError}</p>
+              <button
+                type="button"
+                class="btn-secondary"
+                onClick={() => void posterQuery.refetch()}
               >
                 Retry
               </button>
@@ -522,16 +545,19 @@ export function Dashboard() {
                       type="button"
                       class="btn-secondary"
                       disabled={
-                        busy || startPlanMut.isPending || setupPathsMissing || posterQuery.isPending
+                        busy ||
+                        startPlanMut.isPending ||
+                        setupPathsMissing ||
+                        posterQuery.isPending ||
+                        Boolean(seriesLoadError) ||
+                        noRefreshTargets
                       }
-                      title={setupPathsMissing ? "Set library paths in Settings first" : undefined}
+                      title={refreshDisabledReason}
                       onClick={() => {
                         setError(null);
+                        if (!refreshTargets.length) return;
                         startPlanMut.mutate(
-                          (posterQuery.data?.series ?? []).map((row) => ({
-                            platform: row.platform,
-                            slug: row.slug,
-                          })),
+                          refreshTargets.map(({ platform, slug }) => ({ platform, slug })),
                         );
                       }}
                     >
