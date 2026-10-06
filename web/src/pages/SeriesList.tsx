@@ -111,6 +111,9 @@ export function SeriesList() {
   }, [query, platform]);
 
   const filtered = filterSeries(rows, { query, platform });
+  const sonarrItems = filtered
+    .filter((row) => row.platform === "dropout" && row.tvdb_id != null)
+    .map(({ platform, slug }) => ({ platform, slug }));
   const listingsPending = filtered.some(
     (row) => row.platform === "dropout" && row.listings_complete === false,
   );
@@ -196,21 +199,21 @@ export function SeriesList() {
                 onRefresh={() =>
                   void refreshItems(filtered.map(({ platform, slug }) => ({ platform, slug })))
                 }
-                onSonarrCheck={() => {
-                  const items = filtered
-                    .filter((row) => row.platform === "dropout" && row.tvdb_id != null)
-                    .map(({ platform, slug }) => ({ platform, slug }));
-                  if (items.length && !activeJob) {
-                    void apiClient
-                      .startJob({ kind: "check", items })
-                      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }))
-                      .catch((err) =>
-                        setActionError(
-                          err instanceof Error ? err.message : "Sonarr check failed to start",
-                        ),
-                      );
-                  }
-                }}
+                onSonarrCheck={
+                  sonarrItems.length
+                    ? () => {
+                        if (activeJob) return;
+                        void apiClient
+                          .startJob({ kind: "check", items: sonarrItems })
+                          .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }))
+                          .catch((err) =>
+                            setActionError(
+                              err instanceof Error ? err.message : "Sonarr check failed to start",
+                            ),
+                          );
+                      }
+                    : undefined
+                }
               />
               <button
                 type="button"
