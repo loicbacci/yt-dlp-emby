@@ -144,6 +144,17 @@ export function SeriesDetail() {
     queryFn: () => apiClient.getConfig(),
     staleTime: 60 * 1000,
   });
+  const platformSettingsQuery = useQuery({
+    queryKey: queryKeys.platform(platform),
+    queryFn: () => apiClient.getPlatform(platform),
+    enabled: platform === "dropout",
+    staleTime: 60 * 1000,
+  });
+  const cookiesQuery = useQuery({
+    queryKey: queryKeys.cookies(),
+    queryFn: () => apiClient.getCookies(),
+    staleTime: 60 * 1000,
+  });
   const sonarrMetaQuery = useQuery({
     queryKey: queryKeys.sonarrEpisodes(detail?.tvdb_id ?? 0),
     queryFn: () => apiClient.getSonarrEpisodes(detail?.tvdb_id as number),
@@ -184,6 +195,10 @@ export function SeriesDetail() {
     [catalog, sonarrMetaQuery.data?.episodes, onDisk, detail?.tvdb_skip, diskReady],
   );
   const sonarrUrl = effectiveConfigValue(configQuery.data?.fields.sonarr_url);
+  const dropoutCookiesMissing =
+    platform === "dropout" &&
+    !cookiesQuery.data?.env_set &&
+    platformSettingsQuery.data?.cookie_jar.usable === false;
   const sonarrHref =
     detail?.tvdb_id != null && sonarrUrl
       ? sonarrSeriesUrl(sonarrUrl, sonarrMetaQuery.data?.title_slug, detail.tvdb_id)
@@ -1024,6 +1039,19 @@ export function SeriesDetail() {
                     </div>
                   )}
                 </div>
+                {dropoutCookiesMissing && (
+                  <div class="banner banner-warn source-cookie-status" role="status">
+                    <strong>Dropout cookies missing</strong>
+                    <a
+                      class="btn-ghost"
+                      href="/settings?tab=dropout"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Add cookies
+                    </a>
+                  </div>
+                )}
                 <form
                   class="url-add"
                   onSubmit={(e) => {

@@ -11,6 +11,7 @@ export const queryKeys = {
   missingBatch: (keys: string[]) => ["series-missing-batch", ...keys] as const,
   sonarrEpisodes: (tvdbId: number) => ["sonarr-episodes", tvdbId] as const,
   config: () => ["app-config"] as const,
+  platform: (kind: string) => ["platform-settings", kind] as const,
   cookies: () => ["cookies"] as const,
   plan: (force?: boolean, create?: boolean) =>
     force === undefined && create === undefined

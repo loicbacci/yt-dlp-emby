@@ -506,6 +506,17 @@ a.btn-danger {
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
+.source-cookie-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-cookie-status strong {
+  display: inline;
+}
+
 .banner-list {
   margin: 6px 0 0;
   padding-left: 1.2em;
