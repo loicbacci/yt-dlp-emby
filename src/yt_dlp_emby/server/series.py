@@ -196,12 +196,54 @@ def _try_patch_plan(
     if environ is None:
         return
     try:
-        from yt_dlp_emby.server.plan_series import patch_series_plan
+        from yt_dlp_emby.server.plan_series import patch_series_plan, plan_path
 
+        if not plan_path(data_dir).is_file():
+            return
         patch_series_plan(data_dir, platform, slug, environ=environ)
     except Exception as exc:
         logger.debug("plan patch for %s|%s failed: %s", platform, slug, exc)
         return
+
+
+def _plan_input_signature(series: DropoutSeries | YoutubeSeries) -> tuple[Any, ...]:
+    """Fields that affect queued episodes or their destination mapping.
+
+    Display-only labels deliberately stay out of this signature, so editing a
+    season or episode title does not rerun yt-dlp just to update the queue.
+    """
+    if isinstance(series, DropoutSeries):
+        sources = tuple(
+            (
+                source.url,
+                tuple(
+                    (
+                        season.dropout,
+                        season.url,
+                        season.to_season,
+                        season.only_episodes,
+                        season.enabled,
+                        tuple(
+                            (
+                                remap.dropout_episode,
+                                remap.to_season,
+                                remap.to_episode,
+                                remap.skip,
+                            )
+                            for remap in season.remap
+                        ),
+                    )
+                    for season in source.seasons
+                ),
+            )
+            for source in series.sources
+        )
+        return (series.name, series.path, series.tvdb_skip, sources)
+    playlists = tuple(
+        (playlist.url, playlist.season, playlist.enabled, playlist.skip)
+        for playlist in series.playlists
+    )
+    return (series.name, series.path, playlists)
 
 
 def resolve_shows_dir(data_dir: Path, environ: Mapping[str, str]) -> Path:
@@ -1798,6 +1840,8 @@ def put_series(
         series = _detail_to_youtube(body)
     _check_rename_conflicts(data_dir, loc, old, series)
     _save_locator_series(data_dir, loc, series)
+    if _plan_input_signature(old) != _plan_input_signature(series):
+        _try_patch_plan(data_dir, platform, slug, environ)
     return get_series(data_dir, platform, slug)
 
 
@@ -1865,6 +1909,8 @@ def put_series_yaml(
         _validate_only_episodes(old, series)
     _check_rename_conflicts(data_dir, loc, old, series)
     _save_locator_series(data_dir, loc, series)
+    if _plan_input_signature(old) != _plan_input_signature(series):
+        _try_patch_plan(data_dir, platform, slug, environ)
     entries = (
         _iter_dropout_entries(data_dir)
         if platform == "dropout"

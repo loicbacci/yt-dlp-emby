@@ -63,7 +63,12 @@ from yt_dlp_emby.server.manifests import (
 )
 from yt_dlp_emby.server.plan_series import load_live_plan
 from yt_dlp_emby.server.refresh_jobs import RefreshJobStore
-from yt_dlp_emby.server.runner import ITEM_ID_PATTERN, CommandFactory, RunManager
+from yt_dlp_emby.server.runner import (
+    ITEM_ID_PATTERN,
+    CommandFactory,
+    InvalidPlanFileError,
+    RunManager,
+)
 from yt_dlp_emby.server.series import (
     AmbiguousSlugError,
     SeriesExistsError,
@@ -1803,9 +1808,17 @@ def create_app(
     @app.get("/api/plans/latest", tags=["plans"], status_code=200, response_model=dict[str, Any])
     async def get_plans_latest(request: Request) -> dict[str, Any]:
         require_auth(request)
-        plan = await asyncio.to_thread(
-            load_live_plan, request.app.state.data_dir, request.app.state.environ
-        )
+        try:
+            plan = await asyncio.to_thread(
+                load_live_plan, request.app.state.data_dir, request.app.state.environ
+            )
+        except InvalidPlanFileError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": f"{exc}. Refresh the queue to rebuild it.",
+                },
+            ) from exc
         if plan is None:
             raise HTTPException(status_code=404, detail={"error": "no plan"})
         return plan
@@ -1850,6 +1863,11 @@ def create_app(
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except InvalidPlanFileError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": f"{exc}. Refresh the queue to rebuild it."},
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return await asyncio.to_thread(runner.snapshot)

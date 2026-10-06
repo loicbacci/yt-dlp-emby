@@ -153,6 +153,21 @@ def test_get_plan_ok(authed_client, tmp_path) -> None:
     assert "sources" in body
 
 
+def test_corrupt_plan_is_reported_without_breaking_run_status(authed_client, tmp_path) -> None:
+    client = authed_client
+    (tmp_path / "plan.json").write_text("{invalid json", encoding="utf-8")
+
+    plan = client.get("/api/runs/plan")
+    assert plan.status_code == 422
+    assert "Refresh the queue to rebuild it" in plan.json()["error"]
+
+    # Run state remains available, and downloads reject the corrupt queue
+    # with the same recoverable message rather than a server traceback.
+    assert client.get("/api/runs").status_code == 200
+    download = client.post("/api/runs", json={"ids": None})
+    assert download.status_code == 422
+
+
 async def test_http_start_stop_fake_child(tmp_path) -> None:
     _youtube_manifest(tmp_path)
     _write_plan(tmp_path)

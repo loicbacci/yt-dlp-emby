@@ -1024,6 +1024,30 @@ def test_put_skip_patches_that_slug_plan_items(authed_client, tmp_path, monkeypa
     assert [row["id"] for row in plan["sources"]["dropout"]["items"]] == ["dropout|other|S02E01"]
 
 
+def test_put_title_change_does_not_patch_series_plan(authed_client, tmp_path, monkeypatch) -> None:
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "show.yaml").write_text(
+        "series:\n  - name: Show\n    path: Show\n    url: https://watch.dropout.tv/x\n"
+        "    seasons:\n      - dropout: 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        "imports:\n  - shows/show.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    _seed_two_show_plan(tmp_path)
+    patched = _patch_only_requested_slug(monkeypatch)
+    client = authed_client
+    detail = client.get("/api/series/dropout/show").json()
+    detail["sources"][0]["seasons"][0]["title"] = "A custom season name"
+
+    saved = client.put("/api/series/dropout/show", json=detail)
+
+    assert saved.status_code == 200, saved.text
+    assert patched == []
+
+
 def test_series_yaml_roundtrip(authed_client, tmp_path) -> None:
     client = authed_client
     created = client.post(

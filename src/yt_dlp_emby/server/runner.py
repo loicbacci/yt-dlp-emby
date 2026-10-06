@@ -260,11 +260,28 @@ def plan_pending_count(plan: dict[str, Any]) -> int:
     return total
 
 
+class InvalidPlanFileError(ValueError):
+    """The saved queue exists but cannot be safely consumed."""
+
+
 def load_plan_file(data_dir: Path) -> dict[str, Any] | None:
     path = data_dir / PLAN_NAME
     if not path.is_file():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise InvalidPlanFileError("Saved queue is not valid JSON") from exc
+    if not isinstance(plan, dict) or not isinstance(plan.get("sources"), dict):
+        raise InvalidPlanFileError("Saved queue has an invalid structure")
+    for source, block in plan["sources"].items():
+        if not isinstance(block, dict):
+            raise InvalidPlanFileError(f"Saved queue has an invalid {source} source")
+        for key in ("items", "seasons"):
+            value = block.get(key, [])
+            if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                raise InvalidPlanFileError(f"Saved queue has invalid {source} {key}")
+    return plan
 
 
 class RunManager:
@@ -324,7 +341,13 @@ class RunManager:
     def snapshot(self) -> dict[str, Any]:
         from yt_dlp_emby.server.plan_series import load_live_plan
 
-        plan = load_live_plan(self.data_dir, self._environ)
+        try:
+            plan = load_live_plan(self.data_dir, self._environ)
+        except InvalidPlanFileError:
+            # Run state is independent of the saved queue. A damaged queue
+            # should be reported by the plan endpoint without breaking status
+            # polling, logs, or the ability to refresh the queue.
+            plan = None
         plan_summary: dict[str, Any] | None = None
         if plan is not None:
             plan_summary = {
