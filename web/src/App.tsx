@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/preact-query";
+import type { ComponentChildren } from "preact";
 import { LocationProvider, Route, Router, useLocation } from "preact-iso";
+import { Component } from "preact/compat";
 import { useEffect, useState } from "preact/hooks";
 import { apiClient, routeForSession } from "./api";
 import { logoutAndClear } from "./auth";
@@ -75,6 +77,39 @@ function RedirectSeries() {
   return <div class="shell" />;
 }
 
+type AppErrorBoundaryState = { error: Error | null };
+
+class AppErrorBoundary extends Component<{ children: ComponentChildren }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    return {
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+
+  componentDidCatch(error: Error, info: { componentStack?: string }) {
+    console.error("App render failed", error, info.componentStack);
+  }
+
+  render(props: { children: ComponentChildren }, state: AppErrorBoundaryState) {
+    if (state.error) {
+      return (
+        <div class="shell">
+          <main id="main" class="error-card" role="alert">
+            <h1>This page couldn’t load</h1>
+            <p>{state.error.message || "An unexpected interface error occurred."}</p>
+            <button type="button" class="btn-secondary" onClick={() => window.location.reload()}>
+              Reload page
+            </button>
+          </main>
+        </div>
+      );
+    }
+    return props.children;
+  }
+}
+
 function SessionGate() {
   const { path, route } = useLocation();
   const [ready, setReady] = useState(false);
@@ -142,17 +177,20 @@ function SessionGate() {
   }
 
   return (
-    <Router>
+    <>
+      {/* A pathless child inside preact-iso's Router matches `/` and shadows Dashboard. */}
       <RefreshRecovery />
-      <Route path="/setup" component={Setup} />
-      <Route path="/login" component={Login} />
-      <Route path="/settings" component={Settings} />
-      <Route path="/series/:platform/:slug" component={SeriesDetail} />
-      <Route path="/series" component={SeriesList} />
-      <Route path="/series/*" component={RedirectSeries} />
-      <Route path="/" component={Dashboard} />
-      <Route default component={NotFound} />
-    </Router>
+      <Router>
+        <Route path="/setup" component={Setup} />
+        <Route path="/login" component={Login} />
+        <Route path="/settings" component={Settings} />
+        <Route path="/series/:platform/:slug" component={SeriesDetail} />
+        <Route path="/series" component={SeriesList} />
+        <Route path="/series/*" component={RedirectSeries} />
+        <Route path="/" component={Dashboard} />
+        <Route default component={NotFound} />
+      </Router>
+    </>
   );
 }
 
@@ -162,9 +200,11 @@ export function App() {
       <a class="skip-link" href="#main">
         Skip to content
       </a>
-      <NavigatorBridge />
-      <SessionGate />
-      <ToastHost />
+      <AppErrorBoundary>
+        <NavigatorBridge />
+        <SessionGate />
+        <ToastHost />
+      </AppErrorBoundary>
     </LocationProvider>
   );
 }
