@@ -5,10 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import yaml
 
@@ -60,9 +58,6 @@ from yt_dlp_emby.youtube_manifest import (
 PLATFORMS = frozenset({"youtube", "dropout"})
 
 logger = logging.getLogger("yt_dlp_emby.server")
-
-# Per-series cap for batch refresh: one slow listing must not stall the rest.
-REFRESH_ITEM_TIMEOUT_SECONDS = 60.0
 
 # Poster cache freshness: after this age the cached file is refetched (the
 # stale bytes are still served if the refetch fails).
@@ -1128,7 +1123,6 @@ def add_series_source(
     detail = get_series(data_dir, platform, slug)
     if source_error and detail.get("sources"):
         detail["sources"][-1]["error"] = source_error
-    _try_patch_plan(data_dir, platform, slug, environ)
     return detail
 
 
@@ -1167,7 +1161,6 @@ def delete_series_source(
             tvdb_id=series.tvdb_id,
         )
     _save_locator_series(data_dir, loc, series)
-    _try_patch_plan(data_dir, platform, slug, environ)
     return get_series(data_dir, platform, slug)
 
 
@@ -1607,22 +1600,30 @@ def refresh_series_batch(
     *,
     environ: Mapping[str, str],
     parts: list[str] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
-    for item in items:
+
+    def report(payload: dict[str, Any]) -> None:
+        if on_progress is not None:
+            on_progress(payload)
+
+    for index, item in enumerate(items):
         platform = str(item.get("platform") or "")
         slug = str(item.get("slug") or "")
+        current = {"platform": platform, "slug": slug}
+        report({"completed": index, "total": len(items), "current": current})
         if platform not in PLATFORMS or not slug:
-            results.append({"platform": platform, "slug": slug, "error": "invalid item"})
+            result: dict[str, Any] = {
+                "platform": platform,
+                "slug": slug,
+                "error": "invalid item",
+            }
+            results.append(result)
+            report({"completed": index + 1, "total": len(items), "current": None, "last": result})
             continue
         try:
-            # No `with` block: Executor.__exit__ waits for workers, which would
-            # defeat the timeout. On timeout the worker is detached (it still
-            # finishes on its own socket timeouts); at most MAX_REFRESH_ITEMS
-            # of them can pile up per batch.
-            pool = ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(
-                refresh_series_metadata,
+            error = refresh_series_metadata(
                 data_dir,
                 platform,
                 slug,
@@ -1630,30 +1631,22 @@ def refresh_series_batch(
                 force=True,
                 parts=parts,
             )
-            try:
-                error = future.result(timeout=REFRESH_ITEM_TIMEOUT_SECONDS)
-            except FuturesTimeoutError:
-                pool.shutdown(wait=False, cancel_futures=True)
-                error = (
-                    f"refresh timed out after {REFRESH_ITEM_TIMEOUT_SECONDS:g}s "
-                    f"for {platform}|{slug}"
-                )
-            else:
-                pool.shutdown(wait=True)
             if error:
                 error = sanitize_discovery_message(error, limit=500)
-            results.append({"platform": platform, "slug": slug, "error": error})
+            result = {"platform": platform, "slug": slug, "error": error}
+            results.append(result)
         except KeyError:
-            results.append({"platform": platform, "slug": slug, "error": "not found"})
+            result = {"platform": platform, "slug": slug, "error": "not found"}
+            results.append(result)
         except Exception as exc:
             logger.debug("refresh failed for %s|%s: %s", platform, slug, exc)
-            results.append(
-                {
-                    "platform": platform,
-                    "slug": slug,
-                    "error": sanitize_discovery_message(str(exc), limit=500),
-                }
-            )
+            result = {
+                "platform": platform,
+                "slug": slug,
+                "error": sanitize_discovery_message(str(exc), limit=500),
+            }
+            results.append(result)
+        report({"completed": index + 1, "total": len(items), "current": None, "last": result})
     return {"ok": True, "results": results}
 
 
@@ -1665,6 +1658,52 @@ def series_disk_status(
     return {
         "on_disk": [{"season": season, "episode": episode} for season, episode in sorted(on_disk)]
     }
+
+
+def series_disk_slot_status(
+    data_dir: Path,
+    platform: str,
+    slug: str,
+    slots: list[dict[str, int]],
+    *,
+    environ: Mapping[str, str],
+) -> dict[str, Any]:
+    """Check selected destination slots without indexing the whole series."""
+    from yt_dlp_emby.config import resolve_settings
+    from yt_dlp_emby.library import index_episode_mkvs, season_dir
+
+    detail = get_series(data_dir, platform, slug)
+    manifest, _ = _load_root_yaml(data_dir, platform)
+    settings = resolve_settings(
+        environ=environ,
+        cwd=data_dir,
+        manifest_library=str(manifest.get("library"))
+        if manifest and manifest.get("library")
+        else None,
+        manifest_old_dir=str(manifest.get("old_dir"))
+        if manifest and manifest.get("old_dir")
+        else None,
+        use_default_config=(data_dir / "config.toml").is_file(),
+        auto_cookies=False,
+        require_paths=False,
+        require_ffmpeg=False,
+    )
+    folder = series_library_path(settings.library, str(detail.get("path") or ""))
+    indexed: dict[int, dict[tuple[int, int], Path]] = {}
+    results = []
+    for slot in slots:
+        season = int(slot["season"])
+        episode = int(slot["episode"])
+        if season not in indexed:
+            indexed[season] = index_episode_mkvs(season_dir(folder, season))
+        results.append(
+            {
+                "season": season,
+                "episode": episode,
+                "on_disk": (season, episode) in indexed[season],
+            }
+        )
+    return {"slots": results}
 
 
 def list_series_episodes(
@@ -1685,10 +1724,6 @@ def list_series_episodes(
     if season_id < 0 or season_id >= len(seasons):
         raise KeyError("season")
     season_json = seasons[season_id]
-    on_disk = _series_on_disk(data_dir, platform, str(detail.get("path") or ""), environ)
-    on_disk_payload = [
-        {"season": season, "episode": episode} for season, episode in sorted(on_disk)
-    ]
     if platform == "dropout":
         _, series = _find_locator(data_dir, platform, slug)
         assert isinstance(series, DropoutSeries)
@@ -1702,15 +1737,13 @@ def list_series_episodes(
             listings = extract_dropout_season(url, cookiefile=cookie)
             _store_dropout_listings(data_dir, series, source_id, season_obj, listings)
         return {
-            "episodes": dropout_episode_rows(season_obj, listings, on_disk=on_disk),
-            "on_disk": on_disk_payload,
+            "episodes": dropout_episode_rows(season_obj, listings),
         }
     cookie = str(_cookie_path_for_platform(data_dir, platform, environ))
     url = str(source.get("url") or season_json.get("url") or "")
     playlist = extract_playlist(url, cookiefile=cookie)
     return {
-        "episodes": youtube_episode_rows(season_json, playlist, on_disk=on_disk),
-        "on_disk": on_disk_payload,
+        "episodes": youtube_episode_rows(season_json, playlist),
     }
 
 
@@ -1765,7 +1798,6 @@ def put_series(
         series = _detail_to_youtube(body)
     _check_rename_conflicts(data_dir, loc, old, series)
     _save_locator_series(data_dir, loc, series)
-    _try_patch_plan(data_dir, platform, slug, environ)
     return get_series(data_dir, platform, slug)
 
 
@@ -1785,11 +1817,14 @@ def _dumps_yaml(data: Any) -> str:
 
 def get_series_yaml(data_dir: Path, platform: str, slug: str) -> dict[str, Any]:
     loc, series = _find_locator(data_dir, platform, slug)
-    item = (
-        _dropout_series_to_yaml(series)
-        if platform == "dropout"
-        else _youtube_series_to_yaml(series)
-    )
+    if platform == "dropout":
+        if not isinstance(series, DropoutSeries):
+            raise ValueError("series platform mismatch")
+        item = _dropout_series_to_yaml(series)
+    else:
+        if not isinstance(series, YoutubeSeries):
+            raise ValueError("series platform mismatch")
+        item = _youtube_series_to_yaml(series)
     return {"text": _dumps_yaml(item), "file": loc.file}
 
 
@@ -1830,7 +1865,6 @@ def put_series_yaml(
         _validate_only_episodes(old, series)
     _check_rename_conflicts(data_dir, loc, old, series)
     _save_locator_series(data_dir, loc, series)
-    _try_patch_plan(data_dir, platform, slug, environ)
     entries = (
         _iter_dropout_entries(data_dir)
         if platform == "dropout"

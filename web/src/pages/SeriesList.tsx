@@ -15,7 +15,7 @@ import { useOnline } from "../hooks/useOnline";
 import { go } from "../nav";
 import { queryKeys } from "../queryKeys";
 import { formatRelativeTime, newestRefreshIso } from "../relativeTime";
-import { invalidateSeriesState } from "../seriesInvalidate";
+import { invalidateAfterMetadataRefresh } from "../seriesInvalidate";
 import {
   beginRefresh,
   endRefresh,
@@ -31,11 +31,16 @@ import {
   missingStatusText,
 } from "../seriesView";
 import { writeSearch } from "../urlState";
+import { idleRun, useAppRun } from "../useAppQueries";
 
 export function SeriesList() {
   const restoring = useIsRestoring();
   const queryClient = useQueryClient();
   const online = useOnline();
+  const runQuery = useAppRun();
+  const run = runQuery.data ?? idleRun;
+  const runActive = run.status === "running" || run.status === "stopping";
+  const runStatusLoading = runQuery.isPending && !runQuery.data;
   const refreshingKeys = useAnyRefreshing();
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const [query, setQuery] = useState(params.get("q") ?? "");
@@ -122,9 +127,6 @@ export function SeriesList() {
     (row) => row.platform === "dropout" && row.listings_complete === false,
   );
   const lastRefresh = formatRelativeTime(newestRefreshIso(filtered));
-  const allRefreshing =
-    filtered.length > 0 &&
-    filtered.every((row) => refreshingKeys.includes(refreshSeriesKey(row.platform, row.slug)));
 
   type RefreshItemsArg = {
     items: { platform: SeriesPlatform; slug: string; tvdb_id?: number | null }[];
@@ -138,9 +140,14 @@ export function SeriesList() {
       ),
     onMutate: async ({ items }: RefreshItemsArg) => {
       const keys = items.map((item) => refreshSeriesKey(item.platform, item.slug));
-      await queryClient.cancelQueries({ queryKey: queryKeys.seriesList() });
-      const prevList = queryClient.getQueryData(queryKeys.seriesList());
       beginRefresh(keys);
+      try {
+        await queryClient.cancelQueries({ queryKey: queryKeys.seriesList() });
+      } catch (error) {
+        endRefresh(keys);
+        throw error;
+      }
+      const prevList = queryClient.getQueryData(queryKeys.seriesList());
       setActionError(null);
       return { prevList, keys, items };
     },
@@ -160,18 +167,29 @@ export function SeriesList() {
         pushToast("Refresh complete");
       }
     },
-    onSettled: (_body, _err, arg, ctx) => {
-      endRefresh(ctx?.keys ?? []);
-      void invalidateSeriesState(queryClient, arg?.items ?? ctx?.items ?? []);
+    onSettled: async (body, err, arg, ctx) => {
+      try {
+        if (!err && body) {
+          await invalidateAfterMetadataRefresh(
+            queryClient,
+            arg?.items ?? ctx?.items ?? [],
+            arg?.part ?? "all",
+          );
+        }
+      } finally {
+        endRefresh(ctx?.keys ?? []);
+      }
     },
   });
   const refreshItems = (
     items: { platform: SeriesPlatform; slug: string; tvdb_id?: number | null }[],
     part: RefreshPart = "all",
   ) => {
-    if (!items.length || refreshMut.isPending) return;
+    if (!items.length || operationsBlocked) return;
     refreshMut.mutate({ items, part });
   };
+  const refreshInProgress = refreshMut.isPending || refreshingKeys.length > 0;
+  const operationsBlocked = runStatusLoading || runActive || refreshInProgress;
 
   const deleteMut = useMutation({
     mutationFn: (row: SeriesSummary) => apiClient.deleteSeries(row.platform, row.slug),
@@ -192,6 +210,7 @@ export function SeriesList() {
     path: string;
     tvdb_id: number | null;
   }) => {
+    if (operationsBlocked) return;
     const detail = await apiClient.createSeries(body);
     setModal(false);
     pushToast(`Created ${detail.name}`);
@@ -221,15 +240,19 @@ export function SeriesList() {
             </div>
             <div class="series-toolbar-end">
               <RefreshSplit
-                disabled={allRefreshing || !filtered.length}
-                busy={allRefreshing}
+                disabled={operationsBlocked || !filtered.length}
+                busy={refreshInProgress}
                 showSonarr={filtered.some((row) => row.tvdb_id != null)}
                 title={
-                  allRefreshing
-                    ? "Refresh already running"
-                    : !filtered.length
-                      ? "No shows to refresh"
-                      : undefined
+                  runActive
+                    ? "Blocked while a run is in progress"
+                    : runStatusLoading
+                      ? "Checking current run status"
+                      : refreshInProgress
+                        ? "Refresh already running"
+                        : !filtered.length
+                          ? "No shows to refresh"
+                          : undefined
                 }
                 onRefresh={(part) => void refreshItems(filtered, part)}
               />
@@ -237,6 +260,16 @@ export function SeriesList() {
                 type="button"
                 class="btn-secondary"
                 data-testid="series-add"
+                disabled={operationsBlocked}
+                title={
+                  runActive
+                    ? "Blocked while a run is in progress"
+                    : runStatusLoading
+                      ? "Checking current run status"
+                      : refreshInProgress
+                        ? "Blocked while a refresh is in progress"
+                        : undefined
+                }
                 onClick={() => setModal(true)}
               >
                 Add show
@@ -299,7 +332,12 @@ export function SeriesList() {
             <div class="empty-state">
               <p>{emptyListMessage(rows.length, filtered.length)}</p>
               {rows.length === 0 && (
-                <button type="button" class="btn-primary" onClick={() => setModal(true)}>
+                <button
+                  type="button"
+                  class="btn-primary"
+                  disabled={operationsBlocked}
+                  onClick={() => setModal(true)}
+                >
                   Add show
                 </button>
               )}
@@ -320,6 +358,7 @@ export function SeriesList() {
                   (missingBatch.isPending || restoring)
                 }
                 refreshing={refreshingKeys.includes(refreshSeriesKey(row.platform, row.slug))}
+                mutationBlocked={operationsBlocked}
                 menuOpen={menuOpen === `${row.platform}-${row.slug}`}
                 registerTrigger={(el) => {
                   const key = `${row.platform}-${row.slug}`;
@@ -356,7 +395,12 @@ export function SeriesList() {
           )}
         </main>
         {modal && (
-          <CreateSeriesModal existing={rows} onClose={() => setModal(false)} onCreate={onCreate} />
+          <CreateSeriesModal
+            existing={rows}
+            disabled={operationsBlocked}
+            onClose={() => setModal(false)}
+            onCreate={onCreate}
+          />
         )}
         {pendingDelete && (
           // Destructive-action policy (Phase 6 decision): delete is confirm-only
@@ -367,6 +411,7 @@ export function SeriesList() {
             confirmLabel="Delete"
             danger
             pending={deleteMut.isPending}
+            confirmDisabled={operationsBlocked}
             onCancel={() => setPendingDelete(null)}
             onConfirm={() => deleteMut.mutate(pendingDelete)}
           />
@@ -381,6 +426,7 @@ function SeriesRow({
   missing,
   missingLoading,
   refreshing,
+  mutationBlocked,
   menuOpen,
   registerTrigger,
   onToggleMenu,
@@ -392,6 +438,7 @@ function SeriesRow({
   missing: number | null;
   missingLoading: boolean;
   refreshing: boolean;
+  mutationBlocked: boolean;
   menuOpen: boolean;
   registerTrigger: (el: HTMLButtonElement | null) => void;
   onToggleMenu: (trigger: HTMLButtonElement | null) => void;
@@ -474,7 +521,8 @@ function SeriesRow({
               </button>
               <button
                 type="button"
-                disabled={refreshing}
+                disabled={mutationBlocked}
+                title={mutationBlocked ? "Blocked while a refresh is in progress" : undefined}
                 onClick={() => {
                   onCloseMenu();
                   onRefresh();
@@ -485,6 +533,7 @@ function SeriesRow({
               <button
                 type="button"
                 class="is-danger"
+                disabled={mutationBlocked}
                 onClick={() => {
                   onCloseMenu();
                   void onDelete();

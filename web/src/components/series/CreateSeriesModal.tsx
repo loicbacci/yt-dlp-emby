@@ -10,6 +10,7 @@ export function CreateSeriesModal({
   mode = "create",
   initial,
   fileLabel,
+  disabled = false,
 }: {
   existing: { name: string; slug?: string }[];
   onClose: () => void;
@@ -27,6 +28,7 @@ export function CreateSeriesModal({
     tvdb_id: number | null;
   };
   fileLabel?: string;
+  disabled?: boolean;
 }) {
   const [title, setTitle] = useState(initial?.name ?? "");
   const [platform, setPlatform] = useState<Source>(initial?.platform ?? "dropout");
@@ -60,6 +62,7 @@ export function CreateSeriesModal({
     (mode === "edit" || slug) &&
     !nameError &&
     !saving &&
+    !disabled &&
     (tvdb.trim() === "" || Number.isFinite(tvdbId));
 
   const submit = async () => {
@@ -108,6 +111,7 @@ export function CreateSeriesModal({
             type="text"
             value={title}
             autoFocus
+            disabled={disabled}
             onInput={(e) => setTitle((e.currentTarget as HTMLInputElement).value)}
           />
         </label>
@@ -122,7 +126,7 @@ export function CreateSeriesModal({
                   name="series-platform"
                   value={item}
                   checked={platform === item}
-                  disabled={mode === "edit"}
+                  disabled={mode === "edit" || disabled}
                   onChange={() => setPlatform(item)}
                 />
                 {item === "youtube" ? "YouTube" : "Dropout.tv"}
@@ -139,6 +143,7 @@ export function CreateSeriesModal({
             type="text"
             inputMode="numeric"
             value={tvdb}
+            disabled={disabled}
             onInput={(e) => setTvdb((e.currentTarget as HTMLInputElement).value)}
           />
           {tvdb.trim() && !/^\d+$/.test(tvdb.trim()) && (
@@ -152,6 +157,7 @@ export function CreateSeriesModal({
           <input
             type="text"
             value={path}
+            disabled={disabled}
             onInput={(e) => {
               setPathTouched(true);
               setPath((e.currentTarget as HTMLInputElement).value);

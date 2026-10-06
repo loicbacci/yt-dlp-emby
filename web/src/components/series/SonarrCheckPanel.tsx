@@ -9,6 +9,7 @@ export function SonarrCheckPanel({
   check,
   checkError,
   loading,
+  disabled = false,
   onSkip,
   onRemap,
 }: {
@@ -16,6 +17,7 @@ export function SonarrCheckPanel({
   check: DropoutCheck | null;
   checkError: string | null;
   loading: boolean;
+  disabled?: boolean;
   onSkip: (season: number, episode: number) => void;
   onRemap: (row: DropoutCheck["missing"][number]) => void;
 }) {
@@ -59,12 +61,18 @@ export function SonarrCheckPanel({
             status: "missing" as const,
             actions: (
               <>
-                <button type="button" class="btn-ghost" onClick={() => onRemap(row)}>
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  disabled={disabled}
+                  onClick={() => onRemap(row)}
+                >
                   Find episode
                 </button>
                 <button
                   type="button"
                   class="btn-ghost"
+                  disabled={disabled}
                   onClick={() => onSkip(row.season, row.episode)}
                 >
                   Hide

@@ -184,6 +184,8 @@ export function emptyListMessage(total: number, filtered: number): string {
 
 export function applySeasonToEpisode(
   season: {
+    to_season?: number | null;
+    dropout?: number | null;
     only_episodes: number[] | null;
     remaps: {
       dropout_episode: number;
@@ -218,16 +220,21 @@ export function applySeasonToEpisode(
   if (season.only_episodes && season.only_episodes.length) {
     skipped = !season.only_episodes.includes(episode.source_episode);
   }
-  if (remap && remap.to_season != null && remap.to_episode != null) {
-    return {
-      ...episode,
-      skipped,
-      mapped_season: remap.to_season,
-      mapped_episode: remap.to_episode,
-      mapped_title: remap.title ?? episode.title,
-    };
-  }
-  return { ...episode, skipped };
+  const defaultSeason =
+    season.to_season !== undefined
+      ? season.to_season
+      : season.dropout !== undefined
+        ? season.dropout
+        : episode.mapped_season;
+  const mapped_season = remap?.to_season ?? defaultSeason;
+  const mapped_episode = remap?.to_episode ?? episode.source_episode;
+  return {
+    ...episode,
+    skipped,
+    mapped_season: skipped ? null : mapped_season,
+    mapped_episode: skipped || mapped_season == null ? null : mapped_episode,
+    mapped_title: remap?.title ?? episode.title,
+  };
 }
 
 export function diskSlotKey(season: number, episode: number): string {

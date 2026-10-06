@@ -74,6 +74,53 @@ export type {
 } from "./types";
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const REFRESH_JOB_POLL_MS = 500;
+const REFRESH_JOB_MAX_RETRY_MS = 5_000;
+
+export type SeriesRefreshResult = {
+  ok: boolean;
+  results: { platform: string; slug: string; error: string | null }[];
+};
+
+type SeriesRefreshJob = {
+  status: "running" | "done" | "error";
+  result: SeriesRefreshResult | null;
+  error: string | null;
+};
+
+function waitForRefreshPoll(delay: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function pollSeriesRefreshJob(jobId: string): Promise<SeriesRefreshResult> {
+  let delay = REFRESH_JOB_POLL_MS;
+  while (true) {
+    await waitForRefreshPoll(delay);
+    let job: SeriesRefreshJob;
+    try {
+      job = await api<SeriesRefreshJob>(`/api/series/refresh/${encodeURIComponent(jobId)}`);
+    } catch (error) {
+      const retryable =
+        !(error instanceof ApiError) ||
+        error.status === 401 ||
+        error.status === 403 ||
+        error.status === 408 ||
+        error.status === 425 ||
+        error.status === 429 ||
+        error.status >= 500;
+      if (!retryable) throw error;
+      delay = Math.min(delay * 2, REFRESH_JOB_MAX_RETRY_MS);
+      continue;
+    }
+    delay = REFRESH_JOB_POLL_MS;
+    if (job.status === "running") continue;
+    if (job.status === "error") {
+      throw new ApiError(500, job.error || "Refresh job failed");
+    }
+    if (job.status === "done" && job.result) return job.result;
+    throw new ApiError(500, "Refresh job returned an invalid result");
+  }
+}
 
 export class ApiError extends Error {
   status: number;
@@ -130,8 +177,13 @@ function seriesUrl(platform: Source, slug: string, suffix = ""): string {
   return `/api/series/${platform}/${encodeURIComponent(slug)}${suffix}`;
 }
 
-async function api<T>(path: string, init?: RequestInit, parse?: (data: unknown) => T): Promise<T> {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+async function api<T>(
+  path: string,
+  init?: RequestInit,
+  parse?: (data: unknown) => T,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const timeout = AbortSignal.timeout(timeoutMs);
   const { signal: initSignal, headers: _headers, ...rest } = init ?? {};
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -345,6 +397,17 @@ export const apiClient = {
     ),
   getSeriesDisk: (platform: Source, slug: string) =>
     api<{ on_disk: { season: number; episode: number }[] }>(seriesUrl(platform, slug, "/disk")),
+  checkSeriesDiskSlots: (
+    platform: Source,
+    slug: string,
+    slots: { season: number; episode: number }[],
+  ) =>
+    api<{
+      slots: { season: number; episode: number; on_disk: boolean }[];
+    }>(seriesUrl(platform, slug, "/disk/slots"), {
+      method: "POST",
+      body: JSON.stringify({ slots }),
+    }),
   getSeriesMissing: (platform: Source, slug: string) =>
     api<MissingRow>(seriesUrl(platform, slug, "/missing")),
   getSeriesMissingBatch: async (items: { platform: Source; slug: string }[]) => {
@@ -422,15 +485,24 @@ export const apiClient = {
       seriesUrl(platform, slug, `/sources/${sourceIndex}/refresh`),
       { method: "POST" },
       (data) => parseWith(seriesDetailSchema, data, "Series"),
+      5 * 60 * 1000,
     ),
-  refreshSeries: (items: { platform: Source; slug: string }[], parts?: string[]) =>
+  refreshSeries: async (items: { platform: Source; slug: string }[], parts?: string[]) => {
+    const started = await api<{ job_id: string; status: "running" } | SeriesRefreshResult>(
+      "/api/series/refresh",
+      {
+        method: "POST",
+        body: JSON.stringify({ items, parts }),
+      },
+    );
+    if ("results" in started) return started;
+    if (!started.job_id) throw new ApiError(500, "Refresh job did not return an ID");
+    return pollSeriesRefreshJob(started.job_id);
+  },
+  getActiveSeriesRefreshes: () =>
     api<{
-      ok: boolean;
-      results: { platform: string; slug: string; error: string | null }[];
-    }>("/api/series/refresh", {
-      method: "POST",
-      body: JSON.stringify({ items, parts }),
-    }),
+      jobs: { items: { platform: Source; slug: string }[] }[];
+    }>("/api/series/refresh/active"),
   getSeriesEpisodes: (platform: Source, slug: string, sourceIndex: number, seasonId: number) =>
     api<{
       episodes: SeriesEpisode[];

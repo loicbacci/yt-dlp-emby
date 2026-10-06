@@ -18,6 +18,7 @@ export function SeasonAccordion({
   episodes,
   loading,
   refreshing,
+  disabled = false,
   onDisk,
   destError,
   skipErrors,
@@ -36,6 +37,7 @@ export function SeasonAccordion({
   episodes: SeriesEpisode[] | null;
   loading: boolean;
   refreshing?: boolean;
+  disabled?: boolean;
   onDisk: ReadonlySet<string>;
   destError?: string | null;
   skipErrors?: Record<string, string>;
@@ -119,7 +121,7 @@ export function SeasonAccordion({
           )}
           <span class={`twist${open ? " is-open" : ""}`} aria-hidden="true" />
         </button>
-        <button type="button" class="btn-ghost" onClick={onToggleEnabled}>
+        <button type="button" class="btn-ghost" disabled={disabled} onClick={onToggleEnabled}>
           {season.enabled ? "Disable" : "Enable"}
         </button>
       </div>
@@ -130,6 +132,7 @@ export function SeasonAccordion({
             <input
               value={titleDraft}
               placeholder={season.label}
+              disabled={disabled}
               onInput={(e) => setTitleDraft((e.currentTarget as HTMLInputElement).value)}
               onBlur={() => onTitleChange(titleDraft)}
             />
@@ -141,6 +144,7 @@ export function SeasonAccordion({
                 value={destDraft}
                 placeholder={season.dropout == null ? "" : String(season.dropout)}
                 aria-invalid={Boolean(destError)}
+                disabled={disabled}
                 onInput={(e) => setDestDraft((e.currentTarget as HTMLInputElement).value)}
                 onBlur={() => onDestChange(destDraft)}
               />
@@ -210,6 +214,7 @@ export function SeasonAccordion({
                         type="button"
                         class="btn-ghost"
                         data-testid={`episode-skip-${ep.id}`}
+                        disabled={disabled}
                         onClick={() => onSkip(ep)}
                       >
                         {ep.skipped ? "Unskip" : "Skip"}
@@ -219,6 +224,7 @@ export function SeasonAccordion({
                           type="button"
                           class="btn-ghost"
                           data-testid={`episode-remap-${ep.id}`}
+                          disabled={disabled}
                           onClick={() => onRemap(ep)}
                         >
                           Remap

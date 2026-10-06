@@ -1,9 +1,11 @@
+import { useQuery } from "@tanstack/preact-query";
 import { LocationProvider, Route, Router, useLocation } from "preact-iso";
 import { useEffect, useState } from "preact/hooks";
 import { apiClient, routeForSession } from "./api";
 import { logoutAndClear } from "./auth";
 import { Header } from "./components/Header";
 import { ToastHost } from "./components/Toast";
+import { isBrowserOnline, isPageVisible } from "./hooks/useOnline";
 import { setNavigator } from "./nav";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
@@ -13,6 +15,33 @@ import { Settings } from "./pages/Settings";
 import { Setup } from "./pages/Setup";
 import { queryClient } from "./queryClient";
 import { queryKeys } from "./queryKeys";
+import { refreshSeriesKey, setServerRefreshing } from "./seriesRefreshStore";
+import { useSession } from "./useAppQueries";
+
+function RefreshRecovery() {
+  const session = useSession();
+  const active = useQuery({
+    queryKey: queryKeys.activeRefreshes(),
+    queryFn: () => apiClient.getActiveSeriesRefreshes(),
+    enabled: session.data?.authenticated === true,
+    staleTime: 0,
+    refetchInterval: () => (isBrowserOnline() && isPageVisible() ? 3000 : false),
+    refetchIntervalInBackground: false,
+  });
+
+  useEffect(() => {
+    const keys = (active.data?.jobs ?? []).flatMap((job) =>
+      job.items.map((item) => refreshSeriesKey(item.platform, item.slug)),
+    );
+    setServerRefreshing(keys);
+  }, [active.data]);
+
+  useEffect(() => {
+    if (session.data?.authenticated !== true) setServerRefreshing([]);
+  }, [session.data?.authenticated]);
+
+  return null;
+}
 
 function NavigatorBridge() {
   const { route } = useLocation();
@@ -114,6 +143,7 @@ function SessionGate() {
 
   return (
     <Router>
+      <RefreshRecovery />
       <Route path="/setup" component={Setup} />
       <Route path="/login" component={Login} />
       <Route path="/settings" component={Settings} />

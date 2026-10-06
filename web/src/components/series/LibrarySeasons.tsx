@@ -14,11 +14,13 @@ export function LibrarySeasons({
   destMap,
   loading,
   refreshing,
+  disabled = false,
   onFind,
 }: {
   destMap: DestMap;
   loading?: boolean;
   refreshing?: boolean;
+  disabled?: boolean;
   onFind: (slot: DestSlot) => void;
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set());
@@ -131,7 +133,12 @@ export function LibrarySeasons({
                           code={slot.code}
                           pill="Missing"
                           action={
-                            <button type="button" class="btn-ghost" onClick={() => onFind(slot)}>
+                            <button
+                              type="button"
+                              class="btn-ghost"
+                              disabled={disabled}
+                              onClick={() => onFind(slot)}
+                            >
                               Find episode
                             </button>
                           }

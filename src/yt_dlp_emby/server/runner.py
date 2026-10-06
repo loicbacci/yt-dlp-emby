@@ -119,6 +119,7 @@ class _QueuedJob:
     source: str
     dry_run: bool
     force: bool
+    create: bool = False
 
 
 @dataclass
@@ -192,6 +193,7 @@ def default_command(
     library: str | None,
     old_dir: str | None,
     staging: str | None,
+    create: bool = False,
 ) -> list[str]:
     if action not in {"download", "layout", "check"}:
         action = "download"
@@ -208,6 +210,8 @@ def default_command(
         argv.append("--dry-run")
     if force and source == "dropout" and action == "download":
         argv.append("--force")
+    if create and source == "dropout" and action == "download":
+        argv.append("--create")
     if library:
         argv.extend(["--library", library])
     if old_dir:
@@ -235,7 +239,8 @@ def sources_for_download(ids: list[str] | None, plan: dict[str, Any]) -> list[st
             if block.get("ok") is False:
                 continue
             pending = any(
-                item.get("action") in {"download", "replace"} for item in block.get("items") or []
+                item.get("action") in {"download", "replace", "rename", "remove"}
+                for item in block.get("items") or []
             )
             if pending:
                 out.append(name)
@@ -501,14 +506,6 @@ class RunManager:
 
     async def _reap(self, proc: asyncio.subprocess.Process) -> None:
         reader = self._reader_task
-        if reader is not None:
-            try:
-                await reader
-            except asyncio.CancelledError:
-                pass
-        if self._partial:
-            self._append_line(self._partial)
-            self._partial = ""
         try:
             code = await asyncio.wait_for(proc.wait(), timeout=RUN_TIMEOUT)
             timed_out = False
@@ -523,6 +520,14 @@ class RunManager:
                 code = await proc.wait()
         if timed_out:
             code = 124
+        if reader is not None:
+            try:
+                await asyncio.wait_for(reader, timeout=SIGTERM_WAIT)
+            except (TimeoutError, asyncio.CancelledError):
+                reader.cancel()
+        if self._partial:
+            self._append_line(self._partial)
+            self._partial = ""
         watcher = self._event_task
         if watcher is not None:
             watcher.cancel()
@@ -606,6 +611,7 @@ class RunManager:
         ids: list[str] | None,
         *,
         force: bool = False,
+        create: bool = False,
     ) -> RunState:
         plan = load_plan_file(self.data_dir)
         if plan is None:
@@ -620,12 +626,14 @@ class RunManager:
                 if not ONLY_ID_RE.match(str(item)):
                     raise ValueError(f"invalid item id: {item}")
             only_path = self.data_dir / ONLY_NAME
-            atomic_write_private(
-                only_path,
-                json.dumps({"ids": ids}, separators=(",", ":")),
-                mode=0o600,
-            )
-        return await self._start_queue(jobs, phase="downloading", force=force, only_path=only_path)
+        return await self._start_queue(
+            jobs,
+            phase="downloading",
+            force=force,
+            only_path=only_path,
+            only_ids=ids,
+            create=create,
+        )
 
     async def _start_queue(
         self,
@@ -634,19 +642,30 @@ class RunManager:
         phase: str,
         force: bool,
         only_path: Path | None,
+        only_ids: list[str] | None = None,
+        create: bool = False,
     ) -> RunState:
         async with self._lock:
             if self._state.status in {"running", "stopping"}:
                 raise RuntimeError("already running")
             if self._maintenance_holders > 0:
                 raise RuntimeError("maintenance in progress")
+            if only_path is not None and only_ids is not None:
+                atomic_write_private(
+                    only_path,
+                    json.dumps({"ids": only_ids}, separators=(",", ":")),
+                    mode=0o600,
+                )
             self._clear_buffer()
             self._clear_events()
             self._halt_queue = False
             self._only_path = only_path
             self._run_phase = phase
-            self._pending_jobs = list(jobs[1:])
+            self._pending_jobs = [
+                _QueuedJob(job.source, job.dry_run, job.force, create) for job in jobs[1:]
+            ]
             first = jobs[0]
+            first = _QueuedJob(first.source, first.dry_run, first.force, create)
             self._state = RunState(
                 status="running",
                 phase=phase,
@@ -716,6 +735,7 @@ class RunManager:
             library=env.get("YT_DLP_EMBY_LIBRARY") or env.get("YT_EMBY_LIBRARY"),
             old_dir=env.get("YT_DLP_EMBY_OLD_DIR") or env.get("YT_EMBY_OLD_DIR"),
             staging=env.get("YT_DLP_EMBY_STAGING") or env.get("YT_EMBY_STAGING"),
+            create=job.create,
         )
         extra_env = {}
         only = env.get("YT_DLP_EMBY_ONLY")

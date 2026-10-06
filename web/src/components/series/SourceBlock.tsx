@@ -14,6 +14,7 @@ export function SourceBlock({
   loadingMap,
   refreshing,
   sourceBusy,
+  unsavedChanges = false,
   onDisk,
   destErrors,
   skipErrors,
@@ -36,6 +37,7 @@ export function SourceBlock({
   loadingMap: Record<string, boolean>;
   refreshing?: boolean;
   sourceBusy?: boolean;
+  unsavedChanges?: boolean;
   onDisk: ReadonlySet<string>;
   destErrors?: Record<string, string>;
   skipErrors?: Record<string, string>;
@@ -69,6 +71,7 @@ export function SourceBlock({
             class="url-edit"
             value={draft}
             aria-label="Source URL"
+            disabled={disabled}
             onInput={(e) => setDraft((e.currentTarget as HTMLInputElement).value)}
           />
         ) : (
@@ -89,14 +92,15 @@ export function SourceBlock({
             }
           }}
         >
-          {editing ? "Save" : "Edit"}
+          {editing ? "Save URL" : "Edit URL"}
         </button>
         {onRefresh && (
           <button
             type="button"
             class="btn-ghost"
-            disabled={disabled || sourceBusy}
+            disabled={disabled || sourceBusy || unsavedChanges}
             aria-busy={sourceBusy}
+            title={unsavedChanges ? "Save or discard edits before refreshing" : undefined}
             aria-label="Refresh source"
             onClick={onRefresh}
           >
@@ -133,6 +137,7 @@ export function SourceBlock({
             episodes={episodeMap[key] ?? null}
             loading={Boolean(loadingMap[key])}
             refreshing={refreshing}
+            disabled={disabled}
             onDisk={onDisk}
             destError={destErrors?.[key]}
             skipErrors={skipErrors}

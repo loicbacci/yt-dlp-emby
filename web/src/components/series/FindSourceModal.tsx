@@ -17,6 +17,7 @@ export function FindSourceModal({
   suggestions,
   hints = [],
   loading,
+  disabled = false,
   onClose,
   onSave,
 }: {
@@ -25,6 +26,7 @@ export function FindSourceModal({
   suggestions: CatalogEpisode[];
   hints?: DropoutCheckHint[];
   loading?: boolean;
+  disabled?: boolean;
   onClose: () => void;
   onSave: (source: CatalogEpisode) => void;
 }) {
@@ -62,7 +64,7 @@ export function FindSourceModal({
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!picked) return;
+          if (disabled || !picked) return;
           onSave(picked);
         }}
       >
@@ -85,6 +87,7 @@ export function FindSourceModal({
             type="search"
             value={query}
             placeholder="Title, E number, or season"
+            disabled={disabled}
             onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
           />
         </label>
@@ -101,6 +104,7 @@ export function FindSourceModal({
                       key={catalogEpisodeKey(row)}
                       row={row}
                       selected={isPicked(picked, row)}
+                      disabled={disabled}
                       onSelect={setPicked}
                       onConfirm={() => onSave(row)}
                     />
@@ -124,6 +128,7 @@ export function FindSourceModal({
                         key={catalogEpisodeKey(row)}
                         row={row}
                         selected={isPicked(picked, row)}
+                        disabled={disabled}
                         suggested={!searching && suggestedKeys.has(catalogEpisodeKey(row))}
                         onSelect={setPicked}
                         onConfirm={() => onSave(row)}
@@ -139,7 +144,7 @@ export function FindSourceModal({
           <button type="button" class="btn-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" class="btn-modal-save" disabled={!picked}>
+          <button type="submit" class="btn-modal-save" disabled={disabled || !picked}>
             {picked ? `Map E${picked.episode.source_episode} here` : "Map episode here"}
           </button>
         </div>
@@ -156,12 +161,14 @@ function SourcePickButton({
   row,
   selected,
   suggested,
+  disabled = false,
   onSelect,
   onConfirm,
 }: {
   row: CatalogEpisode;
   selected: boolean;
   suggested?: boolean;
+  disabled?: boolean;
   onSelect: (row: CatalogEpisode) => void;
   onConfirm: () => void;
 }) {
@@ -174,6 +181,7 @@ function SourcePickButton({
     <button
       type="button"
       class={[selected && "is-selected", suggested && "is-suggested"].filter(Boolean).join(" ")}
+      disabled={disabled}
       onClick={() => onSelect(row)}
       onDblClick={onConfirm}
     >

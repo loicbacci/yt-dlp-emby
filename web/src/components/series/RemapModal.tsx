@@ -21,12 +21,14 @@ export type RemapFields = {
 export function RemapModal({
   tvdbId,
   episode,
+  disabled = false,
   onClose,
   onSave,
   error,
 }: {
   tvdbId: number | null;
   episode: SeriesEpisode;
+  disabled?: boolean;
   onClose: () => void;
   onSave: (fields: RemapFields) => void;
   error?: string | null;
@@ -117,6 +119,7 @@ export function RemapModal({
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
+          if (disabled) return;
           const season = parseNonNegInt(toSeason);
           const ep = parseNonNegInt(toEpisode);
           if (season == null || ep == null) {
@@ -143,6 +146,7 @@ export function RemapModal({
           <span class="settings-label">Emby season</span>
           <input
             value={toSeason}
+            disabled={disabled}
             onInput={(e) => setToSeason((e.currentTarget as HTMLInputElement).value)}
           />
         </label>
@@ -150,6 +154,7 @@ export function RemapModal({
           <span class="settings-label">Emby episode</span>
           <input
             value={toEpisode}
+            disabled={disabled}
             onInput={(e) => setToEpisode((e.currentTarget as HTMLInputElement).value)}
           />
         </label>
@@ -157,6 +162,7 @@ export function RemapModal({
           <span class="settings-label">Title</span>
           <input
             value={title}
+            disabled={disabled}
             onInput={(e) => setTitle((e.currentTarget as HTMLInputElement).value)}
             onBlur={() => loadSuggest(title)}
           />
@@ -169,6 +175,7 @@ export function RemapModal({
                 type="search"
                 value={search}
                 placeholder="Title, SxxExx, or episode number"
+                disabled={disabled}
                 onInput={(e) => setSearch((e.currentTarget as HTMLInputElement).value)}
               />
             </label>
@@ -181,6 +188,7 @@ export function RemapModal({
                       <SonarrPickButton
                         key={`${slot.season}-${slot.episode}`}
                         slot={slot}
+                        disabled={disabled}
                         onSelect={applySlot}
                       />
                     ))}
@@ -202,6 +210,7 @@ export function RemapModal({
                     <SonarrPickButton
                       key={`${slot.season}-${slot.episode}`}
                       slot={slot}
+                      disabled={disabled}
                       onSelect={applySlot}
                     />
                   ))}
@@ -221,7 +230,7 @@ export function RemapModal({
           <button type="button" class="btn-ghost" onClick={requestClose}>
             Cancel
           </button>
-          <button type="submit" class="btn-modal-save" disabled={!ready}>
+          <button type="submit" class="btn-modal-save" disabled={disabled || !ready}>
             Save remap
           </button>
         </div>
@@ -246,13 +255,15 @@ export function RemapModal({
 
 function SonarrPickButton({
   slot,
+  disabled = false,
   onSelect,
 }: {
   slot: SonarrEpisode;
+  disabled?: boolean;
   onSelect: (slot: SonarrEpisode) => void;
 }) {
   return (
-    <button type="button" onClick={() => onSelect(slot)}>
+    <button type="button" disabled={disabled} onClick={() => onSelect(slot)}>
       {formatMapsTo(slot.season, slot.episode)} {slot.title} {slot.air_date ?? ""}
     </button>
   );

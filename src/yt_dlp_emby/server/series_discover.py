@@ -228,21 +228,28 @@ def merge_dropout_seasons(
     old: tuple[DropoutSeason, ...],
     discovered: list[dict[str, Any]],
 ) -> tuple[DropoutSeason, ...]:
-    by_dropout = {se.dropout: se for se in old if se.dropout is not None}
-    merged: list[DropoutSeason] = []
+    by_dropout = {se.dropout: index for index, se in enumerate(old) if se.dropout is not None}
+    merged = list(old)
     for raw in discovered:
         dropout = int(raw["dropout"])
-        prev = by_dropout.get(dropout)
-        merged.append(
-            DropoutSeason(
-                dropout=dropout,
-                url=str(raw["url"]),
-                to_season=int(raw.get("to_season", dropout)),
-                remap=prev.remap if prev else (),
-                only_episodes=prev.only_episodes if prev else None,
-                enabled=prev.enabled if prev else bool(raw.get("enabled", True)),
-            )
+        previous_index = by_dropout.get(dropout)
+        previous = merged[previous_index] if previous_index is not None else None
+        season = DropoutSeason(
+            dropout=dropout,
+            url=str(raw["url"]),
+            to_season=(
+                previous.to_season if previous is not None else int(raw.get("to_season", dropout))
+            ),
+            remap=previous.remap if previous is not None else (),
+            only_episodes=previous.only_episodes if previous is not None else None,
+            enabled=(previous.enabled if previous is not None else bool(raw.get("enabled", True))),
+            title=previous.title if previous is not None else raw.get("title"),
         )
+        if previous_index is None:
+            by_dropout[dropout] = len(merged)
+            merged.append(season)
+        else:
+            merged[previous_index] = season
     return tuple(merged)
 
 

@@ -14,12 +14,12 @@ from base64 import b64decode, b64encode
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Mapping
+from typing import Annotated, Any, AsyncIterator, Callable, Mapping
 from urllib.parse import urlparse
 
 import itsdangerous
 import yaml
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from itsdangerous.exc import BadSignature
@@ -62,6 +62,7 @@ from yt_dlp_emby.server.manifests import (
     write_manifest,
 )
 from yt_dlp_emby.server.plan_series import load_live_plan
+from yt_dlp_emby.server.refresh_jobs import RefreshJobStore
 from yt_dlp_emby.server.runner import ITEM_ID_PATTERN, CommandFactory, RunManager
 from yt_dlp_emby.server.series import (
     AmbiguousSlugError,
@@ -83,6 +84,7 @@ from yt_dlp_emby.server.series import (
     put_series_yaml,
     refresh_series_batch,
     refresh_series_source,
+    series_disk_slot_status,
     series_disk_status,
     series_missing_status,
     series_poster_bytes,
@@ -121,6 +123,19 @@ LOGIN_HOUR_WINDOW = 3600.0
 OPEN_API_PATHS = frozenset({"/api/health", "/api/session", "/api/setup", "/api/login"})
 
 
+async def _to_thread_to_completion(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Keep a worker thread's caller/locks alive until the operation actually stops."""
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await worker
+        except Exception:
+            logger.exception("worker failed after its request was cancelled")
+        raise
+
+
 class PasswordBody(BaseModel):
     password: str = Field(min_length=8, max_length=128)
 
@@ -143,6 +158,7 @@ class DownloadRunBody(BaseModel):
         default=None, max_length=500
     )
     force: bool = False
+    create: bool = False
 
 
 class ImportManifestBody(BaseModel):
@@ -233,6 +249,15 @@ class SeriesRefreshItem(BaseModel):
 class SeriesRefreshBody(BaseModel):
     items: list[SeriesRefreshItem] = Field(max_length=MAX_REFRESH_ITEMS)
     parts: list[str] | None = None
+
+
+class DiskSlotBody(BaseModel):
+    season: int = Field(ge=0)
+    episode: int = Field(ge=1)
+
+
+class DiskSlotsBody(BaseModel):
+    slots: list[DiskSlotBody] = Field(max_length=500)
 
 
 class AddSourceBody(BaseModel):
@@ -532,16 +557,32 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
-        await runner.stop()
+        app.state.refresh_job_store.recover_interrupted()
+        try:
+            yield
+        finally:
+            # Refresh workers hold the manifest and runner maintenance locks.
+            # Let them finish before tearing down the runner so those locks
+            # cannot be released while a worker thread is still writing.
+            tasks = tuple(app.state.refresh_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await runner.stop()
 
     app = FastAPI(lifespan=lifespan)
     app.state.data_dir = resolved_data
     app.state.environ = environ
     app.state.auth = initial_auth
     app.state.runner = runner
-    app.state.refresh_jobs = {}
+    app.state.refresh_job_store = RefreshJobStore(
+        resolved_data,
+        ttl_seconds=REFRESH_JOB_TTL_SECONDS,
+        max_entries=REFRESH_JOB_MAX_ENTRIES,
+    )
+    app.state.refresh_tasks = set()
     app.state.manifest_lock = asyncio.Lock()
+    app.state.manifest_refresh_active = False
+    app.state.manifest_refresh_items = []
     app.state.login_hits = defaultdict(deque)
     app.state.sse_clients = defaultdict(int)
 
@@ -583,36 +624,44 @@ def create_app(
         return request.app.state.runner
 
     @asynccontextmanager
-    async def manifest_maintenance(request: Request) -> AsyncIterator[None]:
+    async def manifest_maintenance(
+        request: Request,
+        *,
+        refresh_operation: bool = False,
+        refresh_items: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[None]:
         """Serialize manifest/plan mutations; refuse them atomically during runs.
 
         The manifest lock serializes concurrent edits against each other while
         the runner maintenance hold (acquired atomically under the runner lock)
-        409s when a run is active and blocks new run starts until released.
+        409s when a run is active and blocks new run starts until released. A
+        refresh rejects manifest edits while it is discovering and merging
+        source data, so stale writes cannot replace its result.
         """
+        if request.app.state.manifest_refresh_active:
+            raise HTTPException(status_code=409, detail={"error": "a refresh is in progress"})
+        if refresh_operation and request.app.state.manifest_lock.locked():
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "a manifest change or refresh is in progress"},
+            )
         async with request.app.state.manifest_lock:
+            if request.app.state.manifest_refresh_active:
+                raise HTTPException(status_code=409, detail={"error": "a refresh is in progress"})
             runner = get_runner(request)
             acquired = await runner.try_acquire_maintenance()
             if not acquired:
                 raise HTTPException(status_code=409, detail={"error": "a run is in progress"})
+            if refresh_operation:
+                request.app.state.manifest_refresh_active = True
+                request.app.state.manifest_refresh_items = refresh_items or []
             try:
                 yield
             finally:
+                if refresh_operation:
+                    request.app.state.manifest_refresh_active = False
+                    request.app.state.manifest_refresh_items = []
                 await runner.release_maintenance()
-
-    def prune_refresh_jobs(request: Request) -> None:
-        jobs = request.app.state.refresh_jobs
-        now = time.monotonic()
-        stale = [
-            job_id
-            for job_id, job in jobs.items()
-            if now - float(job.get("created_at", now)) > REFRESH_JOB_TTL_SECONDS
-        ]
-        for job_id in stale:
-            jobs.pop(job_id, None)
-        while len(jobs) > REFRESH_JOB_MAX_ENTRIES:
-            oldest = min(jobs, key=lambda jid: float(jobs[jid].get("created_at", 0.0)))
-            jobs.pop(oldest, None)
 
     def session_payload(request: Request) -> dict[str, bool]:
         auth = get_auth(request)
@@ -814,7 +863,9 @@ def create_app(
         if kind not in ALLOWED:
             raise HTTPException(status_code=404, detail={"error": "not found"})
         async with manifest_maintenance(request):
-            current = await asyncio.to_thread(read_manifest, request.app.state.data_dir, kind)
+            current = await _to_thread_to_completion(
+                read_manifest, request.app.state.data_dir, kind
+            )
             if_match = request.headers.get("if-match")
             if if_match:
                 expected = if_match.strip().strip('"')
@@ -824,14 +875,14 @@ def create_app(
 
                     warn(f"If-Match mismatch for {kind} manifest (continuing)")
             try:
-                payload = await asyncio.to_thread(
+                payload = await _to_thread_to_completion(
                     write_manifest, request.app.state.data_dir, kind, body.text
                 )
             except ConfigError as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-            return JSONResponse(await asyncio.to_thread(manifest_json, payload, request))
+            return JSONResponse(await _to_thread_to_completion(manifest_json, payload, request))
 
     @app.put("/api/manifests/{kind}/imports", tags=["manifests"], status_code=200)
     async def put_manifest_import(
@@ -842,7 +893,7 @@ def create_app(
             raise HTTPException(status_code=404, detail={"error": "not found"})
         async with manifest_maintenance(request):
             try:
-                payload = await asyncio.to_thread(
+                payload = await _to_thread_to_completion(
                     write_import, request.app.state.data_dir, kind, body.path, body.text
                 )
             except ConfigError as exc:
@@ -864,7 +915,7 @@ def create_app(
             raise HTTPException(status_code=404, detail={"error": "not found"})
         async with manifest_maintenance(request):
             try:
-                payload = await asyncio.to_thread(
+                payload = await _to_thread_to_completion(
                     write_import, request.app.state.data_dir, kind, import_path, body.text
                 )
             except ConfigError as exc:
@@ -1071,6 +1122,21 @@ def create_app(
         )
 
     @app.get(
+        "/api/series/refresh/active",
+        tags=["series"],
+        status_code=200,
+        response_model=dict[str, Any],
+    )
+    async def get_active_series_refreshes(
+        request: Request, _: None = Depends(require_auth)
+    ) -> dict[str, Any]:
+        jobs = await asyncio.to_thread(request.app.state.refresh_job_store.active)
+        memory_items = request.app.state.manifest_refresh_items
+        if memory_items and not any(job.get("items") == memory_items for job in jobs):
+            jobs.append({"items": memory_items})
+        return {"jobs": jobs}
+
+    @app.get(
         "/api/series/refresh/{job_id}",
         tags=["series"],
         status_code=200,
@@ -1079,8 +1145,7 @@ def create_app(
     async def get_series_refresh_job(
         job_id: str, request: Request, _: None = Depends(require_auth)
     ) -> dict[str, Any]:
-        prune_refresh_jobs(request)
-        job = request.app.state.refresh_jobs.get(job_id)
+        job = await asyncio.to_thread(request.app.state.refresh_job_store.get, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail={"error": "not found"})
         return job
@@ -1091,7 +1156,7 @@ def create_app(
     ) -> dict[str, Any]:
         async with manifest_maintenance(request):
             try:
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     create_series,
                     request.app.state.data_dir,
                     request.app.state.environ,
@@ -1214,7 +1279,7 @@ def create_app(
     ) -> dict[str, Any]:
         async with manifest_maintenance(request):
             try:
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     put_series_yaml,
                     request.app.state.data_dir,
                     platform,
@@ -1235,7 +1300,6 @@ def create_app(
     async def post_series_refresh(
         body: SeriesRefreshBody,
         request: Request,
-        background_tasks: BackgroundTasks,
         sync: bool = False,
         _: None = Depends(require_auth),
     ) -> Any:
@@ -1245,60 +1309,121 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": "too many items"})
         items = [item.model_dump() for item in body.items]
 
-        def _run() -> dict[str, Any]:
+        def _run(progress=None) -> dict[str, Any]:
             return refresh_series_batch(
                 request.app.state.data_dir,
                 items,
                 environ=request.app.state.environ,
                 parts=body.parts,
+                on_progress=progress,
             )
 
         if sync:
-            async with manifest_maintenance(request):
-                return await asyncio.to_thread(_run)
+            async with manifest_maintenance(request, refresh_operation=True, refresh_items=items):
+                return await _to_thread_to_completion(_run)
         # Async path: acquire both locks up front (409 now when a run is
         # active) and hold them until the background job finishes, so the
         # refresh is atomic against concurrent edits and run starts.
-        prune_refresh_jobs(request)
+        if request.app.state.manifest_refresh_active or request.app.state.manifest_lock.locked():
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "a manifest change or refresh is in progress"},
+            )
         await request.app.state.manifest_lock.acquire()
+        acquired = False
         try:
             acquired = await get_runner(request).try_acquire_maintenance()
-        except Exception:
-            request.app.state.manifest_lock.release()
+            if not acquired:
+                raise HTTPException(status_code=409, detail={"error": "a run is in progress"})
+            request.app.state.manifest_refresh_active = True
+            request.app.state.manifest_refresh_items = items
+            job_id = secrets.token_hex(8)
+            await asyncio.to_thread(request.app.state.refresh_job_store.create, job_id, items)
+        except BaseException:
+            try:
+                request.app.state.manifest_refresh_active = False
+                request.app.state.manifest_refresh_items = []
+                if acquired:
+                    await asyncio.shield(get_runner(request).release_maintenance())
+            finally:
+                request.app.state.manifest_lock.release()
             raise
-        if not acquired:
-            request.app.state.manifest_lock.release()
-            raise HTTPException(status_code=409, detail={"error": "a run is in progress"})
-        job_id = secrets.token_hex(8)
-        request.app.state.refresh_jobs[job_id] = {
-            "status": "running",
-            "result": None,
-            "error": None,
-            "created_at": time.monotonic(),
-        }
 
         async def _job() -> None:
+            def progress(payload: dict[str, Any]) -> None:
+                request.app.state.refresh_job_store.update(job_id, progress=payload)
+
+            worker = asyncio.create_task(asyncio.to_thread(_run, progress))
             try:
-                result = await asyncio.to_thread(_run)
-                request.app.state.refresh_jobs[job_id] = {
-                    "status": "done",
-                    "result": result,
-                    "error": None,
-                    "created_at": time.monotonic(),
-                }
+                try:
+                    result = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # Cancelling an asyncio wrapper cannot stop its thread.
+                    # Keep the maintenance locks until the worker has really
+                    # stopped, then record its final state before propagating.
+                    try:
+                        result = await worker
+                    except Exception as exc:
+                        await asyncio.to_thread(
+                            request.app.state.refresh_job_store.update,
+                            job_id,
+                            status="error",
+                            result=None,
+                            error=sanitize_discovery_message(str(exc), limit=500),
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            request.app.state.refresh_job_store.update,
+                            job_id,
+                            status="done",
+                            result=result,
+                            error=None,
+                        )
+                    raise
+                await asyncio.to_thread(
+                    request.app.state.refresh_job_store.update,
+                    job_id,
+                    status="done",
+                    result=result,
+                    error=None,
+                )
             except Exception as exc:
                 logger.exception("series refresh job %s failed", job_id)
-                request.app.state.refresh_jobs[job_id] = {
-                    "status": "error",
-                    "result": None,
-                    "error": str(exc),
-                    "created_at": time.monotonic(),
-                }
+                await asyncio.to_thread(
+                    request.app.state.refresh_job_store.update,
+                    job_id,
+                    status="error",
+                    result=None,
+                    error=sanitize_discovery_message(str(exc), limit=500),
+                )
             finally:
-                await get_runner(request).release_maintenance()
-                request.app.state.manifest_lock.release()
+                request.app.state.manifest_refresh_active = False
+                request.app.state.manifest_refresh_items = []
+                try:
+                    await get_runner(request).release_maintenance()
+                finally:
+                    request.app.state.manifest_lock.release()
 
-        background_tasks.add_task(_job)
+        try:
+            task = asyncio.create_task(_job(), name=f"series-refresh-{job_id}")
+        except BaseException:
+            try:
+                await asyncio.to_thread(
+                    request.app.state.refresh_job_store.update,
+                    job_id,
+                    status="error",
+                    error="refresh could not be scheduled",
+                )
+            finally:
+                request.app.state.manifest_refresh_active = False
+                request.app.state.manifest_refresh_items = []
+                try:
+                    await asyncio.shield(get_runner(request).release_maintenance())
+                finally:
+                    request.app.state.manifest_lock.release()
+            raise
+        request.app.state.refresh_tasks.add(task)
+        task.add_done_callback(request.app.state.refresh_tasks.discard)
         return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
 
     @app.put(
@@ -1317,7 +1442,7 @@ def create_app(
         async with manifest_maintenance(request):
             try:
                 payload = body.model_dump()
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     put_series,
                     request.app.state.data_dir,
                     platform,
@@ -1339,7 +1464,9 @@ def create_app(
         require_auth(request)
         async with manifest_maintenance(request):
             try:
-                await asyncio.to_thread(delete_series, request.app.state.data_dir, platform, slug)
+                await _to_thread_to_completion(
+                    delete_series, request.app.state.data_dir, platform, slug
+                )
             except KeyError:
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             except ValueError as exc:
@@ -1368,7 +1495,7 @@ def create_app(
                 # during yt-dlp-driven discovery are not guarded either; only the
                 # server's own image fetches enforce redirect guards.
                 assert_public_catalog_url(body.url)
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     add_series_source,
                     request.app.state.data_dir,
                     platform,
@@ -1401,7 +1528,7 @@ def create_app(
         require_auth(request)
         async with manifest_maintenance(request):
             try:
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     delete_series_source,
                     request.app.state.data_dir,
                     platform,
@@ -1426,9 +1553,13 @@ def create_app(
         platform: str, slug: str, source_id: int, request: Request
     ) -> dict[str, Any]:
         require_auth(request)
-        async with manifest_maintenance(request):
+        async with manifest_maintenance(
+            request,
+            refresh_operation=True,
+            refresh_items=[{"platform": platform, "slug": slug}],
+        ):
             try:
-                return await asyncio.to_thread(
+                return await _to_thread_to_completion(
                     refresh_series_source,
                     request.app.state.data_dir,
                     platform,
@@ -1460,6 +1591,37 @@ def create_app(
                 request.app.state.data_dir,
                 platform,
                 slug,
+                environ=request.app.state.environ,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail={"error": "not found"})
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=_series_value_status(exc), detail={"error": str(exc)}
+            ) from exc
+
+    @app.post(
+        "/api/series/{platform}/{slug}/disk/slots",
+        tags=["series"],
+        status_code=200,
+        response_model=dict[str, Any],
+    )
+    async def post_series_disk_slots(
+        platform: str,
+        slug: str,
+        body: DiskSlotsBody,
+        request: Request,
+        _: None = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                series_disk_slot_status,
+                request.app.state.data_dir,
+                platform,
+                slug,
+                [slot.model_dump() for slot in body.slots],
                 environ=request.app.state.environ,
             )
         except KeyError:
@@ -1683,7 +1845,7 @@ def create_app(
             raise HTTPException(status_code=400, detail={"error": "empty download selection"})
         runner = get_runner(request)
         try:
-            await runner.start_download(body.ids, force=body.force)
+            await runner.start_download(body.ids, force=body.force, create=body.create)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
         except FileNotFoundError as exc:

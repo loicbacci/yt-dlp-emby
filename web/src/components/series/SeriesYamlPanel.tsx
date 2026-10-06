@@ -6,10 +6,12 @@ import { Skeleton } from "../Skeleton";
 export function SeriesYamlPanel({
   platform,
   slug,
+  disabled = false,
   onSaved,
 }: {
   platform: Source;
   slug: string;
+  disabled?: boolean;
   onSaved: (detail: SeriesDetail) => void;
 }) {
   const [text, setText] = useState("");
@@ -43,6 +45,7 @@ export function SeriesYamlPanel({
   }, [platform, slug]);
 
   const save = async () => {
+    if (disabled) return;
     setError(null);
     try {
       const detail = await apiClient.putSeriesYaml(platform, slug, text);
@@ -74,6 +77,7 @@ export function SeriesYamlPanel({
       exists
       error={error}
       activePath={file}
+      disabled={disabled}
       onChange={setText}
       onSave={() => void save()}
     />

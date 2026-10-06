@@ -58,14 +58,14 @@ export function RefreshSplit({
       </button>
       {open && (
         <div class="overflow-panel refresh-split-menu">
-          <button type="button" onClick={() => pick("listings")}>
+          <button type="button" disabled={disabled} onClick={() => pick("listings")}>
             Listings
           </button>
-          <button type="button" onClick={() => pick("disk")}>
+          <button type="button" disabled={disabled} onClick={() => pick("disk")}>
             Disk
           </button>
           {showSonarr && (
-            <button type="button" onClick={() => pick("sonarr")}>
+            <button type="button" disabled={disabled} onClick={() => pick("sonarr")}>
               Sonarr
             </button>
           )}

@@ -411,6 +411,7 @@ def _prepare_playlist(
     *,
     playlist_items: str | None = None,
     series_folder: str | None = None,
+    reserved_seasons: set[int] | None = None,
 ) -> YoutubePlaylistJob:
     if settings.verbose or settings.debug:
         log_step(settings, f"Listing playlist: {url}")
@@ -442,6 +443,10 @@ def _prepare_playlist(
         index.channel_name = playlist.channel
     season_number = assign_season(index, playlist.playlist_id, settings.season)
     existing = index.playlists.get(playlist.playlist_id)
+    if settings.season is None and existing is None and reserved_seasons is not None:
+        while season_number in reserved_seasons:
+            season_number += 1
+        reserved_seasons.add(season_number)
     actions = plan_sync(playlist, existing, season_number)
     season_path = season_dir(series, season_number)
     heights = _upgrade_low_res_actions(actions, season_path, settings.ffmpeg)
@@ -571,6 +576,7 @@ def run_youtube_manifest(
             emit({"event": "run_started", "source": "youtube", "dry_run": True})
         _cleanup_start(settings)
         jobs: list[YoutubePlaylistJob] = []
+        reserved_seasons: dict[Path, set[int]] = {}
         last_series: str | None = None
         series_slugs = youtube_series_slugs(manifest)
         for series_idx, series in enumerate(manifest.series):
@@ -581,11 +587,16 @@ def run_youtube_manifest(
             for item in series.playlists:
                 if not item.enabled:
                     continue
+                series_path = series_dir(settings.library, folder).resolve()
+                reserved = reserved_seasons.setdefault(series_path, set())
                 job = _prepare_playlist(
                     item.url,
                     replace(settings, season=item.season),
                     series_folder=folder,
+                    reserved_seasons=reserved,
                 )
+                if item.season is not None:
+                    reserved.add(item.season)
                 if item.skip:
                     skip_ids = set(item.skip)
                     job = replace(
@@ -724,7 +735,14 @@ def _apply_youtube_job(
     series = job.series
     season_path = job.season_path
     season_number = job.season_number
-    actions = job.actions
+    yt_slug = job.slug or slugify(job.series_name)
+    actions = [
+        action
+        for action in job.actions
+        if allowed_item_id(
+            item_id("youtube", yt_slug, emby_code(action.season, action.episode or 0))
+        )
+    ]
     playlist = job.playlist
     index = load_index(series)
     cache = load_cache(series)
@@ -792,20 +810,12 @@ def _apply_youtube_job(
     _write_series_metadata(series, season_path, playlist, index, season_number, art)
     write_series_artwork(series, season_path, season_number, playlist, art)
 
-    yt_slug = job.slug or slugify(job.series_name)
     downloads = [
         action
         for action in actions
         if action.kind in {ActionKind.ADD, ActionKind.REPLACE}
         and action.live
         and action.new_basename
-    ]
-    downloads = [
-        action
-        for action in downloads
-        if allowed_item_id(
-            item_id("youtube", yt_slug, emby_code(action.season, action.episode or 0))
-        )
     ]
     sidecars = [
         action

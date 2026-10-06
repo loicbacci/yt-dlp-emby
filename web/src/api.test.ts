@@ -227,3 +227,97 @@ describe("apiClient errors", () => {
     });
   });
 });
+
+describe("apiClient series refresh jobs", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("waits for the async refresh job and returns its final result", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ job_id: "job-1", status: "running" }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "running", result: null, error: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "done",
+            result: { ok: true, results: [{ platform: "dropout", slug: "show", error: null }] },
+            error: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      apiClient.refreshSeries([{ platform: "dropout", slug: "show" }], ["disk"]),
+    ).resolves.toEqual({
+      ok: true,
+      results: [{ platform: "dropout", slug: "show", error: null }],
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls[0]?.[0]).toBe("/api/series/refresh");
+    expect(fetch.mock.calls[1]?.[0]).toBe("/api/series/refresh/job-1");
+  });
+
+  it("keeps polling through temporary backend failures", async () => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ job_id: "job-1", status: "running" }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "done",
+            result: { ok: true, results: [] },
+            error: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetch);
+
+    const refresh = apiClient.refreshSeries([{ platform: "dropout", slug: "show" }]);
+    await vi.advanceTimersByTimeAsync(7_500);
+
+    await expect(refresh).resolves.toEqual({ ok: true, results: [] });
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
+  it("loads active refreshes so the UI can restore their busy state", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          jobs: [{ items: [{ platform: "dropout", slug: "show" }] }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(apiClient.getActiveSeriesRefreshes()).resolves.toEqual({
+      jobs: [{ items: [{ platform: "dropout", slug: "show" }] }],
+    });
+    expect(fetch.mock.calls[0]?.[0]).toBe("/api/series/refresh/active");
+  });
+});

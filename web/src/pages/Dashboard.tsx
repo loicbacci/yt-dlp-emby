@@ -51,6 +51,7 @@ import {
   visibleSeries,
 } from "../runQueue";
 import { invalidateAfterQueueRebuild } from "../seriesInvalidate";
+import { useAnyRefreshing } from "../seriesRefreshStore";
 import { indexSeriesPosters, seriesPosterUrl, shortUrl } from "../seriesView";
 import { writeSearch } from "../urlState";
 import { idleRun, useAppRun, usePlan } from "../useAppQueries";
@@ -61,6 +62,8 @@ export function Dashboard() {
   const runQuery = useAppRun();
   const planQuery = usePlan();
   const run = runQuery.data ?? idleRun;
+  const refreshing = useAnyRefreshing().length > 0;
+  const runStatusLoading = runQuery.isPending && !runQuery.data;
   const runKey = runKeyFor(run);
   const plan = planQuery.data ?? null;
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
@@ -94,6 +97,7 @@ export function Dashboard() {
   );
   const displayTree = useMemo(() => overlayProgress(tree, progress), [tree, progress]);
   const busy = run.status === "running" || run.status === "stopping";
+  const queueBlocked = busy || refreshing || runStatusLoading;
   const planning = run.phase === "planning";
   const downloading = run.phase === "downloading";
   const visible = useMemo(() => {
@@ -247,6 +251,7 @@ export function Dashboard() {
   });
 
   const onDownload = () => {
+    if (queueBlocked) return;
     if (!plan) {
       setError("Refresh the queue first");
       return;
@@ -282,15 +287,19 @@ export function Dashboard() {
   // No silent disables: the primary button always explains why it is disabled.
   const primaryReason = busy
     ? "Blocked while a run is in progress"
-    : planning
-      ? "Wait for the queue to finish listing"
-      : !hasManifest
-        ? "Refresh the queue first"
-        : downloadCount === 0
-          ? "Select at least one episode"
-          : startDownloadMut.isPending
-            ? "Starting…"
-            : undefined;
+    : refreshing
+      ? "Blocked while a show refresh is in progress"
+      : runStatusLoading
+        ? "Checking current run status"
+        : planning
+          ? "Wait for the queue to finish listing"
+          : !hasManifest
+            ? "Refresh the queue first"
+            : downloadCount === 0
+              ? "Select at least one episode"
+              : startDownloadMut.isPending
+                ? "Starting…"
+                : undefined;
   const remaining = Math.max(0, allPending.length - progress.doneIds.size);
   const statsLine = runStatsLine(run, progress, downloading ? remaining : allPending.length);
   const idleMeta = [
@@ -539,9 +548,18 @@ export function Dashboard() {
                     <button
                       type="button"
                       class="btn-secondary"
-                      disabled={busy || startPlanMut.isPending || setupPathsMissing}
-                      title={setupPathsMissing ? "Set library paths in Settings first" : undefined}
+                      disabled={queueBlocked || startPlanMut.isPending || setupPathsMissing}
+                      title={
+                        setupPathsMissing
+                          ? "Set library paths in Settings first"
+                          : runStatusLoading
+                            ? "Checking current run status"
+                            : refreshing
+                              ? "Blocked while a show refresh is in progress"
+                              : undefined
+                      }
                       onClick={() => {
+                        if (queueBlocked || startPlanMut.isPending) return;
                         setError(null);
                         events.setListingSeries(null);
                         startPlanMut.mutate();
@@ -553,7 +571,7 @@ export function Dashboard() {
                       ref={forceToggleRef}
                       type="button"
                       class="btn-secondary refresh-split-toggle"
-                      disabled={busy}
+                      disabled={queueBlocked}
                       aria-expanded={showForce}
                       aria-haspopup="true"
                       aria-label="Force options"
@@ -569,7 +587,7 @@ export function Dashboard() {
                             type="checkbox"
                             checked={force}
                             onChange={(e) => setForce((e.target as HTMLInputElement).checked)}
-                            disabled={busy}
+                            disabled={queueBlocked}
                           />
                           Re-download files already on disk
                         </label>
@@ -580,7 +598,7 @@ export function Dashboard() {
                             onChange={(e) =>
                               setCreateFolders((e.target as HTMLInputElement).checked)
                             }
-                            disabled={busy}
+                            disabled={queueBlocked}
                           />
                           Create missing folders
                         </label>
@@ -611,7 +629,7 @@ export function Dashboard() {
                     openSeasons={expandedSeasons}
                     upcomingOpen={expandedUpcoming.has(series.key)}
                     selected={selection.selected}
-                    busy={busy}
+                    busy={queueBlocked}
                     downloading={downloading}
                     listing={planning && listingSeries === series.name}
                     currentId={progress.currentId}
@@ -669,7 +687,7 @@ export function Dashboard() {
                       ? `${downloadCount} of ${allPending.length} pending`
                       : `${downloadCount} pending`}
               </span>
-              {selection.touched && !busy && (
+              {selection.touched && !queueBlocked && (
                 <button type="button" class="btn-ghost" onClick={selection.clear}>
                   Clear
                 </button>
@@ -705,7 +723,11 @@ export function Dashboard() {
                 type="button"
                 class="btn-primary"
                 disabled={
-                  planning || !hasManifest || downloadCount === 0 || startDownloadMut.isPending
+                  queueBlocked ||
+                  planning ||
+                  !hasManifest ||
+                  downloadCount === 0 ||
+                  startDownloadMut.isPending
                 }
                 title={primaryReason}
                 onClick={onDownload}
@@ -729,8 +751,10 @@ export function Dashboard() {
             }
             confirmLabel={runLabel(pendingDownload.count, pendingDownload.actions)}
             pending={startDownloadMut.isPending}
+            confirmDisabled={queueBlocked || startDownloadMut.isPending}
             onCancel={() => setPendingDownload(null)}
             onConfirm={() => {
+              if (queueBlocked || startDownloadMut.isPending) return;
               const { ids, count } = pendingDownload;
               setPendingDownload(null);
               startDownloadMut.mutate({ ids, count });
@@ -944,7 +968,7 @@ const SeriesRow = memo(function SeriesRow({
                 {seasonOpen && (
                   <div class="season-eps">
                     {remaining.map((ep) => (
-                      <label
+                      <div
                         key={ep.id}
                         class={
                           selected.has(ep.id) && !downloading
@@ -964,6 +988,7 @@ const SeriesRow = memo(function SeriesRow({
                                 onToggleEpisode(ep.id, (e.target as HTMLInputElement).checked)
                               }
                               disabled={busy}
+                              aria-label={`Select ${ep.code} ${ep.title}`}
                             />
                           )}
                         </span>
@@ -980,7 +1005,7 @@ const SeriesRow = memo(function SeriesRow({
                         {formatItemSize(ep.size) && (
                           <span class="ep-size">{formatItemSize(ep.size)}</span>
                         )}
-                      </label>
+                      </div>
                     ))}
                   </div>
                 )}

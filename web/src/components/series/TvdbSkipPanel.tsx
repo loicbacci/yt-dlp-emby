@@ -7,9 +7,11 @@ import { addTvdbSkip, formatMapsTo, removeTvdbSkip, skippedTvdbRows } from "../.
 
 export function TvdbSkipPanel({
   detail,
+  disabled = false,
   onChange,
 }: {
   detail: SeriesDetail;
+  disabled?: boolean;
   onChange: (blocks: { season: number; episodes: number[] }[]) => void;
 }) {
   const [adding, setAdding] = useState(false);
@@ -91,6 +93,7 @@ export function TvdbSkipPanel({
               <button
                 type="button"
                 class="btn-ghost"
+                disabled={disabled}
                 onClick={() => onChange(removeTvdbSkip(detail.tvdb_skip, row.season, row.episode))}
               >
                 Remove
@@ -100,7 +103,12 @@ export function TvdbSkipPanel({
         </ul>
       )}
       {!adding ? (
-        <button type="button" class="btn-secondary" onClick={() => setAdding(true)}>
+        <button
+          type="button"
+          class="btn-secondary"
+          disabled={disabled}
+          onClick={() => setAdding(true)}
+        >
           Add exception
         </button>
       ) : (
@@ -110,6 +118,7 @@ export function TvdbSkipPanel({
               <select
                 value={picked}
                 aria-label="Sonarr episode"
+                disabled={disabled}
                 onChange={(e) => setPicked((e.currentTarget as HTMLSelectElement).value)}
               >
                 <option value="">Choose a Sonarr episode…</option>
@@ -119,7 +128,12 @@ export function TvdbSkipPanel({
                   </option>
                 ))}
               </select>
-              <button type="button" class="btn-secondary" disabled={!picked} onClick={addPicked}>
+              <button
+                type="button"
+                class="btn-secondary"
+                disabled={disabled || !picked}
+                onClick={addPicked}
+              >
                 Add
               </button>
             </div>
@@ -131,6 +145,7 @@ export function TvdbSkipPanel({
               placeholder="Season"
               aria-label="Season"
               value={manualSeason}
+              disabled={disabled}
               onInput={(e) => setManualSeason((e.currentTarget as HTMLInputElement).value)}
             />
             <input
@@ -139,18 +154,24 @@ export function TvdbSkipPanel({
               placeholder="Episode"
               aria-label="Episode"
               value={manualEpisode}
+              disabled={disabled}
               onInput={(e) => setManualEpisode((e.currentTarget as HTMLInputElement).value)}
             />
             <button
               type="button"
               class="btn-ghost"
-              disabled={!manualReady}
+              disabled={disabled || !manualReady}
               title={manualReady ? undefined : "Enter a season and episode number first"}
               onClick={addManual}
             >
               Add
             </button>
-            <button type="button" class="btn-ghost" onClick={() => setAdding(false)}>
+            <button
+              type="button"
+              class="btn-ghost"
+              disabled={disabled}
+              onClick={() => setAdding(false)}
+            >
               Cancel
             </button>
           </div>

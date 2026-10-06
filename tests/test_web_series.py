@@ -367,6 +367,93 @@ def test_add_dropout_source_indexes(authed_client, tmp_path, monkeypatch) -> Non
     assert body["sources"][0]["seasons"][1]["dropout"] == 2
 
 
+def test_refresh_dropout_source_preserves_custom_mappings_and_adds_only_new_seasons(
+    authed_client, tmp_path, monkeypatch
+) -> None:
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    (shows / "show.yaml").write_text(
+        "series:\n"
+        "  - name: Show\n"
+        "    path: Show\n"
+        "    url: https://watch.dropout.tv/show\n"
+        "    seasons:\n"
+        "      - dropout: 1\n"
+        "        title: Custom season title\n"
+        "        to_season: 7\n"
+        "        remap:\n"
+        "          - dropout_episode: 3\n"
+        "            to_season: 0\n"
+        "            to_episode: 4\n"
+        "            title: Custom special\n"
+        "      - dropout: 4\n"
+        "        title: No longer listed, keep me\n"
+        "        to_season: 12\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dropout.yaml").write_text(
+        "imports:\n  - shows/show.yaml\nseries: []\n",
+        encoding="utf-8",
+    )
+    _write_cookies(tmp_path)
+
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.series.discover_dropout_source",
+        lambda *_args, **_kwargs: [
+            {
+                "dropout": 1,
+                "url": "https://watch.dropout.tv/show/season:1?new=1",
+                "to_season": 1,
+            },
+            {
+                "dropout": 2,
+                "url": "https://watch.dropout.tv/show/season:2",
+                "to_season": 2,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "yt_dlp_emby.server.series._hydrate_dropout_listings_force", lambda *_args, **_kwargs: None
+    )
+
+    response = authed_client.post("/api/series/dropout/show/sources/0/refresh")
+    assert response.status_code == 200, response.text
+    seasons = response.json()["sources"][0]["seasons"]
+    by_dropout = {season["dropout"]: season for season in seasons}
+    assert list(by_dropout) == [1, 4, 2]
+    assert by_dropout[1]["title"] == "Custom season title"
+    assert by_dropout[1]["to_season"] == 7
+    assert by_dropout[1]["remaps"] == [
+        {
+            "dropout_episode": 3,
+            "to_season": 0,
+            "to_episode": 4,
+            "title": "Custom special",
+        }
+    ]
+    assert by_dropout[4]["title"] == "No longer listed, keep me"
+    assert by_dropout[4]["to_season"] == 12
+    assert by_dropout[2]["to_season"] == 2
+
+    saved = yaml.safe_load((shows / "show.yaml").read_text(encoding="utf-8"))
+    saved_seasons = saved["series"][0]["seasons"]
+    assert [season["dropout"] for season in saved_seasons] == [1, 4, 2]
+    assert saved_seasons[0]["title"] == "Custom season title"
+
+
+def test_manifest_changes_are_blocked_during_source_refresh(authed_client) -> None:
+    created = authed_client.post(
+        "/api/series", json={"name": "Show", "platform": "dropout", "path": "Show"}
+    )
+    assert created.status_code == 200
+    authed_client.app.state.manifest_refresh_active = True
+
+    response = authed_client.put("/api/series/dropout/show", json=created.json())
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "a refresh is in progress"
+
+
 def test_put_rename_conflict_409(authed_client, tmp_path) -> None:
     client = authed_client
     assert (
@@ -461,9 +548,10 @@ def test_list_episodes_from_cache_includes_disk_status(authed_client, tmp_path) 
     client = authed_client
     body = client.get("/api/series/dropout/clip/sources/0/seasons/0/episodes").json()
     by_id = {row["id"]: row for row in body["episodes"]}
-    assert by_id["1"]["status"] == "downloaded"
+    assert by_id["1"]["mapped_season"] == 1
+    assert by_id["1"]["mapped_episode"] == 1
     assert by_id["2"]["status"] == "missing"
-    assert {"season": 1, "episode": 1} in body["on_disk"]
+    assert "on_disk" not in body
     disk = client.get("/api/series/dropout/clip/disk").json()
     assert {"season": 1, "episode": 1} in disk["on_disk"]
     listed = client.get("/api/series").json()["series"]

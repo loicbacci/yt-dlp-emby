@@ -16,6 +16,7 @@ export const queryKeys = {
   cookies: () => ["cookies"] as const,
   plan: () => ["plan"] as const,
   run: () => ["run"] as const,
+  activeRefreshes: () => ["active-series-refreshes"] as const,
   session: () => ["session"] as const,
 };
 

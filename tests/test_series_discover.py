@@ -1,4 +1,4 @@
-from yt_dlp_emby.dropout_manifest import DropoutSeason
+from yt_dlp_emby.dropout_manifest import DropoutRemap, DropoutSeason
 from yt_dlp_emby.extract import DropoutListing
 from yt_dlp_emby.server.series_discover import (
     ChannelDiscoverError,
@@ -6,6 +6,7 @@ from yt_dlp_emby.server.series_discover import (
     discover_youtube_sources,
     dropout_episode_rows,
     library_episode_status,
+    merge_dropout_seasons,
 )
 
 
@@ -70,6 +71,45 @@ def test_library_episode_status() -> None:
     assert library_episode_status(False, None, None, on_disk) == "unmapped"
     assert library_episode_status(False, 1, 1, on_disk) == "downloaded"
     assert library_episode_status(False, 1, 2, on_disk) == "missing"
+
+
+def test_merge_dropout_seasons_preserves_custom_mapping_and_adds_without_removing() -> None:
+    original = DropoutSeason(
+        dropout=1,
+        url="https://watch.dropout.tv/show/season:1",
+        to_season=7,
+        remap=(DropoutRemap(dropout_episode=3, to_season=0, to_episode=4, title="Special"),),
+        only_episodes=(3, 4),
+        enabled=False,
+        title="My season name",
+    )
+    no_longer_discovered = DropoutSeason(dropout=4, to_season=12, title="Keep this season")
+
+    merged = merge_dropout_seasons(
+        (original, no_longer_discovered),
+        [
+            {
+                "dropout": 1,
+                "url": "https://watch.dropout.tv/show/season:1?updated=1",
+                "to_season": 1,
+                "enabled": True,
+            },
+            {"dropout": 2, "url": "https://watch.dropout.tv/show/season:2", "to_season": 2},
+        ],
+    )
+
+    assert [season.dropout for season in merged] == [1, 4, 2]
+    assert merged[0] == DropoutSeason(
+        dropout=1,
+        url="https://watch.dropout.tv/show/season:1?updated=1",
+        to_season=7,
+        remap=original.remap,
+        only_episodes=(3, 4),
+        enabled=False,
+        title="My season name",
+    )
+    assert merged[1] == no_longer_discovered
+    assert merged[2].to_season == 2
 
 
 def test_dropout_episode_rows_mark_disk_status() -> None:

@@ -8,6 +8,7 @@ export function ConfirmModal({
   cancelLabel = "Cancel",
   danger = false,
   pending = false,
+  confirmDisabled = false,
   error,
   onConfirm,
   onCancel,
@@ -18,6 +19,7 @@ export function ConfirmModal({
   cancelLabel?: string;
   danger?: boolean;
   pending?: boolean;
+  confirmDisabled?: boolean;
   error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
@@ -66,7 +68,7 @@ export function ConfirmModal({
             ref={confirmRef}
             type="button"
             class={danger ? "btn-danger" : "btn-modal-save"}
-            disabled={pending}
+            disabled={pending || confirmDisabled}
             onClick={onConfirm}
           >
             {pending ? "Working…" : confirmLabel}

@@ -15,6 +15,7 @@ export function ManifestEditor({
   notices,
   tabs,
   activePath,
+  disabled = false,
   onTabChange,
   onChange,
   onSave,
@@ -27,6 +28,7 @@ export function ManifestEditor({
   notices?: string[];
   tabs?: EditorTab[];
   activePath?: string;
+  disabled?: boolean;
   onTabChange?: (path: string) => void;
   onChange: (text: string) => void;
   onSave: () => void;
@@ -93,6 +95,7 @@ export function ManifestEditor({
                 aria-selected={selected}
                 aria-controls="editor-panel"
                 tabIndex={selected ? 0 : -1}
+                disabled={disabled}
                 onClick={() => onTabChange?.(tab.path)}
                 onKeyDown={(e) => {
                   const next = moveRovingIndex(e as unknown as KeyboardEvent, tabs!.length, index);
@@ -123,7 +126,12 @@ export function ManifestEditor({
           <span class="editor-filename">{filename}</span>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             {dirty && <span class="editor-unsaved">Unsaved</span>}
-            <button type="button" class="btn-secondary" disabled={!dirty} onClick={onSave}>
+            <button
+              type="button"
+              class="btn-secondary"
+              disabled={disabled || !dirty}
+              onClick={onSave}
+            >
               Save
             </button>
           </div>
@@ -142,6 +150,7 @@ export function ManifestEditor({
             spellcheck={false}
             value={text}
             aria-label={filename}
+            disabled={disabled}
             onScroll={syncScroll}
             onInput={(e) => {
               onChange((e.currentTarget as HTMLTextAreaElement).value);

@@ -12,8 +12,8 @@ import {
   filterSonarrEpisodes,
   findCatalogEpisode,
   formatMapsTo,
-  isSeasonOpen,
   indexSeriesPosters,
+  isSeasonOpen,
   missingStatusClass,
   missingStatusText,
   originLabel,
@@ -29,9 +29,9 @@ import {
   seasonFoldMap,
   seasonHeading,
   seasonMissingLabel,
+  seriesPosterUrl,
   skippedTvdbRows,
   slugify,
-  seriesPosterUrl,
   sonarrBadgeLabel,
   sonarrEpisodeIsOut,
   sonarrSeriesUrl,
@@ -279,6 +279,21 @@ describe("applySeasonToEpisode", () => {
     expect(next.skipped).toBe(true);
   });
 
+  it("recalculates the default destination from the current season mapping", () => {
+    const next = applySeasonToEpisode(
+      {
+        to_season: 4,
+        dropout: 1,
+        only_episodes: null,
+        remaps: [],
+        skip_ids: [],
+      },
+      base,
+    );
+    expect(next.mapped_season).toBe(4);
+    expect(next.mapped_episode).toBe(12);
+  });
+
   it("applies remap skip", () => {
     const next = applySeasonToEpisode(
       {
@@ -502,11 +517,15 @@ describe("dest-order map", () => {
   });
 
   it("does not treat TBA or unaired Sonarr rows as dest holes", () => {
-    const dest = buildDestMap(catalog, [
-      ...sonarr,
-      { season: 3, episode: 6, title: "TBA" },
-      { season: 3, episode: 7, title: "Next Week", air_date: "2099-01-01" },
-    ], new Set());
+    const dest = buildDestMap(
+      catalog,
+      [
+        ...sonarr,
+        { season: 3, episode: 6, title: "TBA" },
+        { season: 3, episode: 7, title: "Next Week", air_date: "2099-01-01" },
+      ],
+      new Set(),
+    );
     const s3 = dest.seasons.find((group) => group.destSeason === 3);
     expect(s3?.slots.map((slot) => slot.destEpisode)).toEqual([1, 2, 3, 4, 5]);
     expect(s3?.holes).toBe(2);

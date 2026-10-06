@@ -36,12 +36,17 @@ import { go } from "../nav";
 import { queryKeys } from "../queryKeys";
 import { formatRelativeTime } from "../relativeTime";
 import { useSeriesCatalog } from "../seriesCatalog";
-import { invalidateSeriesState } from "../seriesInvalidate";
+import {
+  invalidateAfterMetadataRefresh,
+  invalidateAfterSeriesChange,
+  invalidateAfterSourceRefresh,
+  invalidateSeriesState,
+} from "../seriesInvalidate";
 import {
   beginRefresh,
   endRefresh,
   refreshSeriesKey,
-  useSeriesRefreshing,
+  useAnyRefreshing,
 } from "../seriesRefreshStore";
 import {
   type SeriesTab,
@@ -95,7 +100,10 @@ export function SeriesDetail() {
   const [folderView, setFolderView] = useState<SeriesTab>(
     viewParam === "sources" || viewParam === "yaml" ? viewParam : "emby",
   );
-  const refreshing = useSeriesRefreshing(platform, slug);
+  const refreshingKeys = useAnyRefreshing();
+  const refreshing = refreshingKeys.includes(refreshSeriesKey(platform, slug));
+  const refreshInProgress = refreshingKeys.length > 0;
+  const runStatusLoading = runQuery.isPending && !runQuery.data;
   const cached = queryClient.getQueryData<SeriesDetailModel>(seriesKey) ?? null;
   const [detail, setDetail] = useState<SeriesDetailModel | null>(cached);
   const [saved, setSaved] = useState<SeriesDetailModel | null>(cached);
@@ -272,12 +280,12 @@ export function SeriesDetail() {
       setError(message);
       pushToast(message, "alert");
     },
-    onSuccess: (body) => {
+    onSuccess: (body, _next, ctx) => {
       queryClient.setQueryData(seriesKey, body);
       setDetail(body);
       setSaved(body);
       setDirtyTick(0);
-      void invalidateSeriesState(queryClient, [{ platform, slug, tvdb_id: body.tvdb_id }]);
+      void invalidateAfterSeriesChange(queryClient, ctx?.prev ?? saved ?? body, body);
     },
   });
 
@@ -318,10 +326,10 @@ export function SeriesDetail() {
       setPendingError(null);
       flashSaved("Source added");
     },
-    onSettled: (_body, _err, _url, ctx) => {
-      void invalidateSeriesState(queryClient, [
-        { platform, slug, tvdb_id: ctx?.prevDetail?.tvdb_id ?? detail?.tvdb_id },
-      ]);
+    onSettled: (body, _err, _url, ctx) => {
+      if (body && ctx?.prevDetail) {
+        void invalidateAfterSeriesChange(queryClient, ctx.prevDetail, body);
+      }
     },
   });
 
@@ -361,18 +369,25 @@ export function SeriesDetail() {
       setDirtyTick(0);
       pushToast("Source removed");
     },
-    onSettled: (_body, _err, _sourceId, ctx) => {
+    onSettled: (body, _err, _sourceId, ctx) => {
       setRemovingSourceId(null);
-      void invalidateSeriesState(queryClient, [
-        { platform, slug, tvdb_id: ctx?.prevDetail?.tvdb_id ?? detail?.tvdb_id },
-      ]);
+      if (body && ctx?.prevDetail) {
+        void invalidateAfterSeriesChange(queryClient, ctx.prevDetail, body);
+      }
     },
   });
 
   const refreshSourceMut = useMutation({
     mutationFn: (sourceId: number) => apiClient.refreshSeriesSource(platform, slug, sourceId),
     onMutate: async (sourceId) => {
-      await queryClient.cancelQueries({ queryKey: seriesKey });
+      const key = refreshSeriesKey(platform, slug);
+      beginRefresh([key]);
+      try {
+        await queryClient.cancelQueries({ queryKey: seriesKey });
+      } catch (error) {
+        endRefresh([key]);
+        throw error;
+      }
       const prev = queryClient.getQueryData<SeriesDetailModel>(seriesKey);
       const prevDetail = detail;
       setRefreshingSourceId(sourceId);
@@ -406,11 +421,18 @@ export function SeriesDetail() {
       setDirtyTick(0);
       pushToast("Source refreshed");
     },
-    onSettled: (_body, _err, _sourceId, ctx) => {
+    onSettled: async (body, _err, sourceId, ctx) => {
       setRefreshingSourceId(null);
-      void invalidateSeriesState(queryClient, [
-        { platform, slug, tvdb_id: ctx?.prevDetail?.tvdb_id ?? detail?.tvdb_id },
-      ]);
+      try {
+        if (body && ctx?.prevDetail) {
+          await invalidateAfterSeriesChange(queryClient, ctx.prevDetail, body, {
+            refreshedSourceIds: [sourceId],
+          });
+          await invalidateAfterSourceRefresh(queryClient, { platform, slug });
+        }
+      } finally {
+        endRefresh([refreshSeriesKey(platform, slug)]);
+      }
     },
   });
 
@@ -418,9 +440,13 @@ export function SeriesDetail() {
   // Covers add/remove/refresh plus skip/toggle/remap/title/dest (all via persistMut).
   const mutationBusy =
     addingUrl || persistMut.isPending || removeSourceMut.isPending || refreshSourceMut.isPending;
+  // All manifest and source changes share the backend's maintenance lock with
+  // metadata refreshes. Keep the editor read-only for the whole refresh window
+  // so users do not type into controls whose save would be rejected or stale.
+  const editsBlocked = runStatusLoading || runActive || refreshInProgress || mutationBusy;
 
   const save = async () => {
-    if (!detail || runActive) return;
+    if (!detail || editsBlocked) return;
     setError(null);
     try {
       await persist(detail);
@@ -432,7 +458,7 @@ export function SeriesDetail() {
 
   const addUrl = () => {
     const url = urlDraft.trim();
-    if (!url || runActive || addUrlMut.isPending) return;
+    if (!url || editsBlocked) return;
     setUrlError(null);
     if (!isHttpUrl(url)) {
       setUrlError("Enter a valid http(s) URL");
@@ -450,7 +476,7 @@ export function SeriesDetail() {
   };
 
   const removeSource = (sourceId: number) => {
-    if (!detail || removeSourceMut.isPending) return;
+    if (!detail || editsBlocked) return;
     removeSourceMut.mutate(sourceId);
   };
 
@@ -475,19 +501,19 @@ export function SeriesDetail() {
   };
 
   const refreshSource = (sourceId: number) => {
-    if (runActive || !detail || refreshSourceMut.isPending) return;
+    if (editsBlocked || dirty || !detail) return;
     refreshSourceMut.mutate(sourceId);
   };
 
   const saveSourceUrl = async (sourceId: number, url: string) => {
-    if (!detail) return;
+    if (!detail || editsBlocked) return;
     const next: SeriesDetailModel = {
       ...detail,
       sources: detail.sources.map((src, idx) => (idx === sourceId ? { ...src, url } : src)),
     };
     try {
       await persist(next);
-      refreshSource(sourceId);
+      flashSaved("Source URL saved. Refresh when ready.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Update URL failed");
     }
@@ -692,7 +718,7 @@ export function SeriesDetail() {
   };
 
   const deleteSeries = async () => {
-    if (!detail || runActive) return;
+    if (!detail || editsBlocked) return;
     try {
       await apiClient.deleteSeries(platform, slug);
       pushToast(`Deleted ${detail.name}`);
@@ -720,7 +746,7 @@ export function SeriesDetail() {
   };
 
   const refreshMetadata = async (part: RefreshPart = "all") => {
-    if (runActive) return;
+    if (runStatusLoading || runActive || refreshInProgress || mutationBusy) return;
     const key = refreshSeriesKey(platform, slug);
     beginRefresh([key]);
     try {
@@ -735,7 +761,11 @@ export function SeriesDetail() {
       } else {
         pushToast("Refresh complete");
       }
-      await invalidateSeriesState(queryClient, [{ platform, slug, tvdb_id: detail?.tvdb_id }]);
+      await invalidateAfterMetadataRefresh(
+        queryClient,
+        [{ platform, slug, tvdb_id: detail?.tvdb_id }],
+        part,
+      );
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Refresh failed";
       setError(message);
@@ -875,10 +905,18 @@ export function SeriesDetail() {
               </div>
               <div class="series-hero-actions">
                 <RefreshSplit
-                  disabled={refreshing || runActive}
+                  disabled={runStatusLoading || refreshInProgress || runActive || mutationBusy}
                   busy={refreshing}
                   showSonarr={detail.tvdb_id != null}
-                  title={runActive ? "Blocked while a run is in progress" : undefined}
+                  title={
+                    runActive
+                      ? "Blocked while a run is in progress"
+                      : runStatusLoading
+                        ? "Checking current run status"
+                        : refreshInProgress
+                          ? "Refresh in progress"
+                          : undefined
+                  }
                   onRefresh={(part) => void refreshMetadata(part)}
                 />
                 <p class="refresh-stamps">
@@ -896,8 +934,14 @@ export function SeriesDetail() {
                   <button
                     type="button"
                     class="btn-ghost"
-                    disabled={runActive || persistMut.isPending}
-                    title={runActive ? "Blocked while a run is in progress" : undefined}
+                    disabled={editsBlocked}
+                    title={
+                      runActive
+                        ? "Blocked while a run is in progress"
+                        : refreshInProgress
+                          ? "Blocked while refreshing"
+                          : undefined
+                    }
                     onClick={() => setEditOpen(true)}
                   >
                     Edit
@@ -905,8 +949,14 @@ export function SeriesDetail() {
                   <button
                     type="button"
                     class="btn-danger"
-                    disabled={runActive}
-                    title={runActive ? "Blocked while a run is in progress" : undefined}
+                    disabled={editsBlocked}
+                    title={
+                      runActive
+                        ? "Blocked while a run is in progress"
+                        : refreshInProgress
+                          ? "Blocked while refreshing"
+                          : undefined
+                    }
                     onClick={() => setDeleteOpen(true)}
                   >
                     Delete
@@ -914,8 +964,14 @@ export function SeriesDetail() {
                   <button
                     type="button"
                     class="btn-secondary"
-                    disabled={!dirty || runActive || persistMut.isPending}
-                    title={runActive ? "Blocked while a run is in progress" : undefined}
+                    disabled={!dirty || editsBlocked}
+                    title={
+                      runActive
+                        ? "Blocked while a run is in progress"
+                        : refreshInProgress
+                          ? "Blocked while refreshing"
+                          : undefined
+                    }
                     onClick={() => void save()}
                   >
                     Save
@@ -972,6 +1028,7 @@ export function SeriesDetail() {
                   (detail.tvdb_id != null && sonarrMetaQuery.isPending)
                 }
                 refreshing={refreshing}
+                disabled={editsBlocked}
                 onFind={(slot) => {
                   const fromCheck = check?.missing.find(
                     (row) => row.season === slot.destSeason && row.episode === slot.destEpisode,
@@ -1039,7 +1096,7 @@ export function SeriesDetail() {
                         ? "Paste a YouTube playlist or channel URL"
                         : "Paste a Dropout series or season URL"
                     }
-                    disabled={addingUrl || runActive}
+                    disabled={addingUrl || editsBlocked}
                     testId="source-add"
                     onChange={(value) => {
                       setUrlDraft(value);
@@ -1049,8 +1106,14 @@ export function SeriesDetail() {
                   <button
                     type="submit"
                     class="btn-secondary"
-                    disabled={addingUrl || runActive || !urlDraft.trim()}
-                    title={runActive ? "Blocked while a run is in progress" : undefined}
+                    disabled={addingUrl || editsBlocked || !urlDraft.trim()}
+                    title={
+                      runActive
+                        ? "Blocked while a run is in progress"
+                        : refreshInProgress
+                          ? "Blocked while refreshing"
+                          : undefined
+                    }
                   >
                     {addingUrl ? (
                       <>
@@ -1085,8 +1148,9 @@ export function SeriesDetail() {
                     loadingMap={loadingMap}
                     refreshing={refreshing}
                     sourceBusy={refreshingSourceId === sourceId || removingSourceId === sourceId}
+                    unsavedChanges={dirty}
                     onDisk={onDisk}
-                    disabled={runActive || mutationBusy}
+                    disabled={editsBlocked}
                     destErrors={destErrors}
                     skipErrors={skipErrors}
                     seasonOpen={(seasonId) => isSeasonOpen(seasonFolds, sourceId, seasonId)}
@@ -1144,6 +1208,7 @@ export function SeriesDetail() {
                   check={check}
                   checkError={checkError}
                   loading={checkLoading}
+                  disabled={editsBlocked}
                   onSkip={(season, episode) => {
                     void persist({
                       ...detail,
@@ -1161,6 +1226,7 @@ export function SeriesDetail() {
                 <section class="settings-section">
                   <TvdbSkipPanel
                     detail={detail}
+                    disabled={editsBlocked}
                     onChange={(tvdb_skip) => {
                       void persist({ ...detail, tvdb_skip })
                         .then(() => flashSaved("Exceptions updated"))
@@ -1182,6 +1248,7 @@ export function SeriesDetail() {
               <SeriesYamlPanel
                 platform={platform}
                 slug={slug}
+                disabled={editsBlocked}
                 onSaved={(body) => {
                   queryClient.setQueryData(seriesKey, body);
                   setDetail(body);
@@ -1189,9 +1256,7 @@ export function SeriesDetail() {
                   setDirtyTick(0);
                   setServerChanged(false);
                   flashSaved("YAML saved");
-                  void invalidateSeriesState(queryClient, [
-                    { platform: body.platform, slug: body.slug, tvdb_id: body.tvdb_id },
-                  ]);
+                  void invalidateAfterSeriesChange(queryClient, detail, body);
                   if (body.slug !== slug) {
                     go(`/series/${body.platform}/${encodeURIComponent(body.slug)}`);
                   }
@@ -1204,6 +1269,7 @@ export function SeriesDetail() {
           <RemapModal
             tvdbId={detail.tvdb_id}
             episode={remap.episode}
+            disabled={editsBlocked}
             onClose={() => {
               setRemap(null);
               setModalError(null);
@@ -1225,6 +1291,7 @@ export function SeriesDetail() {
             suggestions={remapCandidatesForMissing(catalog, remap.missing)}
             hints={remap.missing.hints}
             loading={Object.values(loadingMap).some(Boolean)}
+            disabled={editsBlocked}
             onClose={() => setRemap(null)}
             onSave={(source) =>
               void applyRemap(source.sourceId, source.seasonId, source.episode, {
@@ -1246,8 +1313,10 @@ export function SeriesDetail() {
               tvdb_id: detail.tvdb_id,
             }}
             fileLabel={detail.file}
+            disabled={editsBlocked}
             onClose={() => setEditOpen(false)}
             onCreate={async (body) => {
+              if (editsBlocked) return;
               await persist({
                 ...detail,
                 name: body.name,
@@ -1268,6 +1337,7 @@ export function SeriesDetail() {
             danger
             error={modalError}
             pending={false}
+            confirmDisabled={editsBlocked}
             onCancel={() => {
               setDeleteOpen(false);
               setModalError(null);
@@ -1285,6 +1355,7 @@ export function SeriesDetail() {
             confirmLabel="Remove"
             danger
             pending={removeSourceMut.isPending}
+            confirmDisabled={editsBlocked}
             onCancel={() => setPendingRemoveSource(null)}
             onConfirm={() => {
               const sourceId = pendingRemoveSource;
