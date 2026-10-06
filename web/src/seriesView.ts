@@ -190,9 +190,19 @@ export function seasonMissingLabel(missing: number | null | undefined): string {
   return countLabel(missing, "missing", "missing");
 }
 
-export function emptyListMessage(total: number, filtered: number): string {
+export function emptyListMessage(
+  total: number,
+  filtered: number,
+  filters: { query: string; platform: SeriesPlatform | "all" } = { query: "", platform: "all" },
+): string {
   if (total === 0) return "No series yet"; // CTA is rendered by SeriesList
-  if (filtered === 0) return "No matching series.";
+  if (filtered === 0) {
+    if (!filters.query.trim() && filters.platform === "all") return "No matching series.";
+    const platform =
+      filters.platform === "all" ? "" : filters.platform === "youtube" ? "YouTube " : "Dropout ";
+    const query = filters.query.trim();
+    return query ? `No ${platform}shows match “${query}”.` : `No ${platform}shows.`;
+  }
   return "";
 }
 

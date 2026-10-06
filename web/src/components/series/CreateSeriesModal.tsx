@@ -54,13 +54,7 @@ export function CreateSeriesModal({
     if (!saving) onClose();
   });
 
-  const ready =
-    title.trim() &&
-    path.trim() &&
-    (mode === "edit" || slug) &&
-    !nameError &&
-    !saving &&
-    (tvdb.trim() === "" || Number.isFinite(tvdbId));
+  const ready = title.trim() && path.trim() && (mode === "edit" || slug) && !nameError && !saving;
 
   const submit = async () => {
     if (!ready) return;
@@ -106,6 +100,8 @@ export function CreateSeriesModal({
           <span class="settings-label">Title *</span>
           <input
             type="text"
+            name="title"
+            required
             aria-required="true"
             value={title}
             autoFocus
@@ -141,10 +137,26 @@ export function CreateSeriesModal({
           File <code>{fileLabel ?? `shows/${slug || "…"}.yaml`}</code>
         </p>
         <label class="settings-field">
-          <span class="settings-label">TVDB id</span>
+          <span class="settings-label">Folder *</span>
+          <input
+            type="text"
+            name="folder"
+            required
+            aria-required="true"
+            value={path}
+            onInput={(e) => {
+              setPathTouched(true);
+              setPath((e.currentTarget as HTMLInputElement).value);
+            }}
+          />
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">TVDB id (optional)</span>
           <input
             type="text"
             inputMode="numeric"
+            pattern="[0-9]*"
+            aria-invalid={Boolean(tvdb.trim() && !/^\d+$/.test(tvdb.trim()))}
             value={tvdb}
             onInput={(e) => setTvdb((e.currentTarget as HTMLInputElement).value)}
           />
@@ -153,18 +165,6 @@ export function CreateSeriesModal({
               TVDB id must be digits
             </span>
           )}
-        </label>
-        <label class="settings-field">
-          <span class="settings-label">Folder *</span>
-          <input
-            type="text"
-            aria-required="true"
-            value={path}
-            onInput={(e) => {
-              setPathTouched(true);
-              setPath((e.currentTarget as HTMLInputElement).value);
-            }}
-          />
         </label>
         {error && (
           <div class="validation-error" role="alert">

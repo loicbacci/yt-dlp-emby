@@ -267,6 +267,10 @@ describe("emptyListMessage", () => {
   it("distinguishes empty catalog from a failed filter", () => {
     expect(emptyListMessage(0, 0)).toBe("No series yet");
     expect(emptyListMessage(3, 0)).toBe("No matching series.");
+    expect(emptyListMessage(3, 0, { query: "public", platform: "dropout" })).toBe(
+      "No Dropout shows match “public”.",
+    );
+    expect(emptyListMessage(3, 0, { query: "", platform: "youtube" })).toBe("No YouTube shows.");
     expect(emptyListMessage(3, 2)).toBe("");
   });
 });

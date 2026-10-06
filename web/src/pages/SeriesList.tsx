@@ -276,7 +276,19 @@ export function SeriesList() {
             <SeriesListSkeleton />
           ) : !filtered.length ? (
             <div class="empty-state">
-              <p>{emptyListMessage(rows.length, filtered.length)}</p>
+              <p>{emptyListMessage(rows.length, filtered.length, { query, platform })}</p>
+              {(query.trim() || platform !== "all") && (
+                <button
+                  type="button"
+                  class="btn-ghost"
+                  onClick={() => {
+                    setQuery("");
+                    setPlatform("all");
+                  }}
+                >
+                  Clear filters
+                </button>
+              )}
               {rows.length === 0 && (
                 <button type="button" class="btn-primary" onClick={() => setModal(true)}>
                   Add show

@@ -214,6 +214,7 @@ export function SeriesDetail() {
     }
     setDetail(seriesQuery.data);
     setSaved(seriesQuery.data);
+    setServerChanged(false);
     setDirtyTick(0);
   }, [seriesQuery.data, dirty, saved]);
 
@@ -275,6 +276,7 @@ export function SeriesDetail() {
       queryClient.setQueryData(seriesKey, body);
       setDetail(body);
       setSaved(body);
+      setServerChanged(false);
       setDirtyTick(0);
       void invalidateSeriesState(queryClient, [{ platform, slug, tvdb_id: body.tvdb_id }]);
     },
@@ -1126,15 +1128,24 @@ export function SeriesDetail() {
                         </button>
                       )}
                     </div>
-                    <p class="settings-hint">
-                      {addingUrl ? (
-                        <>
-                          <span class="spinner" aria-hidden="true" /> Discovering seasons…
-                        </>
-                      ) : (
-                        (pendingError ?? "")
-                      )}
-                    </p>
+                    {pendingError ? (
+                      <div class="validation-error" role="alert">
+                        <span>{pendingError}</span>
+                        {/cookies file not found/i.test(pendingError) && (
+                          <a href={`/settings?tab=${platform}`} target="_blank" rel="noreferrer">
+                            Open {platform === "dropout" ? "Dropout" : "YouTube"} cookie settings
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <p class="settings-hint">
+                        {addingUrl && (
+                          <>
+                            <span class="spinner" aria-hidden="true" /> Discovering seasons…
+                          </>
+                        )}
+                      </p>
+                    )}
                   </div>
                 )}
               </section>

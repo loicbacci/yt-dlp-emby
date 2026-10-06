@@ -552,6 +552,12 @@ a.btn-danger {
   font-size: 13px;
 }
 
+.validation-error a {
+  display: inline-block;
+  margin-left: 8px;
+  font-weight: 600;
+}
+
 .ep-inline-error {
   margin: 0 16px 8px 18px;
 }
