@@ -59,6 +59,7 @@ describe("job start transport", () => {
       expect(JSON.parse(String(init?.body))).toEqual({
         kind: "refresh",
         items: [{ platform: "youtube", slug: "sample" }],
+        parts: ["listings", "disk", "sonarr"],
       });
       return new Response(JSON.stringify(requests.refresh_start), {
         status: 202,
@@ -67,7 +68,11 @@ describe("job start transport", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await expect(
-      apiClient.startJob({ kind: "refresh", items: [{ platform: "youtube", slug: "sample" }] }),
+      apiClient.startJob({
+        kind: "refresh",
+        items: [{ platform: "youtube", slug: "sample" }],
+        parts: ["listings", "disk", "sonarr"],
+      }),
     ).resolves.toEqual(requests.refresh_start);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -77,9 +82,14 @@ describe("job start transport", () => {
     expect(refreshJobRequest(items, "target-config-revision")).toEqual({
       kind: "refresh",
       items,
+      parts: ["listings", "disk", "sonarr"],
       expected_revision: "target-config-revision",
     });
-    expect(refreshJobRequest(items)).toEqual({ kind: "refresh", items });
+    expect(refreshJobRequest(items)).toEqual({
+      kind: "refresh",
+      items,
+      parts: ["listings", "disk", "sonarr"],
+    });
   });
 
   it("rejects a synchronous 200 response instead of treating it as completed work", async () => {

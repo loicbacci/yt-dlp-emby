@@ -36,6 +36,7 @@ from yt_dlp_emby.events import (
     explicitly_selected_provider_action,
     folder_label,
     item_id,
+    selection_is_active,
     set_current_item_id,
     validate_selected_action,
 )
@@ -58,6 +59,7 @@ from yt_dlp_emby.library import (
     assign_season,
     emby_code,
     episode_stem,
+    find_episode_mkv,
     load_index,
     media_exists,
     sanitize_filename,
@@ -901,6 +903,17 @@ def _apply_youtube_job_remainder(
                 video_url = _video_url(action.live)
                 local_stem = work / action.new_basename
                 dest = season_path / action.new_basename
+                if (
+                    selection_is_active()
+                    and action.kind == ActionKind.ADD
+                    and find_episode_mkv(season_path, action.season, action.episode or 0)
+                    is not None
+                ):
+                    log_step(settings, f"[{i}/{len(downloads)}] Skipping episode already on disk")
+                    stats.skipped += 1
+                    emit({"event": "item_done", "id": event_id, "action": "skipped_existing"})
+                    set_current_item_id(None)
+                    continue
                 already = media_exists(season_path, action.new_basename)
                 existing_height: int | None = None
                 if already:

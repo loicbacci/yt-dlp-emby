@@ -13,10 +13,7 @@ export const queryKeys = {
   config: () => ["app-config"] as const,
   platform: (kind: string) => ["platform-settings", kind] as const,
   cookies: () => ["cookies"] as const,
-  plan: (force?: boolean, create?: boolean) =>
-    force === undefined && create === undefined
-      ? (["plan"] as const)
-      : (["plan", force ?? false, create ?? false] as const),
+  queue: () => ["queue"] as const,
   jobs: () => ["jobs"] as const,
   session: () => ["session"] as const,
 };

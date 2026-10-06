@@ -62,13 +62,13 @@ export function useAppRun() {
   return { ...jobs, data, isPending: jobs.isPending };
 }
 
-export function usePlan(force = false, create = false) {
+export function useQueue() {
   const enabled = useSession().data?.authenticated === true;
   return useQuery({
-    queryKey: queryKeys.plan(force, create),
+    queryKey: queryKeys.queue(),
     queryFn: async () => {
       try {
-        return await apiClient.getPlan(force, create);
+        return await apiClient.getQueue();
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) return null;
         throw err;

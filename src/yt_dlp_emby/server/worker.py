@@ -105,7 +105,7 @@ def main() -> int:
                 if (
                     op == "download"
                     and event_name == "item_done"
-                    and output.get("action") == "downloaded"
+                    and output.get("action") in {"downloaded", "skipped_existing"}
                 ):
                     execution_id = output.get("id")
                     for action in selected_actions:
@@ -123,6 +123,7 @@ def main() -> int:
                                     "identity": {"id": action["id"]},
                                     "result": {
                                         "ok": True,
+                                        "action": output.get("action"),
                                         "action_id": action["id"],
                                         "execution_id": execution_id,
                                     },
@@ -135,6 +136,7 @@ def main() -> int:
             results: list[dict[str, Any]] = []
             for target in payload["items"]:
                 target = {**target}
+                target["parts"] = payload.get("parts", ["listings", "disk", "sonarr"])
                 if payload.get("source_index") is not None:
                     target["source_index"] = payload["source_index"]
                 if payload.get("expected_revision") is not None:
@@ -154,7 +156,9 @@ def main() -> int:
                         result = result.to_dict()
                     result = {
                         **result,
-                        "ok": result.get("error") is None and bool(result.get("plan")),
+                        "ok": bool(result.get("ok", True))
+                        and result.get("error") is None
+                        and bool(result.get("plan")),
                     }
                 except Exception as exc:
                     result = {

@@ -112,7 +112,7 @@ export function JobLifecycle() {
       )
         continue;
       invalidated.current.add(job.id);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plan() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queue() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() });
       const result = job.result as { results?: { platform?: string; slug?: string }[] } | null;
       for (const target of result?.results ?? []) {

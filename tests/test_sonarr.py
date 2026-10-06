@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
@@ -145,6 +146,7 @@ def test_force_refetch_skips_cache(tmp_path: Path) -> None:
         {
             "1": {
                 "title": "Cached",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "episodes": [{"season": 1, "episode": 1, "title": "Old"}],
             }
         },

@@ -2227,28 +2227,25 @@ a.show-copy:hover .show-name {
   min-width: 8.5rem;
 }
 
-.force-menu {
-  min-width: 16rem;
-  max-width: min(22rem, calc(100vw - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.force-menu label {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  line-height: 1.35;
-  color: var(--text);
+.refresh-split-menu button {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
-  border-radius: 8px;
 }
 
-.force-menu label:hover {
+.refresh-split-menu button:hover,
+.refresh-split-menu button:focus-visible {
   background: var(--bg-inset);
+  outline: none;
+}
+
+.refresh-split-menu button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .refresh-stamps {

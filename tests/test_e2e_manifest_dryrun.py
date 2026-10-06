@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from yt_dlp_emby.config import ConfigError
 from yt_dlp_emby.server.services import (
     ProviderListing,
     current_configuration_revision,
@@ -60,7 +59,7 @@ def test_planner_uses_explicit_destination_and_emits_selectable_action() -> None
     assert action["id"]
 
 
-def test_executor_rejects_changed_disk_before_any_provider_write(
+def test_executor_does_not_rescan_the_library_before_provider_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     library = tmp_path / "library"
@@ -102,22 +101,26 @@ def test_executor_rejects_changed_disk_before_any_provider_write(
 
     # A new file changes the fingerprint after the user selected the action.
     (show / "Season 01" / "Example - S01E99 - Concurrent.mkv").write_bytes(b"changed")
-    monkeypatch.setattr(
-        "yt_dlp_emby.dropout.run_dropout",
-        lambda *_args, **_kwargs: pytest.fail("executor reached before stale-plan check"),
-    )
+    called = []
+
+    def fake_run(*_args, **kwargs):
+        called.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("yt_dlp_emby.dropout.run_dropout", fake_run)
     context = {
         "plan_id": plan["plan_id"],
         "selected_actions": [selected],
         "cached_views": [{"platform": "dropout", "slug": "example", "view": cached_view}],
     }
 
-    with pytest.raises(ConfigError, match="library changed"):
-        download_selected(
-            tmp_path,
-            {},
-            plan["plan_id"],
-            [selected["id"]],
-            operation_context=context,
-        )
+    assert download_selected(
+        tmp_path,
+        {},
+        plan["plan_id"],
+        [selected["id"]],
+        operation_context=context,
+    )["ok"]
+    assert len(called) == 1
+    assert called[0]["force"] is False
     assert not list(library.rglob("*.part"))

@@ -13,6 +13,7 @@ import time
 from base64 import b64decode, b64encode
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 from urllib.parse import urlparse
@@ -1052,12 +1053,91 @@ def create_app(
     @app.get("/api/series", tags=["series"], status_code=200, response_model=dict[str, Any])
     async def get_series_list(request: Request) -> dict[str, Any]:
         require_auth(request)
-        return await asyncio.to_thread(
+        payload = await asyncio.to_thread(
             cached_views.series_list,
             request.app.state.data_dir,
             request.app.state.environ,
             store,
         )
+        return payload
+
+    async def _start_stale_catalog_refresh(
+        request: Request, series_payload: dict[str, Any]
+    ) -> None:
+        from yt_dlp_emby.server.views import (
+            _current,
+            _view,
+            cache_is_stale,
+            cache_part_is_stale,
+        )
+
+        targets = []
+        for row in series_payload.get("series", []):
+            platform, slug = row.get("platform"), row.get("slug")
+            record = store.get_view(str(platform), str(slug))
+            cached_view = _view(record) or {}
+            has_recent_error = bool(record and record.get("error")) or bool(
+                cached_view.get("sonarr_error")
+            )
+            if has_recent_error and record and record.get("last_attempt_at"):
+                try:
+                    attempted = datetime.fromisoformat(
+                        str(record["last_attempt_at"]).replace("Z", "+00:00")
+                    )
+                    if attempted.tzinfo is None:
+                        attempted = attempted.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) - attempted < timedelta(minutes=5):
+                        continue
+                except ValueError:
+                    pass
+            if (
+                cache_is_stale(record)
+                or (row.get("tvdb_id") is not None and cache_part_is_stale(record, "sonarr"))
+                or not _current(
+                    request.app.state.data_dir,
+                    request.app.state.environ,
+                    str(platform),
+                    str(slug),
+                    record,
+                )
+            ):
+                targets.append({"platform": platform, "slug": slug})
+        if not targets:
+            return
+        try:
+            await request.app.state.job_coordinator.start({"kind": "refresh", "items": targets})
+        except JobConflict:
+            # A user refresh or download already owns the single worker slot.
+            return
+
+    @app.get("/api/queue", tags=["queue"], status_code=200, response_model=dict[str, Any])
+    async def get_queue(request: Request) -> dict[str, Any]:
+        require_auth(request)
+        payload = await asyncio.to_thread(
+            cached_views.latest_queue,
+            request.app.state.data_dir,
+            request.app.state.environ,
+            store,
+        )
+        series_payload = await asyncio.to_thread(
+            cached_views.series_list,
+            request.app.state.data_dir,
+            request.app.state.environ,
+            store,
+        )
+        await _start_stale_catalog_refresh(request, series_payload)
+        if payload is None:
+            return {
+                "plan_id": "queue_loading",
+                "revision": "loading",
+                "readiness": "loading",
+                "generated_at": None,
+                "force": False,
+                "sources": {},
+                "actions": [],
+                "stale": True,
+            }
+        return payload
 
     @app.post("/api/series", tags=["series"], status_code=200, response_model=dict[str, Any])
     async def post_series(
@@ -1576,12 +1656,10 @@ def create_app(
             payload_data = payload.model_dump(exclude_none=True)
             if payload.kind == "download":
                 current = await asyncio.to_thread(
-                    cached_views.latest_plan,
+                    cached_views.latest_queue,
                     request.app.state.data_dir,
                     request.app.state.environ,
                     store,
-                    force=payload.force,
-                    create=payload.create,
                 )
                 if current is None:
                     raise HTTPException(
@@ -1596,24 +1674,15 @@ def create_app(
                     raise HTTPException(
                         status_code=409, detail={"error": "plan is not ready", "code": code}
                     )
-                if payload.plan_id != current.get("plan_id"):
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "plan changed; refresh before downloading",
-                            "code": "PLAN_STALE",
-                        },
-                    )
                 try:
                     selection = await asyncio.to_thread(
                         cached_views.executable_selection,
                         request.app.state.data_dir,
                         request.app.state.environ,
                         store,
-                        payload.plan_id,
+                        str(current.get("plan_id")),
                         payload.ids,
-                        force=payload.force,
-                        create=payload.create,
+                        create=True,
                     )
                 except ValueError as exc:
                     raise HTTPException(
@@ -1625,6 +1694,9 @@ def create_app(
                     ) from exc
                 payload_data["selected_actions"] = selection["selected_actions"]
                 payload_data["cached_views"] = selection["cached_views"]
+                payload_data["plan_id"] = selection["plan_id"]
+                payload_data["force"] = False
+                payload_data["create"] = True
             try:
                 job_id = await coordinator.start(payload_data)
             except JobConflict as exc:
@@ -1845,25 +1917,6 @@ def create_app(
                     detail={"error": str(exc), "code": "JOB_CONFLICT", "job_id": exc.job_id},
                 ) from exc
         return JSONResponse({"job_id": new_id, "status": "queued"}, status_code=202)
-
-    @app.get("/api/plans/latest", tags=["plans"])
-    async def get_plans_latest(
-        request: Request, force: bool = False, create: bool = False
-    ) -> dict[str, Any]:
-        require_auth(request)
-        plan = await asyncio.to_thread(
-            cached_views.latest_plan,
-            request.app.state.data_dir,
-            request.app.state.environ,
-            store,
-            force=force,
-            create=create,
-        )
-        if plan is None:
-            raise HTTPException(
-                status_code=404, detail={"error": "no cached plan", "code": "NOT_FOUND"}
-            )
-        return plan
 
     if static_root is not None:
 

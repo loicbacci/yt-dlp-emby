@@ -169,17 +169,16 @@ def test_retry_skips_only_disk_verified_download_completions(authed_client, monk
 
 
 def test_download_ids_are_explicit_and_unique(authed_client) -> None:
-    empty = authed_client.post("/api/jobs", json={"kind": "download", "plan_id": "p", "ids": []})
+    empty = authed_client.post("/api/jobs", json={"kind": "download", "ids": []})
     assert empty.status_code == 400
-    dup = authed_client.post(
-        "/api/jobs", json={"kind": "download", "plan_id": "p", "ids": ["a", "a"]}
-    )
+    dup = authed_client.post("/api/jobs", json={"kind": "download", "ids": ["a", "a"]})
     assert dup.status_code == 400
 
 
-def test_cached_plan_missing_is_404_without_filesystem_scan(authed_client, tmp_path) -> None:
-    response = authed_client.get("/api/plans/latest")
-    assert response.status_code == 404
+def test_cached_queue_is_empty_without_filesystem_scan(authed_client, tmp_path) -> None:
+    response = authed_client.get("/api/queue")
+    assert response.status_code == 200
+    assert response.json()["readiness"] == "loading"
     assert not (tmp_path / "lib").exists()
 
 

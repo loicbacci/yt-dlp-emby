@@ -42,10 +42,12 @@ export type { ConfigSlot, MaskedSecret };
 export function refreshJobRequest(
   items: { platform: Source; slug: string }[],
   expectedRevision?: string | null,
+  parts: ("listings" | "disk" | "sonarr")[] = ["listings", "disk", "sonarr"],
 ): Extract<JobRequest, { kind: "refresh" }> {
   return {
     kind: "refresh",
     items,
+    parts,
     ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
   };
 }
@@ -305,10 +307,8 @@ export const apiClient = {
       method: "PUT",
       body: JSON.stringify({ text }),
     }),
-  getPlan: (force = false, create = false) =>
-    api<PlanFile>(`/api/plans/latest?force=${force}&create=${create}`, undefined, (data) =>
-      parseWith(planFileSchema, data, "Plan"),
-    ),
+  getQueue: () =>
+    api<PlanFile>("/api/queue", undefined, (data) => parseWith(planFileSchema, data, "queue")),
   getJobs: (offset = 0, limit = 20) =>
     api<{ active: JobSnapshot | null; history: JobSnapshot[]; total: number }>(
       `/api/jobs?offset=${offset}&limit=${limit}`,

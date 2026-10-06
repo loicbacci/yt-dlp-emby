@@ -9,7 +9,7 @@ from pathlib import Path
 
 from yt_dlp_emby.cache import atomic_write_private
 
-LEGACY_FILES = ("plan.json", "events.jsonl", "download-only.json", "cache/refresh.json")
+LEGACY_FILES = ("events.jsonl", "download-only.json", "cache/refresh.json")
 
 
 def archive_legacy_state(data_dir: Path) -> None:

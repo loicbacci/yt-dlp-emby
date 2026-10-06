@@ -8,7 +8,7 @@ import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -20,6 +20,7 @@ from yt_dlp_emby.images import MAX_IMAGE_BYTES, image_url_allowed
 SONARR_CACHE_FILENAME = "sonarr.json"
 TIMEOUT_SECONDS = 30
 POSTER_TIMEOUT_SECONDS = 10
+SONARR_CACHE_TTL = timedelta(hours=24)
 
 GetJson = Callable[[str, dict[str, str]], Any]
 
@@ -443,7 +444,15 @@ def fetch_episodes_cached_meta(
         if not force_refetch:
             cached = load_sonarr_cache(cache_path).get(key)
             if cached is not None:
-                return _episodes_from_cache(cached)
+                fetched_at = cached.get("fetched_at")
+                try:
+                    fetched = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
+                    if fetched.tzinfo is None:
+                        fetched = fetched.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) - fetched < SONARR_CACHE_TTL:
+                        return _episodes_from_cache(cached)
+                except ValueError:
+                    pass
         extra: dict[str, Any] = {}
         title, episodes = fetch_episodes(
             tvdb_id,
@@ -457,6 +466,7 @@ def fetch_episodes_cached_meta(
         cache[key] = {
             "title": title,
             "title_slug": title_slug,
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "episodes": [
                 {
                     "season": item.season,

@@ -108,15 +108,8 @@ export function SeriesList() {
     staleTime: 0,
   });
   const planQuery = useQuery({
-    queryKey: queryKeys.plan(),
-    queryFn: async () => {
-      try {
-        return await apiClient.getPlan();
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 404) return null;
-        throw err;
-      }
-    },
+    queryKey: queryKeys.queue(),
+    queryFn: () => apiClient.getQueue(),
     staleTime: 5_000,
   });
 
@@ -165,7 +158,7 @@ export function SeriesList() {
       setPendingDelete(null);
       pushToast(`Deleted ${row.name}`);
       await queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.plan() });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.queue() });
     },
     onError: (err) => {
       setActionError(err instanceof ApiError ? err.message : "Delete failed");
@@ -181,7 +174,7 @@ export function SeriesList() {
     const detail = await apiClient.createSeries(body);
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.plan() }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue() }),
     ]);
     setModal(false);
     pushToast(`Created ${detail.name}`);

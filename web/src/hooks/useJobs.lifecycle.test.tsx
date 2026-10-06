@@ -74,7 +74,7 @@ describe("JobLifecycle polling", () => {
       client.getQueryData<{ focused: JobSnapshot }>(queryKeys.jobs())?.focused.logs,
     ).toHaveLength(251);
     expect(
-      invalidate.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === "plan"),
+      invalidate.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === "queue"),
     ).toHaveLength(1);
   });
 

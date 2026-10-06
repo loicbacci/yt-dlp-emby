@@ -12,7 +12,7 @@ from yt_dlp_emby.server.services import (
     current_configuration_revision,
     plan_variant,
 )
-from yt_dlp_emby.server.views import executable_selection, latest_plan, series_detail
+from yt_dlp_emby.server.views import executable_selection, latest_plan, latest_queue, series_detail
 
 
 @pytest.fixture
@@ -99,6 +99,19 @@ def test_cached_plan_uses_import_file_slug_and_specials(cached_library) -> None:
     assert row["action"] == "present"
     assert row["folder"] == "Specials"
     assert plan["sources"]["dropout"]["seasons"][0]["download"] == 0
+
+
+def test_derived_queue_contains_only_missing_episodes(cached_library) -> None:
+    data, store = cached_library
+    view = _publish(data, store, "a")
+    view["disk"]["episodes"] = []
+    plan = plan_variant(view, create=True)
+    store.put_view("dropout", "a", {"view": view}, plan, plan["revision"], "ready", "now", "now")
+
+    queue = latest_queue(data, {}, store)
+    rows = queue["sources"]["dropout"]["items"]
+    assert len(rows) == 1
+    assert rows[0]["action"] == "download"
 
 
 def test_force_changes_cached_plan_revision_and_only_existing_action(cached_library) -> None:

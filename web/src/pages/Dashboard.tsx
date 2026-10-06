@@ -12,7 +12,6 @@ import { OnboardingChecklist, pathsUnset } from "../components/OnboardingCheckli
 import { Poster, posterLetter } from "../components/Poster";
 import { QueueSkeleton } from "../components/Skeleton";
 import { pushToast, useDocumentTitle } from "../components/Toast";
-import { useDismiss } from "../hooks/useDismiss";
 import { useJobs } from "../hooks/useJobs";
 import { useOnline } from "../hooks/useOnline";
 import { useExpandedSeasons, useQueueSelection } from "../hooks/useQueueSelection";
@@ -49,7 +48,7 @@ import {
 } from "../runQueue";
 import { indexSeriesPosters, seriesPosterUrl, shortUrl } from "../seriesView";
 import { writeSearch } from "../urlState";
-import { idleRun, useAppRun, usePlan } from "../useAppQueries";
+import { idleRun, useAppRun, useQueue } from "../useAppQueries";
 
 export function Dashboard() {
   const queryClient = useQueryClient();
@@ -60,13 +59,10 @@ export function Dashboard() {
   const run = runQuery.data ?? idleRun;
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const [query, setQuery] = useState(params.get("q") ?? "");
-  const [force, setForce] = useState(params.get("force") === "1");
-  const [createFolders, setCreateFolders] = useState(params.get("create") === "1");
-  const planQuery = usePlan(force, createFolders);
+  const planQuery = useQueue();
   const plan = planQuery.data ?? null;
-  const [showForce, setShowForce] = useState(false);
-  const forceToggleRef = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [stopOpen, setStopOpen] = useState(false);
   const [notifyOptIn, setNotifyOptIn] = useState(false);
   const selection = useQueueSelection(params.get("sel"));
@@ -87,12 +83,6 @@ export function Dashboard() {
     activeJob?.kind === "refresh" && target?.includes("|")
       ? target.slice(target.indexOf("|") + 1)
       : null;
-  useDismiss(
-    showForce,
-    () => setShowForce(false),
-    ".queue-refresh",
-    forceToggleRef as unknown as import("preact").RefObject<HTMLElement | null>,
-  );
   const displayTree = useMemo(() => overlayProgress(tree, progress), [tree, progress]);
   const busy = run.status === "running" || run.status === "stopping";
   const planning = run.phase === "planning";
@@ -124,8 +114,6 @@ export function Dashboard() {
     };
     writeSearch({
       q: query.trim() || null,
-      force: force ? "1" : null,
-      create: createFolders ? "1" : null,
       sel: !selection.touched
         ? null
         : selection.selected.size === 0
@@ -134,15 +122,7 @@ export function Dashboard() {
       open: capped([...expanded.openSeries]),
       seasons: capped([...expanded.openSeasons]),
     });
-  }, [
-    query,
-    force,
-    createFolders,
-    selection.selected,
-    selection.touched,
-    expanded.openSeries,
-    expanded.openSeasons,
-  ]);
+  }, [query, selection.selected, selection.touched, expanded.openSeries, expanded.openSeasons]);
 
   useEffect(() => {
     if (downloading && progress.currentId) {
@@ -172,8 +152,10 @@ export function Dashboard() {
   }, [visible, downloading]);
 
   const startPlanMut = useMutation({
-    mutationFn: (items: { platform: "youtube" | "dropout"; slug: string }[]) =>
-      apiClient.startJob(refreshJobRequest(items)),
+    mutationFn: (input: {
+      items: { platform: "youtube" | "dropout"; slug: string }[];
+      parts: ("listings" | "disk" | "sonarr")[];
+    }) => apiClient.startJob(refreshJobRequest(input.items, null, input.parts)),
     onError: (err) => {
       const message = err instanceof ApiError ? err.message : "Refresh failed to start";
       setError(message);
@@ -186,10 +168,7 @@ export function Dashboard() {
     mutationFn: ({ ids }: { ids: string[]; count: number }) =>
       apiClient.startJob({
         kind: "download",
-        plan_id: plan?.plan_id ?? "",
         ids,
-        force,
-        create: createFolders,
       }),
     onError: (err) => {
       setError(err instanceof ApiError ? err.message : "Download failed");
@@ -222,7 +201,7 @@ export function Dashboard() {
     const count = effective.length;
     const ids = effective;
     if (!plan?.plan_id || plan.readiness !== "ready") {
-      setError("Refresh the queue before downloading; the plan is stale or unavailable");
+      setError("Refresh the queue before downloading; saved results are stale or unavailable");
       return;
     }
     if (!ids.length) {
@@ -391,6 +370,7 @@ export function Dashboard() {
         : null;
   const seriesLoadError = posterQuery.error instanceof Error ? posterQuery.error.message : null;
   const refreshTargets = posterQuery.data?.series ?? [];
+  const sonarrTargets = refreshTargets.filter((row) => row.tvdb_id != null);
   const noRefreshTargets =
     !posterQuery.isPending && !seriesLoadError && refreshTargets.length === 0;
   const pathCheckPending = configQuery.isFetching || platformPathsLoading;
@@ -474,7 +454,7 @@ export function Dashboard() {
             <>
               {planUnknown && !busy && (
                 <p class="run-hint" role="status">
-                  Queue counts are unknown because the last plan is stale or the library is
+                  Queue counts are unknown because saved data is stale or the library is
                   unavailable. Refresh to rebuild it.
                 </p>
               )}
@@ -594,53 +574,70 @@ export function Dashboard() {
                       onClick={() => {
                         setError(null);
                         if (!refreshTargets.length) return;
-                        startPlanMut.mutate(
-                          refreshTargets.map(({ platform, slug }) => ({ platform, slug })),
-                        );
+                        startPlanMut.mutate({
+                          items: refreshTargets.map(({ platform, slug }) => ({ platform, slug })),
+                          parts: ["listings", "disk", "sonarr"],
+                        });
                       }}
                     >
-                      Refresh
+                      Refresh all
                     </button>
                     <button
-                      ref={forceToggleRef}
                       type="button"
                       class="btn-secondary refresh-split-toggle"
-                      disabled={busy}
-                      aria-expanded={showForce}
-                      aria-haspopup="true"
-                      aria-label="Force options"
-                      title="Force options"
-                      onClick={() => setShowForce((v) => !v)}
+                      disabled={busy || startPlanMut.isPending || noRefreshTargets}
+                      aria-expanded={refreshMenuOpen}
+                      aria-haspopup="menu"
+                      aria-label="Refresh options"
+                      onClick={() => setRefreshMenuOpen((open) => !open)}
                     >
                       ▾
                     </button>
-                    {showForce && (
-                      <div class="overflow-panel refresh-split-menu force-menu" role="group">
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={force}
-                            onChange={(e) => setForce((e.target as HTMLInputElement).checked)}
-                            disabled={busy}
-                          />
-                          Replace Dropout episodes already on disk (Force)
-                        </label>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={createFolders}
-                            onChange={(e) =>
-                              setCreateFolders((e.target as HTMLInputElement).checked)
+                    {refreshMenuOpen && (
+                      <div class="overflow-panel refresh-split-menu" role="menu">
+                        {(
+                          [
+                            ["Episode listings / yt-dlp", ["listings"]],
+                            ["Disk inventory", ["disk"]],
+                            ["Sonarr", ["sonarr"]],
+                          ] as const
+                        ).map(([label, parts]) => (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            key={label}
+                            disabled={
+                              busy ||
+                              startPlanMut.isPending ||
+                              noRefreshTargets ||
+                              (parts[0] === "sonarr" && sonarrTargets.length === 0)
                             }
-                            disabled={busy}
-                          />
-                          Create missing folders
-                        </label>
+                            onClick={() => {
+                              setRefreshMenuOpen(false);
+                              setError(null);
+                              startPlanMut.mutate({
+                                items: (parts[0] === "sonarr" ? sonarrTargets : refreshTargets).map(
+                                  ({ platform, slug }) => ({ platform, slug }),
+                                ),
+                                parts: [...parts],
+                              });
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
                 )}
               </div>
+              {plan?.stale && (
+                <p class="run-hint cache-status" role="status">
+                  {plan.cache_errors?.length
+                    ? "Showing the last saved results; a refresh needs attention."
+                    : "Showing saved results while the catalog refreshes."}
+                </p>
+              )}
               {searchMiss && <p class="empty-state">No queue items match “{query.trim()}”.</p>}
               <section class="run-tree">
                 {planning && (
@@ -648,6 +645,9 @@ export function Dashboard() {
                 )}
                 {hasManifest && !busy && visible.length === 0 && upToDate.length > 0 && (
                   <p class="run-hint">Everything in the queue is already on disk.</p>
+                )}
+                {hasManifest && !busy && visible.length === 0 && upToDate.length === 0 && (
+                  <p class="run-hint">No episodes are waiting to download.</p>
                 )}
                 {visible.map((series) => (
                   <SeriesRow

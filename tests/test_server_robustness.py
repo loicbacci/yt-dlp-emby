@@ -29,9 +29,10 @@ def test_validation_envelope_has_fields(authed_client) -> None:
     assert isinstance(body["fields"], dict) and body["fields"]
 
 
-def test_latest_plan_is_cached_and_missing_is_404(authed_client, tmp_path) -> None:
-    response = authed_client.get("/api/plans/latest")
-    assert response.status_code == 404
+def test_queue_is_cached_and_empty_without_filesystem_scan(authed_client, tmp_path) -> None:
+    response = authed_client.get("/api/queue")
+    assert response.status_code == 200
+    assert response.json()["readiness"] == "loading"
     assert not (tmp_path / "lib").exists()
 
 

@@ -225,12 +225,15 @@ class JobCoordinator:
             if request["kind"] == "refresh":
                 for target in payload.get("items", []):
                     cached = self.store.get_view(target["platform"], target["slug"])
-                    if cached:
-                        inputs = cached.get("inputs") or {}
-                        view = inputs.get("view", inputs) if isinstance(inputs, dict) else {}
-                        disk = view.get("disk") if isinstance(view, dict) else None
-                        if isinstance(disk, dict) and disk.get("mount_identity"):
-                            target["expected_mount_identity"] = disk["mount_identity"]
+                    if not cached:
+                        continue
+                    inputs = cached.get("inputs") or {}
+                    view = inputs.get("view", inputs) if isinstance(inputs, dict) else {}
+                    if isinstance(view, dict):
+                        target["cached_view"] = view
+                    disk = view.get("disk") if isinstance(view, dict) else None
+                    if isinstance(disk, dict) and disk.get("mount_identity"):
+                        target["expected_mount_identity"] = disk["mount_identity"]
             if request["kind"] == "check":
                 for target in payload.get("items", []):
                     cached = self.store.get_view(target["platform"], target["slug"])
@@ -347,6 +350,22 @@ class JobCoordinator:
                             if not isinstance(raw_result, dict):
                                 raise ValueError("invalid item result")
                             item_result = _sanitize(raw_result, self._secrets)
+                            if (
+                                request["kind"] == "download"
+                                and item_result.get("ok") is True
+                                and item_result.get("action_id")
+                            ):
+                                action = next(
+                                    (
+                                        row
+                                        for row in request.get("selected_actions", [])
+                                        if isinstance(row, dict)
+                                        and row.get("id") == item_result.get("action_id")
+                                    ),
+                                    None,
+                                )
+                                if action is not None:
+                                    await asyncio.to_thread(self._record_downloaded_action, action)
                             if request["kind"] == "refresh" and isinstance(item_result, dict):
                                 item_result = await self._publish_refresh_result(item_result, ident)
                                 refresh_items.append(item_result)
@@ -481,9 +500,37 @@ class JobCoordinator:
             "slug": item.get("slug"),
         }
         view, plan = item.get("view"), item.get("plan")
-        if not isinstance(target, dict) or not isinstance(view, dict) or not isinstance(plan, dict):
+        if not isinstance(target, dict):
             return item
         platform, slug = str(target.get("platform") or ""), str(target.get("slug") or "")
+        if not isinstance(view, dict) or not isinstance(plan, dict):
+            if item.get("error"):
+                self.store.record_view_attempt(platform, slug, item["error"])
+            elif isinstance(item.get("sonarr"), dict):
+                record = self.store.get_view(platform, slug)
+                inputs = (record or {}).get("inputs") or {}
+                cached_view = inputs.get("view") if isinstance(inputs, dict) else None
+                if isinstance(cached_view, dict):
+                    cached_view["sonarr"] = item["sonarr"]
+                    times = cached_view.setdefault("cache_times", {})
+                    if isinstance(times, dict):
+                        times["sonarr"] = item["sonarr"].get("fetched_at")
+                    self.store.put_view(
+                        platform,
+                        slug,
+                        {"view": cached_view},
+                        (record or {}).get("plan") or {},
+                        str((record or {}).get("revision") or ""),
+                        "ready",
+                        str((record or {}).get("last_attempt_at") or utc_now()),
+                        str((record or {}).get("last_success_at") or utc_now()),
+                    )
+                    from yt_dlp_emby.server.catalog_cache import write_snapshot
+
+                    await asyncio.to_thread(
+                        write_snapshot, self.data_dir, platform, slug, cached_view
+                    )
+            return item
         try:
             update = item.get("config_updates") or {}
             observed_revision = str(view.get("config_revision") or "")
@@ -549,6 +596,9 @@ class JobCoordinator:
                     attempt,
                     attempt,
                 )
+                from yt_dlp_emby.server.catalog_cache import write_snapshot
+
+                await asyncio.to_thread(write_snapshot, self.data_dir, platform, slug, view)
             elif item.get("error"):
                 item["error"] = _sanitize(item["error"], self._secrets)
                 self.store.record_view_attempt(platform, slug, item["error"])
@@ -559,6 +609,47 @@ class JobCoordinator:
             )
             self.store.record_view_attempt(platform, slug, item["error"])
         return item
+
+    def _record_downloaded_action(self, action: dict[str, Any]) -> None:
+        """Patch the inventory cache from a worker-confirmed completed download."""
+        from yt_dlp_emby.server.catalog_cache import patch_inventory
+
+        platform, slug = str(action.get("platform") or ""), str(action.get("slug") or "")
+        season, episode = action.get("dest_season"), action.get("dest_episode")
+        if platform not in {"youtube", "dropout"} or not slug:
+            return
+        if not isinstance(season, int) or not isinstance(episode, int):
+            return
+        record = self.store.get_view(platform, slug)
+        view = ((record or {}).get("inputs") or {}).get("view")
+        if not isinstance(view, dict):
+            patch_inventory(self.data_dir, platform, slug, season, episode)
+            return
+        disk = view.get("disk")
+        if not isinstance(disk, dict) or not isinstance(disk.get("episodes"), list):
+            patch_inventory(self.data_dir, platform, slug, season, episode)
+            return
+        pair = [season, episode]
+        if pair not in disk["episodes"]:
+            disk["episodes"].append(pair)
+            disk["episodes"].sort()
+        disk["series_exists"] = True
+        disk["scanned_at"] = utc_now()
+        cache_times = view.setdefault("cache_times", {})
+        if isinstance(cache_times, dict):
+            cache_times["disk"] = disk["scanned_at"]
+        self.store.put_view(
+            platform,
+            slug,
+            {"view": view},
+            (record or {}).get("plan") or {},
+            str((record or {}).get("revision") or ""),
+            str((record or {}).get("freshness") or "ready"),
+            str((record or {}).get("last_attempt_at") or utc_now()),
+            str((record or {}).get("last_success_at") or utc_now()),
+            (record or {}).get("error"),
+        )
+        patch_inventory(self.data_dir, platform, slug, season, episode)
 
     async def _terminate(self, proc: asyncio.subprocess.Process) -> None:
         for sig, wait in ((signal.SIGINT, 5), (signal.SIGTERM, 2), (signal.SIGKILL, 0)):

@@ -617,6 +617,7 @@ def _cache_view(
     client: TestClient, data: Path, slug: str, *, on_disk: list[tuple[int, int]] | None = None
 ) -> dict:
     from dataclasses import asdict
+    from datetime import datetime, timezone
 
     from yt_dlp_emby.server.series import locate_series
     from yt_dlp_emby.server.services import (
@@ -660,6 +661,7 @@ def _cache_view(
     view["source_signature"] = source_signature(series)
     view["context_signature"] = configuration_context_signature(data, {}, "dropout")
     plan = plan_variant(view)
+    cached_at = datetime.now(timezone.utc).isoformat()
     client.app.state.job_store.put_view(
         "dropout",
         slug,
@@ -667,8 +669,8 @@ def _cache_view(
         plan,
         plan["revision"],
         "ready",
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:00:00Z",
+        cached_at,
+        cached_at,
     )
     return view
 
@@ -677,7 +679,7 @@ def test_cached_plan_preserves_both_shows_on_same_platform(authed_client, tmp_pa
     _configured_shows(tmp_path, ["Show", "Other"])
     _cache_view(authed_client, tmp_path, "show")
     _cache_view(authed_client, tmp_path, "other")
-    plan = authed_client.get("/api/plans/latest").json()
+    plan = authed_client.get("/api/queue").json()
     assert {row["slug"] for row in plan["sources"]["dropout"]["items"]} == {"show", "other"}
     assert len(plan["sources"]["dropout"]["items"]) == 4
 
@@ -687,26 +689,31 @@ def test_failed_refresh_preserves_last_good_view_as_stale(authed_client, tmp_pat
     _cache_view(authed_client, tmp_path, "show")
     _cache_view(authed_client, tmp_path, "other")
     authed_client.app.state.job_store.record_view_attempt("dropout", "show", "NAS unavailable")
-    plan = authed_client.get("/api/plans/latest").json()
+    plan = authed_client.get("/api/queue").json()
     rows = plan["sources"]["dropout"]["items"]
-    assert all(row["action"] == "blocked" for row in rows if row["slug"] == "show")
+    assert all(row["action"] == "download" for row in rows if row["slug"] == "show")
     assert all(row["action"] == "download" for row in rows if row["slug"] == "other")
+    assert plan["stale"] is True
+    assert plan["cache_errors"][0]["error"] == "NAS unavailable"
     detail = authed_client.get("/api/series/dropout/show").json()
     assert detail["stale"] is True
-    assert detail["missing_count"] is None
-    assert detail["last_success_at"] == "2026-01-01T00:00:00Z"
+    assert detail["missing_count"] == 2
+    assert (
+        detail["last_success_at"]
+        == authed_client.app.state.job_store.get_view("dropout", "show")["last_success_at"]
+    )
     assert detail["error"] == "NAS unavailable"
 
 
 def test_external_config_change_blocks_cached_execution(authed_client, tmp_path) -> None:
     _configured_shows(tmp_path, ["Show"])
     _cache_view(authed_client, tmp_path, "show")
-    before = authed_client.get("/api/plans/latest").json()
+    before = authed_client.get("/api/queue").json()
     path = tmp_path / "dropout.yaml"
     raw = yaml.safe_load(path.read_text())
     raw["series"][0]["seasons"][0]["to_season"] = 27
     path.write_text(yaml.safe_dump(raw))
-    after = authed_client.get("/api/plans/latest").json()
+    after = authed_client.get("/api/queue").json()
     assert before["plan_id"] != after["plan_id"]
     assert after["readiness"] == "stale"
     assert all(row["action"] == "blocked" for row in after["sources"]["dropout"]["items"])
@@ -714,13 +721,13 @@ def test_external_config_change_blocks_cached_execution(authed_client, tmp_path)
         "/api/jobs",
         json={
             "kind": "download",
-            "plan_id": before["plan_id"],
             "ids": [before["sources"]["dropout"]["items"][0]["id"]],
         },
     )
     assert started.status_code == 409
     assert started.json()["code"] == "PLAN_STALE"
-    assert authed_client.get("/api/jobs").json()["active"] is None
+    active = authed_client.get("/api/jobs").json()["active"]
+    assert active is None or active["kind"] == "refresh"
 
 
 def test_series_yaml_roundtrip(authed_client, tmp_path) -> None:
@@ -785,7 +792,7 @@ def test_plans_latest_uses_cached_disk_snapshot(authed_client, tmp_path, monkeyp
         raise AssertionError("cached plan GET must never scan media")
 
     monkeypatch.setattr("yt_dlp_emby.server.services.library_snapshot", forbidden)
-    plan = authed_client.get("/api/plans/latest").json()
+    plan = authed_client.get("/api/queue").json()
     rows = plan["sources"]["dropout"]["items"]
     assert [row["code"] for row in rows if row["action"] == "download"] == ["S01E02"]
     assert authed_client.get("/api/series").json()["series"][0]["missing_count"] == 1
@@ -811,15 +818,10 @@ def test_mapping_save_replans_only_target_without_provider_or_disk_io(
     saved = authed_client.put("/api/series/dropout/show", json=detail)
     assert saved.status_code == 200, saved.text
     assert not calls
-    plan = authed_client.get("/api/plans/latest").json()
+    plan = authed_client.get("/api/queue").json()
     rows = plan["sources"]["dropout"]["items"]
-    assert (
-        next(
-            row
-            for row in rows
-            if row["slug"] == "show" and row["provider_identity"] == "show:episode:1"
-        )["action"]
-        == "skip"
+    assert not any(
+        row["slug"] == "show" and row["provider_identity"] == "show:episode:1" for row in rows
     )
     assert all(row["action"] == "download" for row in rows if row["slug"] == "other")
 
@@ -833,7 +835,7 @@ def test_source_url_save_requires_refresh_instead_of_trusting_old_listings(
     detail["sources"][0]["url"] = "https://watch.dropout.tv/different"
     saved = authed_client.put("/api/series/dropout/show", json=detail)
     assert saved.status_code == 200, saved.text
-    plan = authed_client.get("/api/plans/latest").json()
+    plan = authed_client.get("/api/queue").json()
     assert plan["readiness"] == "stale"
     assert all(row["action"] == "blocked" for row in plan["sources"]["dropout"]["items"])
     assert authed_client.get("/api/series/dropout/show/missing").json()["missing_count"] is None
@@ -849,4 +851,4 @@ def test_external_library_setting_edit_cannot_be_blessed_by_mapping_save(
     detail["sources"][0]["seasons"][0]["to_season"] = 27
     saved = authed_client.put("/api/series/dropout/show", json=detail)
     assert saved.status_code == 200, saved.text
-    assert authed_client.get("/api/plans/latest").json()["readiness"] == "stale"
+    assert authed_client.get("/api/queue").json()["readiness"] == "stale"

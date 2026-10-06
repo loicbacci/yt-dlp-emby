@@ -84,6 +84,8 @@ export type PlanFile = {
   readiness?: "ready" | "stale" | "unavailable" | string;
   generated_at: string | null;
   force: boolean;
+  stale?: boolean;
+  cache_errors?: { platform: string; slug: string; error: string }[];
   sources: Record<string, PlanSourceBlock>;
 };
 
@@ -125,15 +127,13 @@ export type JobRequest =
   | {
       kind: "refresh";
       items: { platform: Source; slug: string }[];
+      parts?: ("listings" | "disk" | "sonarr")[];
       source_index?: number;
       expected_revision?: string;
     }
   | {
       kind: "download";
-      plan_id: string;
       ids: string[];
-      force?: boolean;
-      create?: boolean;
     }
   | { kind: "check"; items: { platform: Source; slug: string }[] }
   | { kind: "diagnostics"; checks: string[] };

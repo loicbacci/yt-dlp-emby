@@ -116,6 +116,41 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _snapshot_from_dict(raw: Any) -> LibrarySnapshot:
+    if not isinstance(raw, Mapping):
+        return LibrarySnapshot("unavailable", None, None, None, None, (), None, "")
+    episodes = raw.get("episodes")
+    fingerprints = raw.get("episode_fingerprints")
+    return LibrarySnapshot(
+        status=str(raw.get("status") or "unavailable"),
+        series_exists=raw.get("series_exists")
+        if isinstance(raw.get("series_exists"), bool)
+        else None,
+        episodes=tuple(
+            (int(row[0]), int(row[1]))
+            for row in episodes
+            if isinstance(row, list) and len(row) >= 2
+        )
+        if isinstance(episodes, list)
+        else None,
+        episode_fingerprints=tuple(
+            (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+            for row in fingerprints
+            if isinstance(row, list) and len(row) >= 4
+        )
+        if isinstance(fingerprints, list)
+        else None,
+        provider_index=raw.get("provider_index")
+        if isinstance(raw.get("provider_index"), dict)
+        else None,
+        season_folders=tuple(str(value) for value in raw.get("season_folders", [])),
+        revision=str(raw["revision"]) if raw.get("revision") is not None else None,
+        scanned_at=str(raw.get("scanned_at") or ""),
+        mount_identity=str(raw["mount_identity"]) if raw.get("mount_identity") else None,
+        error=str(raw["error"]) if raw.get("error") else None,
+    )
+
+
 def config_revision_for(
     settings_revision: str,
     manifest_revision: str | None,
@@ -859,16 +894,72 @@ def refresh_target(
     expected_revision = target.get("expected_revision")
     if expected_revision is not None and str(expected_revision) != config_revision:
         raise ConfigError("configuration changed since the target view was read")
-    library = _resolved_library(data_dir, platform, environ)
-    disk = library_snapshot(
-        library,
-        series_folder_rel(series),
-        expected_mount_identity=(
-            str(target["expected_mount_identity"])
-            if target.get("expected_mount_identity")
-            else None
-        ),
-    )
+    parts = set(target.get("parts") or ("listings", "disk"))
+    cached_view = target.get("cached_view")
+    cached_view = cached_view if isinstance(cached_view, Mapping) else {}
+    if parts == {"sonarr"}:
+        if series.tvdb_id is None:
+            return {
+                "platform": platform,
+                "slug": loc.slug,
+                "ok": True,
+                "sonarr_skipped": "No TVDB mapping is configured",
+                "plan": {"sources": {}},
+            }
+        try:
+            from yt_dlp_emby.config import env_value
+            from yt_dlp_emby.sonarr import fetch_episodes_cached_meta
+
+            sonarr_url = env_value(environ, "SONARR_URL") or config.values.get("sonarr_url")
+            sonarr_key = env_value(environ, "SONARR_API_KEY") or config.values.get("sonarr_api_key")
+            if not sonarr_url or not sonarr_key:
+                return {
+                    "platform": platform,
+                    "slug": loc.slug,
+                    "ok": True,
+                    "sonarr_skipped": "Sonarr is not configured",
+                    "plan": {"sources": {}},
+                }
+            title, episodes, title_slug = fetch_episodes_cached_meta(
+                int(series.tvdb_id),
+                base_url=sonarr_url,
+                api_key=sonarr_key,
+                cache_path=data_dir / "cache" / "sonarr.json",
+                force_refetch=True,
+            )
+            return {
+                "platform": platform,
+                "slug": loc.slug,
+                "ok": True,
+                "sonarr": {
+                    "title": title,
+                    "title_slug": title_slug,
+                    "episodes": [asdict(item) for item in episodes],
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "plan": {"sources": {}},
+            }
+        except Exception as exc:
+            return {
+                "platform": platform,
+                "slug": loc.slug,
+                "ok": False,
+                "error": {"code": "SONARR_FAILED", "message": str(exc)[:300]},
+                "plan": {"sources": {}},
+            }
+    if "disk" in parts:
+        library = _resolved_library(data_dir, platform, environ)
+        disk = library_snapshot(
+            library,
+            series_folder_rel(series),
+            expected_mount_identity=(
+                str(target["expected_mount_identity"])
+                if target.get("expected_mount_identity")
+                else None
+            ),
+        )
+    else:
+        disk = _snapshot_from_dict(cached_view.get("disk"))
     if disk.status != "ready":
         from yt_dlp_emby.server.views import (
             configuration_context_signature,
@@ -901,12 +992,14 @@ def refresh_target(
             "stale": True,
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
         }
-        return RefreshTargetResult(
-            {"platform": platform, "slug": loc.slug},
-            view,
-            plan,
-            error=disk.error or "library unavailable",
-        ).to_dict()
+        if "disk" in parts:
+            return RefreshTargetResult(
+                {"platform": platform, "slug": loc.slug},
+                view,
+                plan,
+                error=disk.error or "library unavailable",
+            ).to_dict()
+        raise ConfigError("cached disk inventory is unavailable; refresh disk inventory first")
     source_index = target.get("source_index")
     source_indices = (
         {int(source_index)}
@@ -924,13 +1017,21 @@ def refresh_target(
         raise KeyError("source")
     if emit:
         emit({"event": "progress", "stage": "discover", "target": f"{platform}|{slug}"})
-    try:
-        cookie_path = _cookie_path_for_platform(data_dir, platform, environ)
-        cookie = str(cookie_path)
-    except ConfigError:
-        cookie = None
+    if "listings" not in parts:
+        listings = [ProviderListing(**raw) for raw in cached_view.get("provider_listings", [])]
+        if not listings and cached_view.get("listings_complete"):
+            listings = []
+        source_indices = set(cached_view.get("refreshed_sources", []))
+    else:
+        try:
+            cookie_path = _cookie_path_for_platform(data_dir, platform, environ)
+            cookie = str(cookie_path)
+        except ConfigError:
+            cookie = None
     config_updates: dict[str, Any] = {}
-    if isinstance(series, DropoutSeries):
+    if "listings" not in parts:
+        config_updates = {}
+    elif isinstance(series, DropoutSeries):
         # Discovery only proposes canonical edits. The parent verifies the
         # source file hash/revision and applies them while holding its config lock.
         sources = list(series.sources)
@@ -980,6 +1081,12 @@ def refresh_target(
     )
     from yt_dlp_emby.server.views import configuration_context_signature, source_signature
 
+    cache_times = dict(cached_view.get("cache_times") or {})
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    if "listings" in parts:
+        cache_times["listings"] = refreshed_at
+    if "disk" in parts:
+        cache_times["disk"] = refreshed_at
     view = {
         "target": {"platform": platform, "slug": loc.slug},
         "config_revision": config_revision,
@@ -989,15 +1096,53 @@ def refresh_target(
         "effective_revision": effective_revision,
         "context_signature": configuration_context_signature(data_dir, environ, platform),
         "refreshed_sources": sorted(source_indices),
-        "listings_complete": source_indices == set(range(source_count)),
+        "listings_complete": (
+            source_indices == set(range(source_count))
+            if "listings" in parts
+            else bool(cached_view.get("listings_complete"))
+        ),
         "listing_revision": _digest([asdict(row) for row in listings]),
         "provider_listings": [asdict(row) for row in listings],
+        "sonarr": cached_view.get("sonarr"),
+        "cache_times": cache_times,
         "source_signature": source_signature(series),
         "disk": disk.to_dict(),
         "plan_id": plan["plan_id"],
         "stale": disk.status != "ready",
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
+    if "sonarr" in parts:
+        try:
+            if series.tvdb_id is None:
+                view["sonarr_error"] = "No TVDB mapping is configured for this show"
+            else:
+                from yt_dlp_emby.config import env_value
+                from yt_dlp_emby.sonarr import fetch_episodes_cached_meta
+
+                sonarr_url = env_value(environ, "SONARR_URL") or config.values.get("sonarr_url")
+                sonarr_key = env_value(environ, "SONARR_API_KEY") or config.values.get(
+                    "sonarr_api_key"
+                )
+                if not sonarr_url or not sonarr_key:
+                    view["sonarr_error"] = "Sonarr is not configured"
+                else:
+                    title, episodes, title_slug = fetch_episodes_cached_meta(
+                        int(series.tvdb_id),
+                        base_url=sonarr_url,
+                        api_key=sonarr_key,
+                        cache_path=data_dir / "cache" / "sonarr.json",
+                        force_refetch=True,
+                    )
+                    view["sonarr"] = {
+                        "title": title,
+                        "title_slug": title_slug,
+                        "episodes": [asdict(item) for item in episodes],
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    cache_times["sonarr"] = view["sonarr"]["fetched_at"]
+                    view.pop("sonarr_error", None)
+        except Exception as exc:
+            view["sonarr_error"] = str(exc)[:300]
     if emit:
         emit(
             {
@@ -1099,10 +1244,7 @@ def download_selected(
     rows = {str(row.get("id")): row for row in selected or [] if isinstance(row, Mapping)}
     if not rows or set(ids) - set(rows):
         raise ValueError("selected actions do not belong to the supplied plan revision")
-    if any(
-        rows[action_id].get("action") not in {"download", "replace", "rename", "remove"}
-        for action_id in ids
-    ):
+    if any(rows[action_id].get("action") != "download" for action_id in ids):
         raise ValueError("selection contains a non-executable action")
     if (
         any(
@@ -1127,9 +1269,9 @@ def download_selected(
         if not set(dependencies).issubset(ids):
             raise ValueError("selected action requires an explicitly selected dependency")
 
-    # Recheck immutable admission snapshots before any provider executor can
-    # create a staging folder or move a file. A changed mount, library tree, or
-    # target config invalidates the accepted plan.
+    # Recheck the effective config before execution. Inventory is deliberately
+    # not rescanned here: each destination is checked immediately before its
+    # download, avoiding another full walk of a remote library tree.
     cached_views = (
         operation_context.get("cached_views")
         if isinstance(operation_context, Mapping)
@@ -1159,25 +1301,8 @@ def download_selected(
         ):
             raise ConfigError("configuration changed since the selected plan was published")
         _loc, series = locate_series(data_dir, platform, slug)
-        library = _resolved_library(data_dir, platform, environ)
-        disk_raw = view.get("disk")
-        expected_mount = (
-            str(disk_raw.get("mount_identity"))
-            if isinstance(disk_raw, Mapping) and disk_raw.get("mount_identity")
-            else None
-        )
-        current_disk = library_snapshot(
-            library,
-            series_folder_rel(series),
-            expected_mount_identity=expected_mount,
-        )
-        expected_disk_revision = (
-            str(disk_raw.get("revision"))
-            if isinstance(disk_raw, Mapping) and disk_raw.get("revision")
-            else None
-        )
-        if current_disk.status != "ready" or current_disk.revision != expected_disk_revision:
-            raise ConfigError("library changed since the selected plan was published")
+        if series is None:
+            raise ConfigError("selected series is no longer configured")
 
     from dataclasses import replace
 

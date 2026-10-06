@@ -38,6 +38,7 @@ from yt_dlp_emby.events import (
     emit,
     emit_dropout_unit,
     item_id,
+    selection_is_active,
     set_current_item_id,
     validate_selected_action,
 )
@@ -47,6 +48,7 @@ from yt_dlp_emby.library import (
     emby_code,
     episode_stem,
     episode_title_from_filename,
+    find_episode_mkv,
     index_series_mkvs,
     sanitize_filename,
     season_dir,
@@ -773,6 +775,15 @@ def _run_dropout(
             code = emby_code(to_season, to_episode)
             event_id = item_id("dropout", slug, code)
             set_current_item_id(event_id)
+            if (
+                selection_is_active()
+                and find_episode_mkv(dest_dir, to_season, to_episode) is not None
+            ):
+                log_step(settings, f"[{i}/{len(download_jobs)}] Skipping episode already on disk")
+                stats.skipped += 1
+                emit({"event": "item_done", "id": event_id, "action": "skipped_existing"})
+                set_current_item_id(None)
+                continue
             log_step(settings, f"[{i}/{len(download_jobs)}] Downloading {stem}{extra}")
             started = time.monotonic()
             recover_rename_temps(job.dest_dir)

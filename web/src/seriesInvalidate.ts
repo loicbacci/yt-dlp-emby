@@ -9,7 +9,7 @@ export async function invalidateSeriesState(
 ): Promise<void> {
   const jobs = [queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() })];
   if (extras.plan !== false) {
-    jobs.push(queryClient.invalidateQueries({ queryKey: queryKeys.plan() }));
+    jobs.push(queryClient.invalidateQueries({ queryKey: queryKeys.queue() }));
   }
   for (const item of items) {
     jobs.push(
@@ -42,7 +42,7 @@ export async function invalidateAfterQueueRebuild(
   affected?: { platform: string; slug: string; tvdb_id?: number | null }[],
 ): Promise<void> {
   const jobs = [
-    queryClient.invalidateQueries({ queryKey: queryKeys.plan() }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.queue() }),
     queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() }),
   ];
   for (const item of affected ?? []) {

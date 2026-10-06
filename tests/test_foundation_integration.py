@@ -33,6 +33,7 @@ def test_real_refresh_worker_publishes_cached_plan_without_creating_media(tmp_pa
     library = tmp_path / "library"
     library.mkdir()
     _empty_show(tmp_path, library)
+    (tmp_path / "plan.json").write_text('{"legacy":"inert"}', encoding="utf-8")
     with TestClient(create_app(data_dir=tmp_path, environ={})) as client:
         assert client.post("/api/setup", json={"password": "test-password"}).status_code == 200
         started = client.post(
@@ -44,13 +45,14 @@ def test_real_refresh_worker_publishes_cached_plan_without_creating_media(tmp_pa
         job = _wait(client, started.json()["job_id"])
         assert job["status"] == "succeeded", job
         assert job["result"]["ok"] is True
-        plan = client.get("/api/plans/latest")
+        plan = client.get("/api/queue")
         assert plan.status_code == 200, plan.text
         assert plan.json()["plan_id"]
         assert "sources" in plan.json()
         assert not (library / "Empty").exists()
         assert not (tmp_path / "old").exists()
-        for legacy in ("plan.json", "events.jsonl", "download-only.json"):
+        assert (tmp_path / "plan.json").read_text(encoding="utf-8") == '{"legacy":"inert"}'
+        for legacy in ("events.jsonl", "download-only.json"):
             assert not (tmp_path / legacy).exists()
 
 
@@ -149,7 +151,7 @@ def test_private_refresh_worker_preserves_custom_mapping_and_publishes_discovery
         assert "# show note" in fragment.read_text()
         assert "# custom destination" in fragment.read_text()
         assert '"Custom season"' in fragment.read_text()
-        plan = client.get("/api/plans/latest").json()
+        plan = client.get("/api/queue").json()
         row = plan["sources"]["dropout"]["items"][0]
         assert row["action"] == "download", plan
         assert row["code"] == "S27E09"

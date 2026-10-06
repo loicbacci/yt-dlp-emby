@@ -65,6 +65,12 @@ def current_item_id() -> str | None:
     return context.current_item_id if context is not None else None
 
 
+def selection_is_active() -> bool:
+    """True only for web/admitted jobs with an explicit action set."""
+    context = _OPERATION_CONTEXT.get()
+    return context is not None and context.selected_actions is not None
+
+
 def item_id(platform: str, slug: str, code: str) -> str:
     return f"{platform}|{slug}|{code}"
 
