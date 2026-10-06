@@ -1,11 +1,21 @@
-import type { AppConfig, CookieStatus } from "../api";
+import type { AppConfig, CookieStatus, ManifestPaths, Source } from "../api";
 import { slotText } from "../api";
 
-export function pathsUnset(config: AppConfig | null | undefined): boolean {
-  if (!config) return false;
-  const library = slotText(config.fields.library?.effective).trim();
-  const oldDir = slotText(config.fields.old_dir?.effective).trim();
-  return !library || !oldDir;
+export type PlatformPaths = Partial<Record<Source, ManifestPaths | null>>;
+
+export function pathsUnset(
+  config: AppConfig | null | undefined,
+  platformPaths?: PlatformPaths,
+  platforms: Source[] = [],
+): boolean {
+  const library = slotText(config?.fields.library?.effective).trim();
+  const oldDir = slotText(config?.fields.old_dir?.effective).trim();
+  if (library && oldDir) return false;
+  if (!platforms.length) return true;
+  return platforms.some((platform) => {
+    const paths = platformPaths?.[platform];
+    return !paths?.library.effective?.trim() || !paths.old_dir.effective?.trim();
+  });
 }
 
 export function cookiesMissing(cookies: CookieStatus | null | undefined): boolean {
@@ -19,15 +29,22 @@ export function OnboardingChecklist({
   cookies,
   seriesCount,
   planReady,
+  platformPaths,
+  platforms = [],
+  platformPathsLoading = false,
 }: {
   config: AppConfig | null | undefined;
   cookies: CookieStatus | null | undefined;
   seriesCount: number | null | undefined;
   planReady: boolean;
+  platformPaths?: PlatformPaths;
+  platforms?: Source[];
+  platformPathsLoading?: boolean;
 }) {
   // Still loading setup state — don't flash the banner.
-  if (config === undefined || cookies === undefined || seriesCount == null) return null;
-  const stepPaths = !pathsUnset(config);
+  if (config === undefined || cookies === undefined || seriesCount == null || platformPathsLoading)
+    return null;
+  const stepPaths = !pathsUnset(config, platformPaths, platforms);
   const stepCookies = !cookiesMissing(cookies);
   const stepShow = (seriesCount ?? 0) > 0;
   const stepRefresh = planReady;

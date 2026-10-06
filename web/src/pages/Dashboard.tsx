@@ -287,14 +287,39 @@ export function Dashboard() {
   const configQuery = useQuery({
     queryKey: queryKeys.config(),
     queryFn: () => apiClient.getConfig(),
-    staleTime: 60_000,
+    staleTime: 0,
   });
   const cookiesQuery = useQuery({
     queryKey: queryKeys.cookies(),
     queryFn: () => apiClient.getCookies(),
-    staleTime: 60_000,
+    staleTime: 0,
   });
-  const setupPathsMissing = !configQuery.isPending && pathsUnset(configQuery.data ?? null);
+  const targetPlatforms = [...new Set((posterQuery.data?.series ?? []).map((row) => row.platform))];
+  const youtubePlatformQuery = useQuery({
+    queryKey: queryKeys.platform("youtube"),
+    queryFn: () => apiClient.getPlatform("youtube"),
+    enabled: targetPlatforms.includes("youtube"),
+    staleTime: 0,
+  });
+  const dropoutPlatformQuery = useQuery({
+    queryKey: queryKeys.platform("dropout"),
+    queryFn: () => apiClient.getPlatform("dropout"),
+    enabled: targetPlatforms.includes("dropout"),
+    staleTime: 0,
+  });
+  const platformPathsLoading =
+    (targetPlatforms.includes("youtube") && youtubePlatformQuery.isFetching) ||
+    (targetPlatforms.includes("dropout") && dropoutPlatformQuery.isFetching);
+  const platformPaths = {
+    youtube: youtubePlatformQuery.data?.paths,
+    dropout: dropoutPlatformQuery.data?.paths,
+  };
+  const setupPathsMissing =
+    !posterQuery.isPending &&
+    !posterQuery.isError &&
+    !configQuery.isFetching &&
+    !platformPathsLoading &&
+    pathsUnset(configQuery.data ?? null, platformPaths, targetPlatforms);
   const nowHit = progress.currentId ? episodeForId(displayTree, progress.currentId) : null;
   const nowPoster = nowHit
     ? seriesPosterUrl(posterMap, nowHit.series.platform, nowHit.series.slug, nowHit.series.name)
@@ -368,13 +393,16 @@ export function Dashboard() {
   const refreshTargets = posterQuery.data?.series ?? [];
   const noRefreshTargets =
     !posterQuery.isPending && !seriesLoadError && refreshTargets.length === 0;
-  const refreshDisabledReason = setupPathsMissing
-    ? "Set library paths in Settings first"
-    : seriesLoadError
-      ? "Retry loading shows before refreshing"
-      : noRefreshTargets
-        ? "Add a show first"
-        : undefined;
+  const pathCheckPending = configQuery.isFetching || platformPathsLoading;
+  const refreshDisabledReason = pathCheckPending
+    ? "Checking library paths…"
+    : setupPathsMissing
+      ? "Set library paths in Settings first"
+      : seriesLoadError
+        ? "Retry loading shows before refreshing"
+        : noRefreshTargets
+          ? "Add a show first"
+          : undefined;
 
   const searchMiss =
     Boolean(query.trim()) && visible.length === 0 && upToDate.length === 0 && hasManifest;
@@ -390,10 +418,19 @@ export function Dashboard() {
             </div>
           )}
           <OnboardingChecklist
-            config={configQuery.isPending ? undefined : (configQuery.data ?? null)}
-            cookies={cookiesQuery.isPending ? undefined : (cookiesQuery.data ?? null)}
-            seriesCount={posterQuery.isPending ? undefined : (posterQuery.data?.series.length ?? 0)}
+            config={
+              configQuery.isFetching || platformPathsLoading
+                ? undefined
+                : (configQuery.data ?? null)
+            }
+            cookies={cookiesQuery.isFetching ? undefined : (cookiesQuery.data ?? null)}
+            seriesCount={
+              posterQuery.isFetching ? undefined : (posterQuery.data?.series.length ?? 0)
+            }
             planReady={planReady}
+            platformPaths={platformPaths}
+            platforms={targetPlatforms}
+            platformPathsLoading={platformPathsLoading}
           />
           {setupPathsMissing && (
             <p class="run-hint" role="status">
@@ -548,6 +585,7 @@ export function Dashboard() {
                         busy ||
                         startPlanMut.isPending ||
                         setupPathsMissing ||
+                        pathCheckPending ||
                         posterQuery.isPending ||
                         Boolean(seriesLoadError) ||
                         noRefreshTargets

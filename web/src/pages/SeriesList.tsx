@@ -61,6 +61,7 @@ export function SeriesList() {
     staleTime: 60 * 1000,
   });
   const rows = listQuery.data?.series ?? [];
+  const platforms = [...new Set(rows.map((row) => row.platform))];
   const importErrors = listQuery.data?.import_errors ?? [];
   const needMissing = useMemo(
     () => rows.filter((row) => row.platform === "dropout" && row.missing_count == null),
@@ -80,12 +81,31 @@ export function SeriesList() {
   const configQuery = useQuery({
     queryKey: queryKeys.config(),
     queryFn: () => apiClient.getConfig(),
-    staleTime: 60 * 1000,
+    staleTime: 0,
   });
+  const youtubePlatformQuery = useQuery({
+    queryKey: queryKeys.platform("youtube"),
+    queryFn: () => apiClient.getPlatform("youtube"),
+    enabled: platforms.includes("youtube"),
+    staleTime: 0,
+  });
+  const dropoutPlatformQuery = useQuery({
+    queryKey: queryKeys.platform("dropout"),
+    queryFn: () => apiClient.getPlatform("dropout"),
+    enabled: platforms.includes("dropout"),
+    staleTime: 0,
+  });
+  const platformPathsLoading =
+    (platforms.includes("youtube") && youtubePlatformQuery.isFetching) ||
+    (platforms.includes("dropout") && dropoutPlatformQuery.isFetching);
+  const platformPaths = {
+    youtube: youtubePlatformQuery.data?.paths,
+    dropout: dropoutPlatformQuery.data?.paths,
+  };
   const cookiesQuery = useQuery({
     queryKey: queryKeys.cookies(),
     queryFn: () => apiClient.getCookies(),
-    staleTime: 60 * 1000,
+    staleTime: 0,
   });
   const planQuery = useQuery({
     queryKey: queryKeys.plan(),
@@ -159,6 +179,10 @@ export function SeriesList() {
     tvdb_id: number | null;
   }) => {
     const detail = await apiClient.createSeries(body);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.seriesList() }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.plan() }),
+    ]);
     setModal(false);
     pushToast(`Created ${detail.name}`);
     go(`/series/${detail.platform}/${encodeURIComponent(detail.slug)}`);
@@ -175,10 +199,17 @@ export function SeriesList() {
             </div>
           )}
           <OnboardingChecklist
-            config={configQuery.isPending ? undefined : (configQuery.data ?? null)}
-            cookies={cookiesQuery.isPending ? undefined : (cookiesQuery.data ?? null)}
+            config={
+              configQuery.isFetching || platformPathsLoading
+                ? undefined
+                : (configQuery.data ?? null)
+            }
+            cookies={cookiesQuery.isFetching ? undefined : (cookiesQuery.data ?? null)}
             seriesCount={listQuery.isPending ? undefined : rows.length}
             planReady={planQuery.data != null}
+            platformPaths={platformPaths}
+            platforms={platforms}
+            platformPathsLoading={platformPathsLoading}
           />
           <div class="series-toolbar">
             <div>
