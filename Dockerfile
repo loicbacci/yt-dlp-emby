@@ -9,7 +9,7 @@ COPY web/ ./
 COPY tests/fixtures/job-contract /repo/tests/fixtures/job-contract
 RUN pnpm build
 
-FROM ghcr.io/astral-sh/uv:0.8.15 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
 
 FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
 # Bookworm supplies ffmpeg 5.1; the pinned base fixes the distribution version.
