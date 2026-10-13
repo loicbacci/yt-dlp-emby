@@ -51,7 +51,7 @@ jobs:
       - name: Non-root
         run: test "$(docker run --rm --entrypoint id yt-dlp-emby:ci -u)" = 1000
       - name: Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: yt-dlp-emby:ci
           format: table
