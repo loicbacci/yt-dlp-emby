@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Re-pin these digests when Dependabot bumps the Docker ecosystem.
-FROM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS web
+FROM node:26-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS web
 WORKDIR /repo/web
 RUN corepack enable && corepack prepare pnpm@10.6.5 --activate
 COPY web/package.json web/pnpm-lock.yaml ./
