@@ -12,8 +12,8 @@ importers:
         specifier: ^5.103.1
         version: 5.103.1(preact@10.29.8)
       '@tanstack/preact-store':
-        specifier: ^0.13.2
-        version: 0.13.2(preact@10.29.8)
+        specifier: ^0.13.5
+        version: 0.13.5(preact@10.29.8)
       preact:
         specifier: ^10.26.5
         version: 10.29.8(preact-render-to-string@6.7.0)
@@ -616,16 +616,16 @@ packages:
     peerDependencies:
       preact: ^10.0.0
 
-  '@tanstack/preact-store@0.13.2':
-    resolution: {integrity: sha512-CBosOLog5UnaZX9YHRA2LKJm5XR0tCABvNWDfDMcyFeLtEnJ9W9DOVbz4JxXMb3+LZhGEMVrt1iA77npNx/9rw==}
+  '@tanstack/preact-store@0.13.5':
+    resolution: {integrity: sha512-+ONKQNVqoGBpCbvahHjW39d28vwBVNRUa927m5owRQS6fySTORPKbOV6HYBXt0qHxOA8r0llg1Bfy/FKXsj3qw==}
     peerDependencies:
-      preact: ^10.0.0
+      preact: ^10.0.0 || ^11.0.0-0
 
   '@tanstack/query-core@5.103.1':
     resolution: {integrity: sha512-rms8HqTGp6zA00dM+cUQ2eBcgzNJefuu5CAMB37i/6MiGT1zulPOytCFu2a0qjLqVR2n1jENPj9woqFQNuCzWA==}
 
-  '@tanstack/store@0.11.1':
-    resolution: {integrity: sha512-mzTOBhypOuDJAy/D8n2MfUZ1HFkXnmSETviRyhqEC8LUE7/IZQExOTxMANj3KjTofYTkFNpBY67qaVrT41YccA==}
+  '@tanstack/store@0.11.2':
+    resolution: {integrity: sha512-sJ4mjol8uQsHV0gOJzzjwXfh2Fwm+Sz0+8deqiTm4jGbMdjzNSW+xZCFm0kUa870uhd8yi+DpKnZb5Kc4apa0Q==}
 
   '@testing-library/dom@8.20.1':
     resolution: {integrity: sha512-/DiOQ5xBxgdYRC8LNk7U+RWat0S3qRLeIw3ZIkMQ9kkVlRmwD/Eg8k8CqIpD6GW7u20JIUOfMKbxtiLutpjQ4g==}
@@ -2517,14 +2517,14 @@ snapshots:
       '@tanstack/query-core': 5.103.1
       preact: 10.29.8(preact-render-to-string@6.7.0)
 
-  '@tanstack/preact-store@0.13.2(preact@10.29.8)':
+  '@tanstack/preact-store@0.13.5(preact@10.29.8)':
     dependencies:
-      '@tanstack/store': 0.11.1
+      '@tanstack/store': 0.11.2
       preact: 10.29.8(preact-render-to-string@6.7.0)
 
   '@tanstack/query-core@5.103.1': {}
 
-  '@tanstack/store@0.11.1': {}
+  '@tanstack/store@0.11.2': {}
 
   '@testing-library/dom@8.20.1':
     dependencies:
