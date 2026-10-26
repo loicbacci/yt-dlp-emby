@@ -11,7 +11,7 @@ RUN pnpm build
 
 FROM ghcr.io/astral-sh/uv:0.8.15 AS uv
 
-FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
+FROM python:3.15-slim-bookworm@sha256:575f8bc12ec26542e0678bc6b60e385218248019d433157ec327264a78c3a853
 # Bookworm supplies ffmpeg 5.1; the pinned base fixes the distribution version.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
